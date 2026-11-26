@@ -1311,8 +1311,9 @@ def _prune():
 @functools.lru_cache(maxsize=256)
 def _tool_class(tool):
     # lean: the class in the dev signer's default policy; a signer with another policy may class the tool otherwise
-    from tracekit.signer.service import load_policy
-    return load_policy().tool_class(tool)
+    from tracekit.policy2 import classes, compile as policy_compile
+    from tracekit.signer.service import DEFAULT_POLICY
+    return classes.tool_class(policy_compile.tools(DEFAULT_POLICY), tool)
 
 
 def _handle(client, p, event, sid, tid, end=None):

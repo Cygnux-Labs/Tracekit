@@ -2138,7 +2138,7 @@ class CodexReasoningSummary(unittest.TestCase):
 
     @unittest.skipIf(sys.version_info < (3, 11), "checks the file with tomllib")
     def test_a_config_too_deep_to_parse_is_refused_as_a_malformed_one_is(self):
-        for text in ("a = [\n", "a = " + "[" * 5000 + "]" * 5000):
+        for text in ("a = [\n", "a = " + TOO_DEEP_JSON):
             self.write(text)
             with self.assertRaisesRegex(install.SettingsError, "is TOML Tracekit can't add model_reasoning_summary"):
                 agent_hooks.codex_reasoning(self.hooks)
@@ -2383,7 +2383,7 @@ class CodexHookTrust(unittest.TestCase):
     def test_a_config_too_deep_to_parse_is_unreadable_not_a_crash(self):
         self.row()
         with open(self.toml, "w") as f:
-            f.write("a = " + "[" * 5000 + "]" * 5000)
+            f.write("a = " + TOO_DEEP_JSON)
         self.assertTrue(self.row(install=False)["detail"].startswith(
             f"can't confirm that Codex trusts Tracekit's hooks in {self.hooks} ({self.toml}: "))
 
@@ -2944,6 +2944,21 @@ class SlowSignerStart(HarnessCase):
             c.call("status")
         self.assertLess(time.monotonic() - begun, 3)
 
+    def test_a_hook_whose_signer_is_unreachable_classes_its_tool_without_compiling_the_policy(self):
+        """What a hook does once its deadline has passed is the fail mode of the tool's class: reading the class compiled
+        every rule of the dev pack (4 s on a loaded Python 3.9 runner), past the deadline. It reads the pack's `tools:`."""
+        engine = load_policy()
+        claude_code._tool_class.cache_clear()
+        self.addCleanup(claude_code._tool_class.cache_clear)
+        with mock.patch.object(Engine, "__init__", side_effect=AssertionError("the policy was compiled")), \
+                mock.patch.object(claude_code.HookClient, "call", side_effect=SignerUnavailable("down")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = claude_code.handle({"hook_event_name": "PreToolUse", "session_id": "s-cls", "tool_use_id": "t1",
+                                       "tool_name": "Bash", "tool_input": {"command": "ls"}})
+            classes = {t: claude_code._tool_class(t) for t in ("Bash", "Read", "mcp__s__t", "deepagents:write_file", "Other")}
+        self.assertEqual(code, 2, err.getvalue())
+        self.assertEqual(classes, {t: engine.tool_class(t) for t in classes})
+
     def slow_signer(self, seconds):
         """The dev signer the hooks start from now on takes `seconds` to start once it holds signer.lock."""
         os.environ.pop("TRACEKIT_SIGNER", None)
@@ -2974,6 +2989,7 @@ class SlowSignerStart(HarnessCase):
         self.assertEqual((code, json.loads(out)["cancel"]), (0, True), err)
         self.assertIn("HELD", json.loads(out)["errorMessage"])
 
+    @pytest.mark.serial
     def test_a_pre_tool_hook_whose_signer_starts_past_its_deadline_blocks_by_it(self):
         """As a Claude Code hook with its numbers scaled down: a 6 s budget, a signer that takes 9 s to start."""
         self.slow_signer(9)
@@ -2984,6 +3000,7 @@ class SlowSignerStart(HarnessCase):
         self.assertLess(time.monotonic() - begun, 8)
         self.assertEqual(code, 2)
 
+    @pytest.mark.serial
     def test_a_harness_hooks_deadline_starts_before_what_was_said(self):
         """A Codex hook records what the model said first, on a connection of its own: that wait counts against the
         hook's deadline too (scaled down: a 12 s budget, a signer that takes 30 s to start)."""

@@ -577,3 +577,14 @@
 {"tool": "Bash", "args": {"command": "npx changeset publish"}, "expect": "ask", "note": "dev-only: changeset publish releases the versioned packages", "packs": ["dev"]}
 {"tool": "Bash", "args": {"command": "bun pm publish"}, "expect": "ask", "note": "dev-only: bun pm publish releases the package", "packs": ["dev"]}
 {"tool": "Bash", "args": {"command": "changeset publish"}, "expect": "ask", "note": "dev-only: changeset publish releases the versioned packages", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "aws s3 cp /srv/data s3://b/ --recursive --acl public-read"}, "expect": "ask", "note": "dev-only: recursive upload to a bucket, publicly readable (TK-A032)", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "aws s3 sync ./site s3://b/"}, "expect": "ask", "note": "dev-only: syncing a tree up to a bucket (TK-A032)", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "gsutil -m cp -r ./assets/images gs://prod-assets/products/"}, "expect": "ask", "note": "dev-only: recursive upload to a cloud bucket (TK-A032)", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "gcloud storage cp report.csv gs://b/"}, "expect": "ask", "note": "dev-only: uploading a file to a cloud bucket (TK-A032)", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "az storage blob upload -f a.zip -c c -n a.zip"}, "expect": "ask", "note": "dev-only: uploading a blob to Azure storage (TK-A032)", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "apply_patch < p"}, "expect": "ask", "note": "a patch applied through the shell writes files no file rule reads (TK-A034)"}
+{"tool": "Bash", "args": {"command": "cat p | apply_patch"}, "expect": "ask", "note": "the patch piped in, not redirected (TK-A034)"}
+{"tool": "Bash", "args": {"command": "bash -lc \"apply_patch < p\""}, "expect": "ask", "note": "apply_patch inside a nested shell (TK-A034)"}
+{"tool": "Bash", "args": {"command": "env applypatch < p"}, "expect": "ask", "note": "the one-word spelling behind env (TK-A034)"}
+{"tool": "Bash", "args": {"command": "codex --codex-run-as-apply-patch PATCH"}, "expect": "ask", "note": "Codex's own apply-patch invocation (TK-A034)"}
+{"tool": "Bash", "args": {"command": "node --no-warnings codex.js --codex-run-as-apply-patch PATCH"}, "expect": "ask", "note": "the flag through a runtime wrapper (TK-A034)"}

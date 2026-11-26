@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from factories import TOO_DEEP_JSON
 from tracekit import __version__, agent_hooks, audit, cli
 from tracekit.integrations import harness_hooks
 from tracekit.signer.service import DEFAULT_POLICY, evaluate, load_policy
@@ -233,7 +234,7 @@ class TestAudit(unittest.TestCase):
 
     def test_a_line_nested_past_what_json_takes_is_malformed_and_the_rest_is_read(self):
         """Review of 1.5.3: its RecursionError made the whole file unreadable, its calls uncounted."""
-        _write_jsonl(self.root / "s.jsonl", ["[" * 5000 + "]" * 5000, _call("Bash", {"command": "ls"})])
+        _write_jsonl(self.root / "s.jsonl", [TOO_DEEP_JSON, _call("Bash", {"command": "ls"})])
         report = audit.audit(str(self.root))
         self.assertEqual((report["counts"]["allow"], report["skipped_malformed"], report["unreadable"]), (1, 1, []))
 

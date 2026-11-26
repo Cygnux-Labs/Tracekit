@@ -16,7 +16,7 @@ from unittest import mock
 
 import pytest
 
-from factories import SLOWER
+from factories import SLOWER, TOO_DEEP_JSON
 from tracekit import schema
 from tracekit.format.canon import event_hash
 from tracekit.policy2 import classes, compile as pc, shell
@@ -3286,7 +3286,7 @@ class CodingPack(unittest.TestCase):
         inner = json.dumps("*** Begin Patch\n*** Update File: /home/u/.cursor/hooks.json\n@@\n-a\n+b\n*** End Patch\n")
         note = "*** Begin Patch\n*** Update File: /w/src/app.py\n@@\n-a\n+b\n*** End Patch\n"
         held = ()
-        for first in ("[" * 5000 + "]" * 5000, "1" + "0" * 5000):
+        for first in (TOO_DEEP_JSON, "1" + "0" * 5000):
             text = '{"patch": ' + first + ', "patch": ' + inner + "}"
             try:
                 json.loads(text)
@@ -7043,17 +7043,15 @@ class ServerCorpora(unittest.TestCase):
     def test_a_dev_only_case_is_decided_on_dev_and_fails_when_its_rule_is_loosened(self):
         # #1139: a case naming `"packs": ["dev"]` is decided on dev.yaml, which alone holds it; the server pack
         # allows the same lines, so without the field the corpus could only report them as missed. Loosening the
-        # dev rule the case names (here dropping TK-A056) flips the verdict off its expect, which the corpus
-        # records as a miss.
+        # dev rules that hold a case flips its verdict off its expect, which the corpus records as a miss.
         tagged = [(kind, cls, i, c) for kind in ("deny", "benign") for cls, cases in e17.load(kind).items()
                   for i, c in enumerate(cases) if "packs" in c]
         self.assertTrue(tagged)
         dev = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
         server = pc.build(os.path.join(PACKS, "server.yaml"))[0]
-        loosened = {**dev, "ask": [r for r in dev["ask"] if r["id"] != "TK-A056"]}
         recorded = e17.run()["decisions"]
         for engine_name in (("re2", "regex") if HAVE_RE2 else ("regex",)):
-            dev_e, server_e, loose_e = (Engine(pol, engine_name) for pol in (dev, server, loosened))
+            dev_e, server_e = Engine(dev, engine_name), Engine(server, engine_name)
             for kind, cls, i, case in tagged:
                 with self.subTest(engine=engine_name, case=case["args"].get("command", "")[:40]):
                     key = f"{kind}/{cls}@dev:{i + 1}"
@@ -7062,7 +7060,12 @@ class ServerCorpora(unittest.TestCase):
                     if kind == "deny":
                         self.assertEqual(d_dev["verdict"], case["expect"], d_dev)
                         self.assertEqual(d_srv["verdict"], "allow", d_srv)
-                        self.assertEqual(loose_e.decide(case["tool"], case["args"])["verdict"], "allow")
+                        held = set(d_dev["rule_ids"])
+                        self.assertTrue(held, d_dev)
+                        loosened = {**dev, **{sec: [r for r in dev.get(sec, []) if r["id"] not in held]
+                                              for sec in ("deny", "ask", "flag")}}
+                        self.assertEqual(Engine(loosened, engine_name).decide(case["tool"], case["args"])["verdict"],
+                                         "allow")
                     else:
                         self.assertNotIn(d_dev["verdict"], ("deny", "ask"), d_dev)
 

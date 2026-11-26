@@ -12,7 +12,7 @@ import time
 import unittest
 from unittest import mock
 
-from factories import wait_for
+from factories import TOO_DEEP_JSON, wait_for
 from test_signer_service import ME, tmpdir
 from test_witness_publish import signed_note
 from tracekit import cli, crypto, install, merkle, public_witness, view
@@ -180,8 +180,10 @@ class Server(unittest.TestCase):
         self.assertEqual((status, body), (400, "the tree size is over 2^63 - 1\n"))
 
     def test_deeply_nested_json_is_a_400_not_a_crash(self):
-        with contextlib.redirect_stderr(io.StringIO()) as err:   # parsed or past the parser's depth: 400 either way
-            status = self.post("/register", "[" * 5000 + "]" * 5000)[0]
+        # a body within MAX_BODY nests 5,000 levels at most, which 3.12's parser reads: lift the limit to reach the depth
+        # the parser refuses
+        with mock.patch.object(pws, "MAX_BODY", 1 << 20), contextlib.redirect_stderr(io.StringIO()) as err:
+            status = self.post("/register", TOO_DEEP_JSON)[0]
         self.assertEqual((status, err.getvalue()), (400, ""))   # nothing logged
 
     def test_replayed_old_notes_never_hold_up_the_log(self):

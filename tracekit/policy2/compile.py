@@ -494,6 +494,19 @@ def _read(path):
     return yamlmini.loads(text) if path.endswith((".yaml", ".yml")) else json.loads(text)
 
 
+def tools(path):
+    """The `tools:` map build(path) would give, read from the file and the files it extends without linting or
+    compiling a rule: what a caller that only classes a tool name needs. ValueError when a file can't be read."""
+    try:
+        pol = _read(path)
+        base = pol.get("extends")
+        parents = [tools(os.path.join(os.path.dirname(path), b))
+                   for b in (base if isinstance(base, list) else [base] if base else [])]
+        return {k: v for t in parents + [pol.get("tools", {})] for k, v in t.items()}
+    except (OSError, AttributeError, TypeError, ValueError, RecursionError) as e:
+        raise ValueError(f"{path}: {e}") from None
+
+
 def build(path, seen=()):
     """Return (effective_policy, errors). `extends` names a relative file, or a list of them merged in order; the
     result records each parent's policy_hash."""

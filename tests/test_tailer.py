@@ -14,6 +14,7 @@ import unittest
 import uuid
 from unittest import mock
 
+from factories import TOO_DEEP_JSON
 from tracekit import install, tailer
 from tracekit.deploy import files
 from tracekit.format.canon import event_hash
@@ -626,7 +627,7 @@ class Tailer(unittest.TestCase):
     def test_a_line_nested_past_what_json_takes_is_lost(self):
         """Review of 1.5.3: its RecursionError ended the tailer with no tailer_lost, so the run's model text stopped
         with no gap."""
-        self.write(TOOL_USE, b"[" * 5000 + b"]" * 5000 + b"\n")
+        self.write(TOOL_USE, TOO_DEEP_JSON.encode() + b"\n")
         self.tail()
         self.assertIn(f"the line at offset {len(line(TOOL_USE))} is not a JSON object", self.lost()[0])
 

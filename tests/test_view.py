@@ -231,6 +231,27 @@ class Translate(unittest.TestCase):
                          {"bytes_out": 128, "bytes_in": 256, "connections": 1,
                           "first_ts": "2026-10-10T17:00:03.000000Z", "last_ts": "2026-10-10T17:00:05.000000Z"})
 
+    def test_a_model_turn_carries_the_time_its_request_was_signed_only_when_the_gateway_signed_both(self):
+        """The LLM gateway signs a request and its response under one exchange id (source "gateway", which only the signer stamps, for a gateways
+        identity): the turn's start is recorded. A client can sign a model_event under any id, so its request says nothing of when the model was asked."""
+        usage = {"input_tokens": 5, "output_tokens": 2}
+
+        def turn(request_source, response_source):
+            request = v2rec(1, "model.exchange", {"phase": "request", "exchange_id": "x1", "model": "m"}, source=request_source)
+            request["event"]["ts"] = "2026-01-01T00:00:01.000000Z"
+            later = v2rec(2, "model.exchange", {"phase": "response", "exchange_id": "x1", "model": "m", "usage": usage}, source=response_source)
+            later["event"]["ts"] = "2026-01-01T00:00:03.500000Z"
+            tr = view.Translator(SERVER)
+            self.assertEqual(tr.feed(request), [])
+            [row] = [r for r in tr.feed(later) if r["event"] == "tk_model"]
+            return row
+        row = turn("gateway", "gateway")
+        self.assertEqual(row["ts"] - row["started"], 2.5)
+        for sources in (("sdk", "sdk"), ("sdk", "gateway"), ("gateway", "sdk"), ("hook", "hook")):   # an agent's request, or its response, is not the gateway's
+            self.assertNotIn("started", turn(*sources), sources)
+        later = v2rec(2, "model.exchange", {"phase": "response", "exchange_id": "x1", "model": "m", "usage": usage}, source="gateway")
+        self.assertNotIn("started", [r for r in view.Translator(SERVER).feed(later) if r["event"] == "tk_model"][0])   # no request seen
+
     def test_holds_and_approvals_are_their_own_rows_in_words(self):
         rows = self.feed(
             v2rec(1, "policy.decision", {"tool_use_id": "c6", "tool": "create_refund", "decision": "ask",
@@ -2445,6 +2466,24 @@ class WhyLive(WhyServer):
         self.assertEqual([r["tool_name"] for r in rows if r["event"] == "PreToolUse"],
                          [a["tool"] for a in run.of_type("action")])   # each event on the tape once
 
+    def test_a_run_written_once_watch_returns_is_announced_however_slow_the_first_scan(self):
+        """watch() indexes the runs there already are silently: a run written after it returns is announced, with its
+        alerts, even when that first scan was slow (a loaded CI runner)."""
+        store = Store(os.path.join(self.tmp, "late"))
+        scan = store.scan
+
+        def slow_first(announce=True, quiet=()):
+            if not store._stat:
+                time.sleep(0.5)
+            scan(announce, quiet)
+        with mock.patch.object(store, "scan", slow_first):
+            store.watch()
+            self.addCleanup(store.stop)
+            SYSTEM.run(seed=0, out_dir=store.root, run_id="late-0")
+            self.assertTrue(wait_for(lambda: any(r["why"].get("finished") for r in store.out.records)))
+        highs = [a for r in store.out.records for a in r["why"]["alerts"] if a["severity"] == "high"]
+        self.assertEqual(len(highs), 1)
+
     def test_stream_announces_ingested_runs(self):
         msgs, _, t = self.stream()
         SYSTEM.run(seed=0, run_id="remote-live", sink=HttpSink(self.base, TOKEN))
@@ -2679,7 +2718,7 @@ class Pages(unittest.TestCase):
         for row in ('data-run="" tabindex="0"', 'data-run="${esc(r.id)}" tabindex="0"',
                     'data-i="${esc(row.i)}" tabindex="0"', 'data-al="${esc(al.i)}" tabindex="0"'):
             self.assertIn(row, page)
-        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],'
+        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],[data-wfl][tabindex],'
                       '[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex],[data-ingrp][tabindex]")) e.target.click();', page)
 
 

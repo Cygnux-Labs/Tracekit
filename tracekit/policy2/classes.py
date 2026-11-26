@@ -3,6 +3,7 @@
 The tool's class comes from the policy's `tools` map, never from the caller. A shell command's argv[] comes from
 shell.py in the engine. Fields that need signer state (payment.new_payee) are not extracted yet.
 """
+import fnmatch
 import ipaddress
 import posixpath
 import re
@@ -86,6 +87,16 @@ FS_OPS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit":
 DEEP_AGENTS_TOOLS = {"deepagents:ls": "LS", "deepagents:read_file": "Read", "deepagents:write_file": "Write",
                     "deepagents:edit_file": "Edit", "deepagents:glob": "Glob", "deepagents:grep": "Grep",
                     "deepagents:execute": "Bash"}
+
+
+def tool_class(tools, tool):
+    """The class `tools` (a policy's `tools:` map) gives `tool`: its name, else the most specific glob, else "unknown"."""
+    tool = DEEP_AGENTS_TOOLS.get(tool, tool)
+    if tool in tools:
+        return tools[tool]
+    # the most specific glob wins (most characters that are not * or ?), so mcp:postgres/* beats mcp:*/*
+    hits = sorted((-len(pat.replace("*", "").replace("?", "")), pat) for pat in tools if fnmatch.fnmatchcase(tool, pat))
+    return tools[hits[0][1]] if hits else "unknown"
 
 
 _CI_WORKFLOW = re.compile(r"(?:^|/)(?:\.github/(?:workflows/[^/].*|actions/(?:[^/]+/)+action\.ya?ml)|"

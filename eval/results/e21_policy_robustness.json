@@ -2434,27 +2434,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.000980392156862745,
+        "fp_rate": 0.0009765625,
         "totals": {
-          "benign": 1020,
+          "benign": 1024,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 1
             }
           }
@@ -5121,27 +5121,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.050980392156862744,
+        "fp_rate": 0.05078125,
         "totals": {
-          "benign": 1020,
+          "benign": 1024,
           "fp": 52
         },
         "by": {
           "category": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 52
             }
           },
           "severity": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 52
             }
           },
           "evasion": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 52
             }
           }
@@ -5693,7 +5693,7 @@
     "strict heldout false positives 12.96% over the 5% target",
     "strict blind false positives 13.29% over the 5% target",
     "strict sessions false positives 15.38% over the 5% target",
-    "strict e17 false positives 5.10% over the 5% target"
+    "strict e17 false positives 5.08% over the 5% target"
   ],
   "failed": [],
   "ok": true

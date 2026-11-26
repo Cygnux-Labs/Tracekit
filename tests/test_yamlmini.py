@@ -224,6 +224,13 @@ class WithoutPyYAML(unittest.TestCase):
             self.assertEqual(yamlmini.load_any(text), {"data_dir": "viewer", "storage": {"postgres": {"dsn_file": "reader.dsn"}}})
             self.assertEqual(yamlmini.load_any("data_dir: viewer\n"), {"data_dir": "viewer"})
 
+    def test_malformed_text_is_a_yaml_error_with_pyyaml_and_without(self):
+        for modules in ({}, {"yaml": None}):
+            with self.subTest(modules=modules), mock.patch.dict("sys.modules", modules):
+                with self.assertRaises(yamlmini.YAMLError) as cm:
+                    yamlmini.load_any("::: [\n")
+                self.assertIsInstance(cm.exception, ValueError)
+
 
 if __name__ == "__main__":
     unittest.main()
