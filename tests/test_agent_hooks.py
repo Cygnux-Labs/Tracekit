@@ -3882,8 +3882,9 @@ class Installer(unittest.TestCase):
     def test_opencode_artifact_tools_keep_their_names_and_are_read_as_uploads(self):
         # #988 item 3: OpenCode 2.x's artifact_create and artifact_update send their `files` (relative path -> the
         # file's text) to an artifact provider and return its URL. The bundle's `console` provider uploads them over
-        # HTTP, and `provider` is a free-form override, so each call is the upload it is: flagged on the laptop packs
-        # and held on server and strict (TK-F029), as an uploaded file is (TK-F024). The name stays its own, the text is
+        # HTTP, and `provider` is a free-form override, so each call is the upload it is: flagged on the coding pack
+        # and held on dev, server and strict (TK-F029), as an uploaded file is (TK-F024): dev carries the
+        # server pack's rules, so it holds one too. The name stays its own, the text is
         # dropped from the record and the paths kept, and no path is read from disk, so TK-D022 has nothing here to hold
         from tracekit.policy2 import compile as pc
         from tracekit.policy2.engine import Engine
@@ -3894,7 +3895,7 @@ class Installer(unittest.TestCase):
         self.assertEqual(ti["paths"], ["index.html", ".env"], "the paths it publishes are kept")
         self.assertEqual(agent_hooks.tool("opencode", "artifact_update",
                                           {"id": "art_1", "files": {"a.md": "y"}})[0], "artifact_update")
-        for pack, want in (("coding", "flag"), ("dev", "flag"), ("server", "ask"), ("strict", "ask")):
+        for pack, want in (("coding", "flag"), ("dev", "ask"), ("server", "ask"), ("strict", "ask")):
             with self.subTest(pack=pack):
                 e = Engine(pc.build("tracekit/policy2/packs/%s.yaml" % pack)[0], "regex")
                 d = e.decide(*agent_hooks.tool("opencode", "artifact_create", dict(args)))
