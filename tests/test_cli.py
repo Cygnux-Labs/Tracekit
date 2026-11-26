@@ -2,9 +2,15 @@
 python3 -m pytest tests/test_cli.py -q"""
 import contextlib
 import io
+import os
+import shutil
+import tempfile
+import types
 import unittest
+from unittest import mock
 
 from tracekit import cli
+from tracekit.policy2 import compile as policy_compile
 
 
 def run(argv):
@@ -88,6 +94,54 @@ class Help(unittest.TestCase):
         code, _, err = run(["status", "--nosuch"])   # a known command's option: argparse's error, as before
         self.assertEqual(code, 2)
         self.assertIn("unrecognized arguments: --nosuch", err)
+
+
+class ApprovalsOfAConfiguredSigner(unittest.TestCase):
+    def test_signer_comes_before_or_after_the_action(self):
+        """`approvals --signer X show ID` worked and `approvals show ID --signer X` was unrecognized."""
+        parse = cli._parser()[0].parse_args
+        for argv in (["approvals", "--signer", "/s.sock", "show", "apr-1"], ["approvals", "show", "apr-1", "--signer", "/s.sock"],
+                     ["approvals", "approve", "apr-1", "--signer", "/s.sock"], ["approvals", "list", "--signer", "/s.sock"]):
+            self.assertEqual(parse(argv).signer, "/s.sock", argv)
+        self.assertIsNone(parse(["approvals", "show", "apr-1"]).signer)
+
+    def test_show_reads_the_policy_of_the_signer_config_for_why(self):
+        """`approvals show` said "not on this machine" for a policy of the signer's own, kept on this machine."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "policy.yaml"), "w") as f:
+            f.write("version: 'x-1'\ntools:\n  Bash: shell\nask:\n  - id: ACME-A001\n    class: shell\n    pattern: '^terraform apply'\n"
+                    "    reason: changing infrastructure from an agent session\n    remedy: Run it yourself.\n")
+        with open(os.path.join(d, "signer.yaml"), "w") as f:
+            f.write('data_dir: "data"\npolicy: "policy.yaml"\n')
+        pol, errors = policy_compile.build(os.path.join(d, "policy.yaml"))
+        self.assertEqual(errors, [])
+        x = {"approval_id": "apr-1", "state": "requested", "tool": "Bash", "rule_ids": ["ACME-A001"], "args": None,
+             "policy_hash": policy_compile.policy_hash(pol), "expires_at": "2099-01-01T00:00:00.000000Z",
+             "run_id": "r1", "requester": "uid:1", "args_source": "tool_input", "tool_call_id": "c1", "attempt": 0, "binding_digest": "sha256:0"}
+        fake = types.SimpleNamespace(signer="/s.sock", approval_get=lambda req: x, close=lambda: None)
+        with mock.patch("tracekit.sdk.client.Client", return_value=fake):
+            _, plain, _ = run(["approvals", "show", "apr-1", "--signer", "/s.sock"])
+            _, own, _ = run(["approvals", "show", "apr-1", "--signer", "/s.sock", "--config", os.path.join(d, "signer.yaml")])
+            code, _, err = run(["approvals", "show", "apr-1", "--config", os.path.join(d, "none.yaml")])
+        self.assertIn("not on this machine", plain)
+        self.assertIn("approvals show apr-1 --config signer.yaml", plain)
+        self.assertIn("why         changing infrastructure from an agent session (ACME-A001)", own)
+        self.assertIn("instead     Run it yourself.", own)
+        self.assertEqual(code, 2)
+
+    def test_show_with_config_asks_the_signer_the_config_names(self):
+        """It read X's policy but asked the dev signer (or $TRACEKIT_SIGNER), which answered "unknown approval"."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "signer.yaml"), "w") as f:
+            f.write('data_dir: "data"\nsocket: "signer.sock"\n')
+        fake = types.SimpleNamespace(signer=None, approval_get=lambda req: {}, close=lambda: None)
+        with mock.patch("tracekit.sdk.client.Client", return_value=fake) as client:
+            run(["approvals", "show", "apr-1", "--config", os.path.join(d, "signer.yaml")])
+            run(["approvals", "show", "apr-1", "--config", os.path.join(d, "signer.yaml"), "--signer", "/other.sock"])
+        self.assertEqual([c.args for c in client.call_args_list],
+                         [(os.path.join(os.path.abspath(d), "signer.sock"),), ("/other.sock",)])
 
 
 if __name__ == "__main__":

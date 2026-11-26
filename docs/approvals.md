@@ -808,7 +808,7 @@ tailer's), lists only `--approver` in `approvals.approvers` and says which other
 file where an entry would give the agent's uid approval rights (`agents` or `break_glass` naming it, or an `authorize`
 grant that is never a default); it checks the merged file with the signer's own loader before it writes it. If the
 signer still refuses to start, or `approvals.agents` is gone, `tracekit doctor` fails `D-AGENT-APPROVERS` (the policy
-lets agent approvers answer and `approvals.agents` names none) and `D-SIGNER-UP`.
+lets agent approvers answer and `approvals.agents` names none) and `D-SIGNER-ANSWERS`.
 
 Then put these files in the reviewer's home, owned by it. The reviewer refuses `reviewer.yaml`, its folder,
 `state_file`, its folder and `key_file` when another user than its own (or root) owns one or group or others can write

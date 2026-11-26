@@ -7834,5 +7834,16 @@ class SearchParts(unittest.TestCase):
             self.assertEqual(by_parts.decide(*call), whole.decide(*call), command)
 
 
+class TestPushAndDeployRemedy(unittest.TestCase):
+    def test_a_held_publish_or_deploy_is_not_told_to_push_a_branch(self):
+        """TK-A056 holds a push to main, a publish and a deploy; its remedy said "push a named feature branch" for a
+        gh release, a Cloud Run deploy and a docker push too."""
+        pol, errs = pc.build(os.path.join(PACKS, "dev.yaml"))
+        self.assertEqual(errs, [])
+        remedy = next(r["remedy"] for r in pol["ask"] if r["id"] == "TK-A056")
+        self.assertIn("For a push, push a named feature branch", remedy)
+        self.assertIn("for a publish, a release or a deploy", remedy)
+
+
 if __name__ == "__main__":
     unittest.main()

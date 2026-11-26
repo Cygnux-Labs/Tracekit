@@ -30,6 +30,7 @@ from .core import read_json, read_text
 from . import client, harness_helper
 from .deploy import files
 from . import yamlmini
+from .signer.config_keys import DEFAULT_GRANTS
 from .wiki import wiki_url
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -601,6 +602,46 @@ def plugin_enabled(user=None, project=None):
                 else:
                     active.pop(key, None)
     return max(active.values(), key=lambda found: found[2])[:2] if active else None
+
+
+def _settings_env(name, project=None):
+    """`name` from the `env` of Claude Code's settings (user, project, local, managed: a later file wins), which Claude
+    Code puts in its hooks' environment; None when none sets it."""
+    root = os.path.join(os.path.abspath(project or os.getcwd()), ".claude")
+    found = None
+    for p in (*user_settings_all(), os.path.join(root, "settings.json"), os.path.join(root, "settings.local.json"),
+              MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]):
+        try:
+            env = agent_json(p).get("env")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(env, dict) and isinstance(env.get(name), str):
+            found = env[name]
+    return found
+
+
+def plugin_hook_python(project=None):
+    """The Python the plugin's hook script (plugin/scripts/tracekit-hook) runs in dev mode, found as it finds it: the
+    first of $TRACEKIT_PYTHON (the `env` of Claude Code's settings, else this process's), python3 and python on PATH
+    that imports tracekit (user site-packages added back); None when none does, and the hook then blocks every tool
+    call."""
+    chosen = _settings_env("TRACEKIT_PYTHON", project) or os.environ.get("TRACEKIT_PYTHON")
+    for name in (chosen, "python3", "python"):
+        exe = name and shutil.which(name)
+        try:
+            if exe and subprocess.run(
+                    [exe, "-I", "-c", "import site; site.addsitedir(site.getusersitepackages()); import tracekit"],
+                    capture_output=True, stdin=subprocess.DEVNULL, timeout=20).returncode == 0:
+                return exe
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+def plugin_python_fix():
+    """What lets the plugin's hook find the Python this process runs in (a venv, a uv tool or pipx install)."""
+    return (f"set TRACEKIT_PYTHON={shlex.quote(sys.executable)} where Claude Code starts (export it, or put it under "
+            '"env" in ~/.claude/settings.json), or install tracekit-ai for the python3 on PATH')
 
 
 def _plugin_config_dirs(settings_path, project=None):
@@ -1638,12 +1679,15 @@ def hand_keys(old):
     and a `witnesses:` list other than init's own `["public"]`: (their signer.yaml lines, written as JSON, and their
     names). ValueError names what can't be kept: a key the signer doesn't know, or a value that wouldn't load back as
     it is."""
-    from .signer.service import CONFIG_KEYS
+    from .signer.config_keys import CONFIG_KEYS
     cfg = yamlmini.loads(old) or {}
     if not isinstance(cfg, dict):
         raise ValueError("it is not a mapping of keys")
     kept = {k: v for k, v in cfg.items()
             if k not in V2_INIT_KEYS or k == "witnesses" and v not in (None, ["public"])}
+    for k in V2_SHARED_KEYS:
+        if cfg.get(k) not in (None, "") and not isinstance(cfg[k], dict):
+            raise ValueError(f"{k} is not a mapping")
     unknown = sorted(str(k) for k in kept if k not in CONFIG_KEYS)
     if unknown:
         raise ValueError(f"the signer doesn't know {', '.join(unknown)}")
@@ -1655,16 +1699,141 @@ def hand_keys(old):
     return lines, list(kept)
 
 
+V2_SHARED_KEYS = ("tenants", "approvals", "authorize")   # sections init writes some entries of; an operator adds others
+V2_APPROVALS_OWN = ("self_approval", "approvers")
+
+
+def _top_level_without(text, key):
+    out, skip = [], False
+    for line in text.splitlines(keepends=True):
+        if line[:1] not in (" ", "\t", "\n", "#"):
+            skip = line.startswith(f"{key}:")
+        if not skip:
+            out.append(line)
+    return "".join(out)
+
+
+def _covers(entries, identity):
+    """The entries (identities, or prefixes ending in `:*` or `/*`) that name `identity` exactly or as a prefix."""
+    return [e for e in entries if isinstance(e, str) and (e == identity or e.endswith((":*", "/*"))
+                                                           and identity.startswith(e[:-1]))]
+
+
+def merge_shared_keys(config, old, agent_uid, approver_uid):
+    """`config` (v2_signer_yaml's text) with what `old` has in tenants, approvals and authorize that init doesn't
+    write, and with init's own identities written exactly as init writes them: the agent's, the approver's, the
+    tailer's and the egress user's. Kept: tenants and approvals sub-keys (persons, break_glass, ...), authorize entries
+    for other identities, and a restricting authorize entry for the agent. Returns (text, names kept, notes: what init
+    dropped and what a replaced approver keeps, for the operator). ValueError when an entry would give the agent's
+    identity approval rights (break_glass or agents naming it, an authorize grant that is never a default), or when
+    what is kept wouldn't load back as it is."""
+    cur = yamlmini.loads(old) or {}
+    if not any(cur.get(k) for k in V2_SHARED_KEYS):
+        return config, [], []
+    new = yamlmini.loads(config)
+    me, now = f"uid:{agent_uid}", f"uid:{approver_uid}"
+    have = {k: cur.get(k) or {} for k in V2_SHARED_KEYS}
+    names, notes, want = [], [], {}
+    asked = have["approvals"].get("approvers") or []
+    replaced = [a for a in asked if isinstance(a, str) and a != now]
+    approvals = dict(new["approvals"])
+    for k, v in have["approvals"].items():
+        if k == "approvers":
+            if replaced:
+                notes.append(f"approvals.approvers: dropped {', '.join(replaced)}: init lists only {now}; add the "
+                             "others again after init, or run init with --approver")
+        elif k == "self_approval":
+            if v != approvals[k]:
+                notes.append(f"approvals.self_approval: {v!r} dropped: init writes {approvals[k]!r}")
+        else:
+            approvals[k] = v
+            names.append(f"approvals.{k}")
+    for k in ("break_glass", "agents"):
+        for e in _covers(approvals.get(k) or [], me):
+            raise ValueError(f"approvals.{k}: {e} names {me}, the agent's uid, which may not answer approvals: remove it")
+    if _covers(approvals.get("agents") or [], now):
+        raise ValueError(f"approvals.agents names {now}, the approver: an approver is a person; remove it")
+    tenants = dict(new["tenants"])
+    for k, v in have["tenants"].items():
+        if k in tenants:
+            if v != tenants[k]:
+                notes.append(f"tenants.{k}: {v!r} dropped: init writes {tenants[k]!r}")
+        elif k not in replaced:
+            tenants[k] = v
+            names.append(f"tenants.{k}")
+        else:
+            notes.append(f"tenants.{k}: dropped: {k} is no longer the approver")
+    authorize = dict(new["authorize"])
+    for k, v in have["authorize"].items():
+        grants = [m for m in v if isinstance(m, str)] if isinstance(v, list) else []
+        if k in authorize:
+            extra = [m for m in grants if m not in authorize[k]]
+            if extra:
+                notes.append(f"authorize.{k}: dropped {', '.join(extra)}: init grants {', '.join(authorize[k])}")
+            continue
+        if k == now:
+            notes.append(f"authorize.{k}: dropped: init writes none for the approver")
+            continue
+        if _covers([k], me):
+            extra = sorted(set(grants) - DEFAULT_GRANTS)
+            if extra:
+                raise ValueError(f"authorize.{k} covers {me}, the agent's uid, and grants {', '.join(extra)}, which "
+                                 "an agent's identity doesn't get by default: remove those methods")
+        authorize[k] = v
+        names.append(f"authorize.{k}")
+    for r in replaced:
+        keeps = [n for n, hit in (("break_glass", _covers(approvals.get("break_glass") or [], r)),
+                                  ("persons", r in (approvals.get("persons") or {})),
+                                  ("authorize", r in authorize)) if hit]
+        if keeps:
+            notes.append(f"{r} is no longer the approver; it keeps {', '.join(keeps)}")
+    for key, merged in (("tenants", tenants), ("approvals", approvals), ("authorize", authorize)):
+        if merged != new[key]:
+            want[key] = merged
+            config = _top_level_without(config, key) + f"{json.dumps(key)}: {json.dumps(merged)}\n"
+    back = yamlmini.loads(config)
+    for key, merged in want.items():
+        if back.get(key) != merged:
+            raise ValueError(f"{key} would not be written back as it is")
+    return config, names, notes
+
+
+CHECK_CONFIG = (
+    "import os, sys, tempfile\n"
+    "from tracekit.signer import service\n"
+    "d = tempfile.mkdtemp()\n"
+    "p = os.path.join(d, 'signer.yaml')\n"
+    "open(p, 'w').write(sys.stdin.read())\n"
+    "cfg = service.load_config(p)\n"
+    "service.check_identities(cfg.get('approvals'), cfg.get('authorize'), cfg.get('multi_tenant_apps') or (),\n"
+    "                         (cfg.get('harness_binding') or {}).get('required') or (), cfg.get('tenants'))\n")
+
+
+def _signer_refuses(text):
+    """Why the signer would refuse signer.yaml `text`, read by its own loader from the venv init built; None if it
+    loads."""
+    try:
+        r = subprocess.run([OPT_PYTHON, "-I", "-c", CHECK_CONFIG], input=text, capture_output=True, text=True,
+                           timeout=60)
+    except subprocess.TimeoutExpired:
+        return f"{OPT_PYTHON} did not finish reading it in 60 s"
+    except OSError as e:
+        return f"{OPT_PYTHON} could not run: {e.strerror or e}"
+    if r.returncode:
+        return (r.stderr.strip().splitlines() or ["it does not load"])[-1]
+    return None
+
+
 def _old_hand_keys():
-    """hand_keys of the signer.yaml an earlier init wrote, read as a regular file in a root-owned directory, without
-    following a symlink; ("", []) when there is none. SystemExit when it can't be kept."""
+    """hand_keys of the signer.yaml an earlier init wrote, and its text, read as a regular file in a root-owned
+    directory, without following a symlink; ("", [], "") when there is none. SystemExit when it can't be kept."""
     d = None
     try:
         d = files.open_dir(os.path.dirname(V2_CONFIG), {0})
         old = files.read(d, os.path.basename(V2_CONFIG))
-        return hand_keys(old.decode("utf-8")) if old else ("", [])
+        return (*hand_keys(old.decode("utf-8")), old.decode("utf-8")) if old else ("", [], "")
     except FileNotFoundError:
-        return "", []
+        return "", [], ""
     except (files.UnsafePath, NotADirectoryError, ValueError) as e:
         raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
     finally:
@@ -1805,7 +1974,12 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     # init takes the recorded managed file's hooks out after it writes the new ones: one it can't edit stops it now
     if recorded in MANAGED_SETTINGS.values() and os.path.exists(recorded):
         install_managed(None, True, recorded, uninstall=True, dry_run=True)
-    hand, kept = _old_hand_keys()   # before any change: a file it can't keep stops init here
+    hand, kept, old_text = _old_hand_keys()   # before any change: a file it can't keep stops init here
+    try:   # the refusals of the merge need no venv or user: dry-run it with a placeholder tailer, before any change
+        merge_shared_keys(v2_signer_yaml(owner, approver.pw_uid, "policy.yaml", "signer.sock", 0), old_text,
+                          owner.pw_uid, approver.pw_uid)
+    except ValueError as e:
+        raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
     requirement = _install_source("init --v2 --user <agent-user>" + (" --experimental-macos" if darwin else ""))
     sig = _system_user(V2_USER_DARWIN if darwin else V2_USER, V2_DATA, darwin)
     run_dir = V2_RUN["darwin" if darwin else "linux"]   # on Linux systemd creates it (RuntimeDirectory=)
@@ -1834,8 +2008,19 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     if "witnesses" in kept:   # a list of the operator's own replaces init's
         config = "".join(line for line in config.splitlines(keepends=True) if not line.startswith("witnesses:"))
     config += hand
+    try:
+        config, shared, notes = merge_shared_keys(config, old_text, owner.pw_uid, approver.pw_uid)
+    except ValueError as e:
+        raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
+    refused = _signer_refuses(config)
+    if refused:
+        raise SystemExit(f"{V2_CONFIG}: init wrote nothing, because the signer would refuse the result ({refused}); "
+                         "fix or move what you added to it, then run init again")
+    kept += shared
     if kept:
         print(f"{V2_CONFIG}: kept what you added: {', '.join(kept)}")
+    for note in notes:
+        print(f"{V2_CONFIG}: {note}")
     _write_root_file(V2_CONFIG, config.encode())
     proxy = {"HTTPS_PROXY": f"http://{EGRESS_LISTEN}", "HTTP_PROXY": f"http://{EGRESS_LISTEN}"} if egress else {}
     if egress:   # attribution by the agent's uid, read from /proc: no token in the proxy URL

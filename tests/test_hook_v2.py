@@ -1856,6 +1856,9 @@ class InitV2(unittest.TestCase):
                                            "LOCALAPPDATA": os.path.join(self.home, "data")})
         env.start()
         self.addCleanup(env.stop)
+        found = mock.patch.object(install, "plugin_hook_python", return_value="/usr/bin/python3")   # the plugin's hook
+        found.start()   # finds a Python with tracekit, as it does where the tests run
+        self.addCleanup(found.stop)
 
     def init(self, *argv):
         err = io.StringIO()

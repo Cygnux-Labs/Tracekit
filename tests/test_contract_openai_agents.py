@@ -10,12 +10,13 @@ import os
 import subprocess
 import sys
 import time
+import types
 import unittest
 from unittest import mock
 
 import adapter_contract as ac
 from factories import VersionCheckCases
-from tracekit import findings_v2
+from tracekit import autowire, findings_v2
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2.engine import Engine
@@ -236,6 +237,25 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
     def go(self, first, tool, value="go"):
         a = Agent(name="tools", model=StubModel(first), tools=[self.tk.tool(tool)])
         return a, Runner.run_sync(a, value, context={}, hooks=self.tk)
+
+    def test_instrument_gives_the_adapter_that_resumes_a_held_call(self):
+        """Under tracekit.instrument() the adapter was internal, so an ask had no way to resume: the run handle holds it."""
+        run = types.SimpleNamespace(client=self.client, registered=self.run_)
+        call = ResponseFunctionShellToolCall(id="sh_1", call_id="sh-1", type="shell_call", status="completed",
+                                             action={"commands": ["make pay"]})
+        with mock.patch.object(Agent, "__post_init__", Agent.__post_init__):
+            autowire._openai_agents(run)
+            self.assertIsInstance(run.openai_agents, TracekitAgents)
+            a = Agent(name="tools", model=StubModel(call), tools=[ShellTool(
+                name="pay", executor=lambda req: self.ran.append(req.data.action.commands) or "paid")])
+        res = Runner.run_sync(a, "go", context={}, hooks=run.openai_agents)
+        state = res.to_state()
+        self.assertEqual(len(asyncio.run(run.openai_agents.apply_decisions(state))), 1)
+        self.client.approval_decide({"approval_id": res.context_wrapper.context["tracekit"]["approvals"]["sh-1"],
+                                     "decision": "approve"})
+        self.assertEqual(asyncio.run(run.openai_agents.apply_decisions(state)), [])
+        res = Runner.run_sync(a, state, hooks=run.openai_agents)
+        self.assertEqual((self.ran, res.final_output), ([["make pay"]], "done"))
 
     def test_shell_pauses_for_approval_and_runs_once_approved(self):
         call = ResponseFunctionShellToolCall(id="sh_1", call_id="sh-1", type="shell_call", status="completed",

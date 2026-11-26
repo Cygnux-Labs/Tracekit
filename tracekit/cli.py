@@ -164,6 +164,17 @@ SIGNER_HELP = ("the signer: its Unix socket, tcp://host:port, or https://host:po
                "the system signer in system mode, else the same-user dev signer)")
 
 
+def _plugin_python_missing(project):
+    """1 (after saying why) when the enabled Claude Code plugin's hook would find no Python with tracekit and so block
+    every tool call; else 0."""
+    from . import install
+    if install.plugin_hook_python(project):
+        return 0
+    print("tracekit: the plugin's hook finds no Python with tracekit (TRACEKIT_PYTHON, python3, python), so it blocks "
+          "every tool call: " + install.plugin_python_fix(), file=sys.stderr)
+    return 1
+
+
 def main(argv=None):
     for stream in (sys.stdout, sys.stderr):   # a legacy console encoding (Windows cp1252) can't print every character
         if hasattr(stream, "reconfigure") and getattr(stream, "errors", "strict") == "strict":
@@ -507,10 +518,14 @@ def _parser():
     q.add_argument("--json", action="store_true", help="print one JSON array: every approval, in the signer's order")
     q.add_argument("--all", action="store_true", help="the expired ones too, and those of runs that ended in the last "
                    "day")
+    after = [q]
     q = acts.add_parser("show", help="one approval: why its call was held, what to do instead, the commands that "
                         "answer it, and the signer's copy of the arguments in full")
     q.add_argument("approval_id", help="the approval to show, from `tracekit approvals list`")
     q.add_argument("--json", action="store_true", help="print one JSON object without a pager")
+    q.add_argument("--config", help="the signer.yaml of the signer (`tracekit signer serve --config`): its policy "
+                   "gives the reasons why the call was held")
+    after.append(q)
     for name in ("approve", "reject"):
         q = acts.add_parser(name, help=f"{name} a pending approval" + (
             "; with --grant, also grant the run calls like it within limits (docs/intent-grants.md)" * (name == "approve")))
@@ -520,10 +535,14 @@ def _parser():
             q.add_argument("--grant", action="store_true", help="also issue a payment grant from this held call: it "
                            "counts as the grant's first payment, and later payments within the limits run without a stop")
             _grant_flags(q, False)
+        after.append(q)
     q = acts.add_parser("revoke", help="take back an agent's approval (the AI reviewer's) that its call hasn't used "
                         "yet: the call never runs; a person's identity only, never one an agent session runs as")
     q.add_argument("approval_id", help="the approval to take back, from `tracekit approvals list`")
     q.add_argument("--reason", help="why, in the signed record (and in the lesson the AI reviewer drafts from it)")
+    after.append(q)
+    for q in after:   # `approvals show ID --signer X` as well as `approvals --signer X show ID`
+        q.add_argument("--signer", default=argparse.SUPPRESS, help=SIGNER_HELP)
     q = acts.add_parser("slack", help=f"the Slack approvals bridge ({wiki_url('docs/approvals.md', 'slack')})")
     q.add_argument("slack_action", choices=["serve"], help="serve: run the Slack bridge")
     q.add_argument("--config", required=True, help="slack.yaml")
@@ -574,6 +593,8 @@ def _parser():
 
     p = sub.add_parser("last", help="the dev signer's most recent finished run: export it, pin the dev signer's key "
                                     "and verify it")
+    p.add_argument("--config", help="read the signer that signer.yaml configures (`tracekit signer serve --config`) "
+                   "instead of the dev signer")
     p.add_argument("-o", "--out", help="the bundle (default: <run id>.tkb here); its trust config goes next to it")
     p.add_argument("--open", action="store_true", help="the most recent run even if it is still open (a coding "
                    "agent's session run stays open until the session ends), verified up to its last checkpointed record")
@@ -846,7 +867,13 @@ def _run(a):
                         except install.SettingsError as e:
                             print(f"tracekit: {e}", file=sys.stderr)
                             return 1
-                    return 0
+                    if not a.project:   # as the branch below: doctor then knows init ran
+                        try:
+                            install.record_hooks_settings(hooks)
+                        except install.SettingsError as e:
+                            print(f"tracekit: {e}", file=sys.stderr)
+                            return 1
+                    return _plugin_python_missing(a.project)
                 try:
                     on = hooks and install.install_hooks(hooks, module=install.V2_HOOK,
                                                          thinking=not a.no_thinking_summaries)
@@ -867,7 +894,7 @@ def _run(a):
                 if hooks:
                     print(guidance())
                     print(next_step())
-                return 0
+                return 0 if hooks or not install.plugin_enabled(project=a.project) else _plugin_python_missing(a.project)
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, hooks, proxy=a.proxy, proxy_port=a.proxy_port,
                                        fail_mode="closed" if a.fail_closed else None, signer=signer)
@@ -1436,10 +1463,16 @@ def _last(a):
     from .verify import v2
     from .view import write_trust
     from .sdk.autospawn import data_dir
-    deadline, waiting = time.monotonic() + LAST_WAIT_S, False
+    deadline, waiting, held = time.monotonic() + LAST_WAIT_S, False, {}
+    who = "the signer's" if a.config else "the dev signer's"
+    if not a.config and os.environ.get("TRACEKIT_SIGNER"):
+        print(f"tracekit last: TRACEKIT_SIGNER names {os.environ['TRACEKIT_SIGNER']}, but last reads the dev signer's "
+              "store: for a signer you started with `tracekit signer serve --config signer.yaml`, run "
+              "tracekit last --config signer.yaml", file=sys.stderr)
     store = os.path.join(data_dir(), "store")   # named when there is none yet
     try:
-        cfg = signer_config(None)
+        cfg = signer_config(a.config)
+        store = os.path.join(cfg["data_dir"], "store")
         while True:
             r = open_reader(cfg)
             try:   # newest first, by their last record; each with its state (run.final, run.closing: closed, which
@@ -1447,9 +1480,20 @@ def _last(a):
                 runs = []
                 for _, key in sorted(((run["seqs"][-1], key) for key, run in r.runs.items() if key[1] != SIGNER_RUN[1]),
                                      reverse=True):
-                    events = (x["event"] for x in r.iter_run(*key))
-                    first = next(events)
-                    kinds = {first["type"]} | {e["type"] for e in events}
+                    kinds, asked = set(), {}   # asked: an approval not ended yet
+                    for x in r.iter_run(*key):
+                        e = x["event"]
+                        if not kinds:
+                            first = e
+                        kinds.add(e["type"])
+                        if e["type"] == "approval.request":
+                            asked[e["data"]["approval_id"]] = None
+                        elif e["type"] == "approval" and e["data"].get("approval_id") in asked:
+                            asked[e["data"]["approval_id"]] = e["data"].get("decision")
+                        elif e["type"] in ("approval.consumed", "approval.expired", "approval.abandoned",
+                                           "approval.revoked"):
+                            asked.pop(e["data"].get("approval_id"), None)
+                    held[key[1]] = asked
                     runs.append((key, next((k for k in ("run.final", "run.closing") if k in kinds), "open"),
                                  ((first.get("data") or {}).get("agent") or {}).get("name") or "?"))
                     if runs[-1][1] == "run.final":
@@ -1463,15 +1507,27 @@ def _last(a):
                       "while the signer finalises it", file=sys.stderr)
                 waiting = True
             time.sleep(0.25)   # the signer finalises a closed run once its grace window has passed
-    except FileNotFoundError:
+    except FileNotFoundError as e:
+        if a.config and not os.path.exists(a.config):
+            print(f"tracekit last: cannot read {a.config}: {e.strerror}", file=sys.stderr)
+            return 1
         runs = []
     except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
-        print(f"tracekit last: cannot read the dev signer's store: {e}", file=sys.stderr)
+        print(f"tracekit last: cannot read {who} store: {e}", file=sys.stderr)
         return 1
     final = [x for x in runs if x[1] == "run.final"]
     for (_, run_id), kind, agent in [] if a.open else runs[:len(runs) - len(final)]:
         if kind == "run.closing":
-            why = "closed, and not finalised yet: is the dev signer still running (`tracekit up`)?"
+            why = ("closed, and not finalised yet: is the signer still running?" if a.config else
+                   "closed, and not finalised yet: is the dev signer still running (`tracekit up`)?")
+        elif held.get(run_id):
+            aid, decision = next(iter(held[run_id].items()))
+            sock = f" --signer {_quote(cfg['socket'])}" if a.config and cfg.get("socket") else ""
+            why = (f"still open: approval {aid} of it " + (
+                f"waits for a person (`tracekit approvals{sock} approve {aid}`), or expires" if decision is None else
+                "was approved and not used yet: the agent resumes it, or it expires" if decision == "approve" else
+                f"was answered {decision}: the run finishes when the agent's process exits or after the signer's idle "
+                "timeout") + "; tracekit last --open verifies the run as it stands")
         elif agent == "claude-code":
             why = ("still open: it finishes when the session ends (`/exit` in Claude Code) "
                    "or after the signer's idle timeout; tracekit last --open verifies it as it stands")
@@ -1493,7 +1549,7 @@ def _last(a):
     pick = runs if a.open else final
     if not pick:
         if not runs:
-            print(f"tracekit last: no runs in the dev signer's store ({store}) yet. `tracekit.instrument()` records "
+            print(f"tracekit last: no runs in {who} store ({store}) yet. `tracekit.instrument()` records "
                   "only the frameworks it lists, and says so when it finds none of them "
                   f"({wiki_url('docs/quickstart-v2.md', '2-one-line-in-your-agent')}); for any other agent, record "
                   f"its calls as {wiki_url('docs/quickstarts/custom.md')} shows. Claude Code: a session started after "
@@ -1501,7 +1557,8 @@ def _last(a):
         return 1
     (tenant, run_id), _, agent = pick[0]
     out = os.path.abspath(a.out or f"{run_id}.tkb")
-    ns = argparse.Namespace(run=run_id, run_set=False, dev=True, config=None, tenant=tenant, out=out, otel=False,
+    ns = argparse.Namespace(run=run_id, run_set=False, dev=not a.config, config=a.config, tenant=tenant, out=out,
+                            otel=False,
                             otel_endpoint=None, with_findings=False, json=False, data_dir=None)
     if _export_v2(ns, show=lambda s: None):
         return 1
@@ -1509,7 +1566,7 @@ def _last(a):
         trust = write_trust(os.path.splitext(out)[0] + ".trust.json", read_vkeys(cfg["data_dir"]),
                             cfg.get("witnesses") or ())
     except (OSError, ValueError) as e:
-        print(f"tracekit last: cannot pin the dev signer's key: {e}", file=sys.stderr)
+        print(f"tracekit last: cannot pin {who} key: {e}", file=sys.stderr)
         return 1
     rep, code = v2.verify(out, trust)
     print(f"run {run_id} ({agent})")
@@ -1519,7 +1576,9 @@ def _last(a):
         from .verify import summary
         summary(rep, code, rep.integrity, rep.assurance)
     print(f"bundle: {out}\ncheck it again: tracekit verify {_quote(out)} --trust {_quote(trust)}\n"
-          "next: tracekit view --dev   (every run, replayed and reviewed)")
+          + (f"trusted: the log key in {cfg['data_dir']} (from {a.config})\n"
+             f"next: tracekit view --config {_quote(a.config)}   (every run, replayed and reviewed)" if a.config else
+             "next: tracekit view --dev   (every run, replayed and reviewed)"))
     return code
 
 
@@ -1675,20 +1734,23 @@ def _ai_lines(x, cmd="tracekit approvals"):
     return lines
 
 
-def _stop_lines(c, x):
+def _stop_lines(c, x, cfg=None):
     """What `approvals show` adds to approval `x`: why its call was held and what to do instead (the reasons and
     remedies of its rules, in the policy whose hash it records: a shipped pack's, or one the dev signer kept), when
-    it expires, the commands that answer it and where the viewer opens it."""
+    it expires, the commands that answer it and where the viewer opens it. cfg: the loaded signer.yaml of a signer on
+    this machine, whose policy file and kept policies give the reasons."""
     from . import view
     from .integrations.claude_code import person_cmd
     from .policy2.compile import ENGINE_REASONS
     from .policy2.engine import Engine
     from .signer.service import dev_data_dir, evaluate
     try:
-        kept = None if c.signer else os.path.join(dev_data_dir(create=False), "policies")
+        kept = os.path.join(cfg["data_dir"], "policies") if cfg else None if c.signer else os.path.join(
+            dev_data_dir(create=False), "policies")
     except FileNotFoundError:
         kept = None
-    reasons = view.policy_reasons(_system_policy(c.signer), kept=kept)
+    reasons = view.policy_reasons(paths=[cfg["policy"]] if cfg and cfg.get("policy") else _system_policy(c.signer),
+                                  kept=kept)
     known = reasons.get(x["policy_hash"], {})
     pol = reasons.policies.get(x["policy_hash"], {})
     flags = {r["id"] for r in pol.get("flag", [])}   # a flagged call runs
@@ -1712,7 +1774,8 @@ def _stop_lines(c, x):
     program, named = person_cmd(c.signer)
     cmd = f"{program} approvals{named}"
     why = why or (f"not on this machine: `{program} policy compile <file>` prints the reasons of the signer's policy, "
-                  + x["policy_hash"])
+                  + x["policy_hash"] + ("" if cfg else f"; for a signer on this machine, `{program} approvals show "
+                                        f"{x['approval_id']} --config signer.yaml` reads its policy"))
     # Claude Code runs a `!` line in the session as its OS user: the person's, with the dev signer (as the hook says)
     bang = not c.signer and _claude_code_run(x["run_id"])
     return [f"why         {why}",
@@ -1863,7 +1926,15 @@ def _approvals(a):
         from . import slack_approvals
         experimental("the Slack approvals bridge")
         return slack_approvals.main(a.config)
-    c = Client(a.signer)
+    cfg = None
+    if a.action == "show" and a.config:
+        from .signer.service import load_config
+        try:
+            cfg = load_config(a.config)
+        except (OSError, ValueError) as e:
+            print(f"tracekit approvals: {e}", file=sys.stderr)
+            return 2
+    c = Client(a.signer or (cfg or {}).get("socket"))
     program, named = person_cmd(c.signer)
     cmd = f"{program} approvals{named}"
     try:
@@ -1918,7 +1989,7 @@ def _approvals(a):
                 print(json.dumps({**x, "args": args}))
                 return 0
             lines = [f"approval    {x['approval_id']} ({x['state']})", f"tool        {json.dumps(x['tool'])}",
-                     *_stop_lines(c, x), *_ai_lines(x, cmd), f"rules       {', '.join(x['rule_ids'])}",
+                     *_stop_lines(c, x, cfg), *_ai_lines(x, cmd), f"rules       {', '.join(x['rule_ids'])}",
                      f"policy      {x['policy_hash']}",
                      f"requester   {json.dumps(x['requester'])}", f"run         {x['run_id']}",
                      f"call        {x['tool_call_id']} attempt {x['attempt']}",

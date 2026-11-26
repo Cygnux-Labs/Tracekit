@@ -223,8 +223,9 @@ def collect(config=None, issuer_key=None):
                 text = text.replace(REINIT + " --managed-only", REINIT)
             return text.replace(REINIT, REINIT + extra) + tail if REINIT in text else text
         # a detail's re-init (D-HOOKS-PRESENT after init --no-hooks) is the one that adds the hooks
-        return out + [dict(r, fix=again(r["fix"], agent_flag + no_hooks + flags),
-                           detail=again(r["detail"], agent_flag + flags)) for r in rows]
+        return out + _signer_answers((sc or {}).get("signer")) + [
+            dict(r, fix=again(r["fix"], agent_flag + no_hooks + flags), detail=again(r["detail"], agent_flag + flags))
+            for r in rows]
     if sc:
         return out
     from . import agent_hooks
@@ -232,16 +233,19 @@ def collect(config=None, issuer_key=None):
     from .signer.service import dev_content, dev_witnesses
     dev_data = autospawn.data_dir()
     project = os.path.join(os.getcwd(), ".claude")
-    mine, harnesses = client.client_config(), _dev_harnesses()
+    mine, harnesses, plugin_on = client.client_config(), _dev_harnesses(), install.plugin_enabled()
     rows = v2_checks({"data_dir": dev_data, "content": dev_content().get("content"),
                       "witnesses": dev_witnesses(dev_data)}, "dev",
-                     settings=_dev_settings(), plugin=install.plugin_enabled(), harnesses=harnesses,
-                     no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True,
+                     settings=_dev_settings(), plugin=plugin_on, harnesses=harnesses,
+                     no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True, init_run=bool(mine),
                      sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
                                        os.path.join(project, "settings.local.json"), _managed()],
                      gemini_settings=_gemini(agent_hooks.config_path("gemini"),
                                              os.path.join(os.getcwd(), ".gemini", "settings.json")),
                      gemini_project=os.path.join(os.getcwd(), ".gemini", "settings.json"))
+    if plugin_on and not _plugin_idle(plugin_on, False, _dev_settings()) and not install.plugin_hook_python():
+        rows.append(result("D-HOOKS-PYTHON", FAIL, "the plugin's hook finds no Python with tracekit (TRACEKIT_PYTHON, "
+                           "python3, python), so it blocks every tool call", install.plugin_python_fix()))
     for trusting in agent_hooks.TRUSTING:   # their v1 hooks (init --dev --agent codex) run only once trusted, as v2 do
         if trusting in harnesses:
             continue
@@ -262,6 +266,54 @@ def collect(config=None, issuer_key=None):
             ok, detail = _gptme_load_check(path)
             rows.append(result("D-GPTME-LOAD", OK if ok else WARN, detail, "tracekit init --dev --agent gptme"))
     return rows
+
+
+def _signer_answers(signer, wait=10.0):
+    """D-SIGNER-ANSWERS: the system signer answers a status call on its socket (none when client.json names none).
+    The call runs on a thread doctor stops waiting for after `wait` seconds, so a signer that trickles bytes can't hang
+    it; a refused call reads as refused; a signer that answers another protocol is said so (an older one still runs
+    after an upgrade: restart it; a newer one: upgrade this venv)."""
+    if not signer:
+        return []
+    import threading
+
+    from .sdk import client as sdk_client
+    from .signer.rpc_schema import RPCError
+    service_log = (f"sudo launchctl print system/{install.V2_LABEL}; sudo tail {install.V2_DATA}/signer.log"
+                   if sys.platform == "darwin" else
+                   f"systemctl status {install.V2_UNIT}; journalctl -u {install.V2_UNIT} -n 50")
+    outcome = []
+
+    def ask():
+        c = sdk_client.Client(signer, timeout=5)
+        try:
+            outcome.append(c.status({})["signer"]["version"])
+        except (sdk_client.SignerUnavailable, sdk_client.Incompatible, RPCError, OSError) as e:
+            outcome.append(e)
+        finally:
+            c.close()
+
+    t = threading.Thread(target=ask, daemon=True)
+    t.start()
+    t.join(wait)
+    e = outcome[0] if outcome else None
+    if outcome and not isinstance(e, Exception):
+        return [result("D-SIGNER-ANSWERS", OK, f"the signer at {signer} answers (Tracekit {e})")]
+    start = (f"read what the signer says: {service_log}; fix it and start it again (re-running init keeps what "
+             "you added to signer.yaml where it can, and rewrites the service file)")
+    fix = start
+    if isinstance(e, sdk_client.Incompatible):
+        detail = (f"an older signer still runs at {signer}, from before the upgrade ({e})" if e.older else
+                  f"the signer at {signer} runs a newer Tracekit than this doctor ({e})")
+        fix = (f"restart it (Linux: sudo systemctl restart {install.V2_UNIT}; macOS: sudo launchctl kickstart -k "
+               f"system/{install.V2_LABEL})" if e.older else f"upgrade {install.OPT} to the signer's release: {REINIT}")
+    elif isinstance(e, RPCError):
+        detail = f"the signer at {signer} answers, but refused this identity's status call ({str(e)[:200]})"
+        fix = "run doctor as root, or as a user signer.yaml's tenants or authorize let call status"
+    else:
+        detail = (f"the signer does not answer on {signer}: {str(e)[:200]}" if e else
+                  f"the signer on {signer} did not answer within {wait:g} s")
+    return [result("D-SIGNER-ANSWERS", FAIL, detail, fix)]
 
 
 def _managed():
@@ -1604,37 +1656,9 @@ def _tailer_checks(add, client_json, agent):
         f"{user} can search {agent.pw_dir} and {dot} and read {os.path.join(dot, 'projects')}", REINIT, bad=WARN)
 
 
-def _answers(signer):
-    """(whether the signer at `signer` answers this doctor's status call within a few seconds, what doctor says of
-    it, what to do): it doesn't answer (start it); it answers another protocol (an older signer still runs after an
-    upgrade: restart it; a newer one: upgrade this venv); or it refuses this identity's call."""
-    from .sdk.client import Client, Incompatible, SignerUnavailable
-    from .signer.rpc_schema import RPCError
-    start = (f"start it (Linux: sudo systemctl start {install.V2_UNIT}; macOS: sudo launchctl kickstart -k "
-             f"system/{install.V2_LABEL}); its log says why it stopped (journalctl -u {install.V2_UNIT}; macOS: "
-             f"{install.V2_DATA}/signer.log), often a row above")
-    restart = start.replace("start it (Linux: sudo systemctl start", "restart it (Linux: sudo systemctl restart", 1)
-    try:
-        c = Client(signer, timeout=5)
-        try:
-            version = c.status({})["signer"]["version"]
-        finally:
-            c.close()
-    except Incompatible as e:
-        return False, (f"an older signer still runs at {signer}, from before the upgrade ({e})" if e.older else
-                       f"the signer at {signer} runs a newer Tracekit than this doctor ({e})"), (
-            restart if e.older else f"upgrade {install.OPT} to the signer's release: {REINIT}")
-    except RPCError as e:
-        return False, f"the signer at {signer} answers, but refused this identity's status call ({e})", (
-            "run doctor as root, or as a user signer.yaml's tenants or authorize let call status")
-    except (SignerUnavailable, OSError) as e:
-        return False, f"the signer at {signer} doesn't answer: {e}", start
-    return True, f"the signer at {signer} answers (Tracekit {version})", ""
-
-
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
               client_json=None, now=None, issuer_key=None, plugin=None, sandbox_settings=(), gemini_settings=(),
-              harnesses=None, no_hooks=False, gemini_project=None):
+              harnesses=None, no_hooks=False, gemini_project=None, init_run=True):
     """Checks of a v2 signer. config: a signer.yaml path, or the dev signer's config dict. profile "dev" turns what
     a dev setup can't have into warnings. agent: the agent's pwd entry; settings: its Claude Code settings; signer: the
     socket client.json names; opt: the root-owned venv; unit: the service file; client_json: the system client config;
@@ -1645,8 +1669,9 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     (left out of D-GEMINI-SANDBOX when Gemini doesn't trust its folder: _folder_trust); harnesses: {coding agent: its hook
     config} of the other agents with v2 hooks (agent_hooks), whose hooks and reasoning settings are checked; no_hooks:
     init was told --no-hooks (install.record_hooks_settings; system mode: client.json's hooks.no_hooks), so no Claude
-    Code hook is the person's choice."""
-    from . import agent_hooks
+    Code hook is the person's choice; init_run: False when `tracekit init` never ran here, so no coding-agent hook was
+    asked for (an SDK-only setup: D-HOOKS-PRESENT is info)."""
+    from . import agent_hooks, public_witness
     from .format import checkpoint
     from .integrations.claude_code import APPROVAL_WAIT_S
     from .signer import service
@@ -1903,6 +1928,9 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-HOOKS-PRESENT", False, "no Claude Code here (no claude on PATH, no "
                 f"{os.path.dirname(install.user_settings())}), so no hooks: runs that SDK clients send "
                 "(tracekit.instrument()) are still recorded", f"once Claude Code is installed: {hook_fix}", bad=INFO)
+        elif hooks is not None and not prod and not init_run and not any(hooks.values()):
+            add("D-HOOKS-PRESENT", False, "no coding-agent hooks: tracekit init hasn't been run here, so only SDK agents "
+                "(tracekit.instrument()) are recorded", f"to record Claude Code too: {hook_fix}", bad=INFO)
         elif hooks is not None:
             missing = [ev for ev, hs in hooks.items() if not hs]
             own = managed and agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
@@ -2085,8 +2113,6 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-POLICY-ENGINE", False, f"no regex engine: {e}", "pip install tracekit-ai (a --no-deps install leaves the engine out)")
     except (OSError, ValueError) as e:
         add("D-POLICY-ENGINE", False, f"{policy} does not load: {e}", f"fix the policy: tracekit policy lint {policy}")
-    if prod and signer:   # system mode: every hook and approval goes to it
-        add("D-SIGNER-UP", *_answers(signer))
 
     mode = cfg.get("durability", ACK_ON_WRITE)
     add("D-DURABILITY", not prod or mode == ACK_ON_FSYNC, f"durability {mode}" + (
@@ -2116,14 +2142,19 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         _tailer_checks(add, client_json, agent)
 
     ws = cfg.get("witnesses") or []
+    # laptop system mode (init --v2) uses the public witness too: until one is deployed it is a reason, not a fault
+    undeployed = not (ws or public_witness.configured()) and bool(client_json)
     add("D-WITNESS-CONFIGURED", bool(ws), f"{len(ws)} witnesses" if ws else "no witnesses: checkpoints are not cosigned, "
-        f"so assurance stays {'local' if cfg.get('anchors') else 'dev'}", f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
+        f"so assurance stays {'local' if cfg.get('anchors') else 'dev'}",
+        "the public witness isn't deployed yet: nothing to do until a release names it; to anchor now, list your own "
+        f"witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})" if undeployed else
+        f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
         if prod else ("--no-witness turned the dev signer's witness off: tracekit init --dev --v2 --public-witness turns "
                       "it back on" if os.path.exists(os.path.join(data, service.NO_WITNESS)) else
                       "the dev signer uses the public witness, which isn't deployed yet: nothing to do until a release "
                       "names it; to anchor now, run a signer from a signer.yaml that lists your own witness "
                       f"({wiki_url('docs/witnesses.md')})"),
-        bad=sev)
+        bad=WARN if undeployed else sev)
     if ws:
         operator = all(w["class"] == "operator" for w in ws)
         add("D-WITNESS-OWNERSHIP", not operator, "only operator witnesses: whoever runs the signer can also rewrite "

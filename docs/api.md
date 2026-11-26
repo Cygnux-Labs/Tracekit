@@ -1149,7 +1149,10 @@ is `approve` or `reject`. The signer applies its rules to that person, not to th
 is refused for an agent approver.
 
 **Who may call:** only a caller whose `authorize` entry lists `approval_decide_on_behalf`. It is never granted by
-default.
+default. One identity can't both run agents and decide approvals on someone's behalf: a signer.yaml that grants one
+identity `register_run` and `approval_decide_on_behalf` (in one entry, or in entries that add up for an OIDC identity)
+doesn't start, or answers the call with `forbidden`. Remove `register_run` from that entry, or give
+`approval_decide_on_behalf` to an identity of its own (the bridge's).
 
 <!-- api-doc:begin approval_decide_on_behalf -->
 <details>

@@ -68,7 +68,7 @@ class Layout:
         self.hooks()
         self.kw = dict(agent=AGENT, settings=self.settings, signer=self.sock, opt=p("opt"),
                        unit=p("unit/tracekit-signer.service"), client_json=p("etc/client.json"))
-        self.up = True   # whether the signer at self.sock answers (doctor._answers): no signer runs in the temp root
+        self.up = True   # whether the signer at self.sock answers (doctor._signer_answers): no signer runs in the temp root
 
     def write(self, rel, data, mode=0o644):
         path = self.path(rel)
@@ -107,7 +107,7 @@ class Layout:
             json.dump(s, f)
 
     def run(self):
-        return doctor.v2_checks(self.path("etc/signer.yaml"), **self.kw)
+        return doctor._signer_answers(self.sock) + doctor.v2_checks(self.path("etc/signer.yaml"), **self.kw)
 
 
 def trusted_under(top, me):
@@ -252,7 +252,7 @@ CASES = [
     ("the AI reviewer runs as the signer's user", "D-REVIEWER-USER",
      lambda L: L.signer_yaml(approvals={"agents": [f"uid:{os.stat(L.path('data')).st_uid}"]})),
     ("a key every user may read, with an AI reviewer", "D-REVIEWER-USER", _chmod("data/keys/log.key", 0o604)),
-    ("the signer doesn't answer", "D-SIGNER-UP", lambda L: setattr(L, "up", False)),
+    ("the signer doesn't answer", "D-SIGNER-ANSWERS", lambda L: setattr(L, "up", False)),
     ("an AI approver in the policy, none in approvals.agents", "D-AGENT-APPROVERS", _approver_without_agents),
 ]
 ROOT_ONLY = {"data dir owned by the agent"}
@@ -278,8 +278,9 @@ def run_case(mutate):
         L.patches += [mock.patch.object(doctor, "trusted_file", trusted_under(top, me)),
                       mock.patch.object(install, "_root_only", root_only_under(me)),
                       # a signer that answers stands in for one; else doctor asks the socket, where none listens
-                      mock.patch.object(doctor, "_answers", lambda s, asks=doctor._answers: (
-                          True, f"the signer at {s} answers (Tracekit e16)", "") if L.up else asks(s))]
+                      mock.patch.object(doctor, "_signer_answers", lambda s, asks=doctor._signer_answers: [
+                          doctor.result("D-SIGNER-ANSWERS", "ok", f"the signer at {s} answers (Tracekit e16)")]
+                          if L.up else asks(s))]
         if not IS_ROOT:
             L.patches.append(mock.patch.object(doctor, "agent_access", other_access(top)))
         if mutate:

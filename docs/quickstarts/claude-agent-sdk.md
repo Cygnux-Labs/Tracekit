@@ -98,6 +98,8 @@ quickstart](../quickstart-v2.md#export-and-verify-by-hand) explains every line.
   come from another account: [system mode](../quickstart-v2.md#system-mode-linux-macos-experimental).
 - **Witnesses** cosign the signer's checkpoints from another host, so a rolled-back or forked log shows:
   [witnesses](../witnesses.md). Pin them in the trust config and the report reads `Assurance: witnessed`.
-- **Your own policy**: the dev signer uses the coding pack plus two demo rules (`tracekit/policy2/packs/dev.yaml`); a
-  configured signer takes `policy:` in `signer.yaml`.
+- **Your own policy**: the dev signer runs `tracekit/policy2/packs/dev.yaml` (the coding, browser, data, network,
+  cloud, comms and core packs, two demo rules, unmapped tools flagged) and can't take another. To run yours, start
+  `tracekit signer serve --config signer.yaml` with `policy:` set and point the agent at it with `TRACEKIT_SIGNER`:
+  [run your own policy on your machine](../policy-guide.md#run-your-own-policy-on-your-machine).
 - **Reference**: [the Claude Agent SDK integration](../integrations/claude-agent-sdk.md), with every option and what it doesn't cover.
