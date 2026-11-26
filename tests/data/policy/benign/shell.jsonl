@@ -404,3 +404,7 @@
 {"tool": "Bash", "args": {"command": "glab api -X DELETE projects/42/merge_requests/3/notes/1"}, "expect": "allow", "note": "deleting a note removes no protection (TK-A087 twin)"}
 {"tool": "Bash", "args": {"command": "glab api -X DELETE projects/42/pipelines/9"}, "expect": "allow", "note": "deleting a pipeline removes no protection (TK-A087 twin)"}
 {"tool": "Bash", "args": {"command": "glab api projects/42/variables"}, "expect": "allow", "note": "listing variables reads, it does not delete (TK-A087 twin)"}
+{"tool": "Bash", "args": {"command": "git log --grep curl | python3 summarize.py"}, "expect": "allow", "note": "a pipe into python that carries no download (TK-A046 twin)"}
+{"tool": "Bash", "args": {"command": "echo curl x | python3 y.py"}, "expect": "allow", "note": "the words of a download pipe, echoing nothing downloaded (TK-A046 twin)"}
+{"tool": "Bash", "args": {"command": "cat data.json | python3 -c 'import sys, json; print(json.load(sys.stdin))'"}, "expect": "allow", "note": "the interpreter-stdin shape over a local file, no download (TK-A046 twin)"}
+{"tool": "Bash", "args": {"command": "python3 -c 'import sys; print(sys.stdin.read())' < data.json"}, "expect": "allow", "note": "stdin redirected from a file, not piped from a download (TK-A046 twin)"}
