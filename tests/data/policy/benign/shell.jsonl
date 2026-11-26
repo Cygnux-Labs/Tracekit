@@ -399,3 +399,8 @@
 {"tool": "Bash", "args": {"command": "patch -p1 < x.diff"}, "expect": "allow", "note": "the patch(1) tool is not the apply_patch CLI"}
 {"tool": "Bash", "args": {"command": "python apply_patch.py"}, "expect": "allow", "note": "a script merely named apply_patch.py is not the CLI"}
 {"tool": "Bash", "args": {"command": "codex exec 'fix the tests'"}, "expect": "allow", "note": "codex without --codex-run-as-apply-patch applies no patch itself"}
+{"tool": "Bash", "args": {"command": "glab variable set KEY value"}, "expect": "allow", "note": "setting a variable removes no protection (TK-A087 twin)"}
+{"tool": "Bash", "args": {"command": "glab api -X POST projects/42/protected_branches -f name=main"}, "expect": "allow", "note": "adding branch protection is the safe direction (TK-A087 twin)"}
+{"tool": "Bash", "args": {"command": "glab api -X DELETE projects/42/merge_requests/3/notes/1"}, "expect": "allow", "note": "deleting a note removes no protection (TK-A087 twin)"}
+{"tool": "Bash", "args": {"command": "glab api -X DELETE projects/42/pipelines/9"}, "expect": "allow", "note": "deleting a pipeline removes no protection (TK-A087 twin)"}
+{"tool": "Bash", "args": {"command": "glab api projects/42/variables"}, "expect": "allow", "note": "listing variables reads, it does not delete (TK-A087 twin)"}
