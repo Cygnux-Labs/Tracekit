@@ -96,10 +96,6 @@ class Help(unittest.TestCase):
         self.assertIn("unrecognized arguments: --nosuch", err)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ApprovalsOfAConfiguredSigner(unittest.TestCase):
     def test_signer_comes_before_or_after_the_action(self):
         """`approvals --signer X show ID` worked and `approvals show ID --signer X` was unrecognized."""
@@ -133,3 +129,20 @@ class ApprovalsOfAConfiguredSigner(unittest.TestCase):
         self.assertIn("why         changing infrastructure from an agent session (ACME-A001)", own)
         self.assertIn("instead     Run it yourself.", own)
         self.assertEqual(code, 2)
+
+    def test_show_with_config_asks_the_signer_the_config_names(self):
+        """It read X's policy but asked the dev signer (or $TRACEKIT_SIGNER), which answered "unknown approval"."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "signer.yaml"), "w") as f:
+            f.write('data_dir: "data"\nsocket: "signer.sock"\n')
+        fake = types.SimpleNamespace(signer=None, approval_get=lambda req: {}, close=lambda: None)
+        with mock.patch("tracekit.sdk.client.Client", return_value=fake) as client:
+            run(["approvals", "show", "apr-1", "--config", os.path.join(d, "signer.yaml")])
+            run(["approvals", "show", "apr-1", "--config", os.path.join(d, "signer.yaml"), "--signer", "/other.sock"])
+        self.assertEqual([c.args for c in client.call_args_list],
+                         [(os.path.join(os.path.abspath(d), "signer.sock"),), ("/other.sock",)])
+
+
+if __name__ == "__main__":
+    unittest.main()

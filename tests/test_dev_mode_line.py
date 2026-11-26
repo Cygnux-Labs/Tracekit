@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -90,6 +91,64 @@ class DevModeLine(unittest.TestCase):
                 self.assertEqual(got.get("D-HOOKS-PYTHON", {}).get("status"), want)
                 if want:
                     self.assertIn("TRACEKIT_PYTHON=", got["D-HOOKS-PYTHON"]["fix"])
+
+    def test_init_with_the_plugin_and_no_hooks_runs_the_same_check(self):
+        """The README tells plugin users to run init with --no-hooks, which skipped the check."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        err = io.StringIO()
+        with mock.patch.object(cli, "_signer_extra", return_value=True), \
+                mock.patch.object(install, "plugin_enabled", return_value=("settings.json", "tracekit@x")), \
+                mock.patch.object(install, "plugin_hook_python", return_value=None), \
+                mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d, "LOCALAPPDATA": d,
+                                             "TRACEKIT_CLIENT_HOME": os.path.join(d, "client")}), \
+                contextlib.redirect_stderr(err):
+            code, _ = run(["init", "--dev", "--v2", "--no-hooks"])
+        self.assertEqual(code, 1)
+        self.assertIn("TRACEKIT_PYTHON=", err.getvalue())
+
+    def test_a_python_named_in_claude_codes_settings_env_counts(self):
+        """The fix text offered "env" in ~/.claude/settings.json, but the check read the process environment only, so a
+        setup that works still failed init and doctor."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.makedirs(os.path.join(d, ".claude"))
+        with open(os.path.join(d, ".claude", "settings.json"), "w") as f:
+            json.dump({"env": {"TRACEKIT_PYTHON": sys.executable}}, f)
+        with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "PATH": d, "CLAUDE_CONFIG_DIR": ""}):
+            os.environ.pop("TRACEKIT_PYTHON", None)
+            self.assertEqual(install.plugin_hook_python(), shutil.which(sys.executable))
+            os.remove(os.path.join(d, ".claude", "settings.json"))
+            self.assertIsNone(install.plugin_hook_python())
+
+    def test_the_hook_python_probe_cannot_hang_or_read_stdin(self):
+        with mock.patch.dict(os.environ, {"TRACEKIT_PYTHON": sys.executable}), \
+                mock.patch.object(install.subprocess, "run", side_effect=subprocess.TimeoutExpired("x", 1)) as probe:
+            self.assertIsNone(install.plugin_hook_python())
+        kwargs = probe.call_args.kwargs
+        self.assertEqual((kwargs["stdin"], isinstance(kwargs["timeout"], (int, float))), (subprocess.DEVNULL, True))
+
+    def test_doctor_after_a_plugin_init_and_disabling_the_plugin_still_warns_about_hooks(self):
+        """Init's plugin branch wrote no client config, so doctor read the machine as SDK-only (info, "dev setup OK")
+        once the plugin was off, though Claude Code is not recorded."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        settings = os.path.join(d, ".claude", "settings.json")
+        os.makedirs(os.path.dirname(settings))
+        with open(settings, "w") as f:
+            json.dump({"enabledPlugins": {install.PLUGIN: True}}, f)
+        env = {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d, "LOCALAPPDATA": d, "CLAUDE_CONFIG_DIR": "",
+               "TRACEKIT_CLIENT_HOME": os.path.join(d, "client")}
+        with mock.patch.object(cli, "_signer_extra", return_value=True), \
+                mock.patch.object(install, "plugin_hook_python", return_value="/usr/bin/python3"), \
+                mock.patch.dict(os.environ, env), mock.patch.object(doctor.shutil, "which", return_value="/bin/claude"), \
+                mock.patch.object(doctor.client, "system_config", return_value=None), \
+                mock.patch.object(install.client, "system_config", return_value=None):
+            self.assertEqual(run(["init", "--dev", "--v2", "--no-thinking-summaries"])[0], 0)
+            with open(settings, "w") as f:
+                json.dump({"enabledPlugins": {install.PLUGIN: False}}, f)
+            got = {r["id"]: r for r in doctor.collect()}
+        self.assertEqual(got["D-HOOKS-PRESENT"]["status"], "warn")
 
     def test_the_hook_python_is_the_first_that_imports_tracekit(self):
         with mock.patch.dict(os.environ, {"TRACEKIT_PYTHON": sys.executable}):

@@ -76,11 +76,12 @@ Restart the signer to load a change.
 
 The dev signer is the dev pack (`dev.yaml`: the coding, browser, data, network, cloud, comms and core packs, two demo
 rules, unmapped tools flagged), and `TRACEKIT_POLICY` isn't read by it: that variable is the v1 engine's. To run your
-own policy, start a signer from a `signer.yaml` that names it (paths are relative to the file):
+own policy, start a signer from a `signer.yaml` that names it. Keep the files in a folder only you can write to
+(`mkdir -m 700 ~/tracekit-own && cd ~/tracekit-own`); paths are relative to the file, so the socket is made there:
 
 ```yaml
 data_dir: data
-socket: /tmp/tracekit-signer.sock
+socket: signer.sock
 policy: policy.yaml
 content: {retain: true}            # keep redacted content, so `tracekit view` and `tracekit why` can show it
 approvals: {self_approval: allow}  # you answer your own agent's holds; the run's assurance stays dev
@@ -88,8 +89,8 @@ approvals: {self_approval: allow}  # you answer your own agent's holds; the run'
 
 ```sh
 tracekit signer serve --config signer.yaml        # leave it running
-export TRACEKIT_SIGNER=/tmp/tracekit-signer.sock  # in the shell that runs your agent: the SDK uses this signer
-tracekit approvals show ID --config signer.yaml   # why a call was held, from your policy
+export TRACEKIT_SIGNER=$PWD/signer.sock           # in the shell that runs your agent: the SDK uses this signer
+tracekit approvals show ID --config signer.yaml   # why a call was held, from your policy (asks that signer)
 tracekit approvals approve ID
 tracekit last --config signer.yaml                # export and verify the most recent finished run
 ```

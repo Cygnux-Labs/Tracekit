@@ -74,8 +74,8 @@ print(result.final_output)
 ```
 
 In async code, `await run.openai_agents.apply_decisions(state)` and `await Runner.run(agent, state,
-hooks=run.openai_agents)`. A process that exits with a call still held leaves the run open for another process to
-resume (a `RunState` saved with `state.to_string()`, resumed with `RunState.from_string`).
+hooks=run.openai_agents)`. Resume in the process that paused: another process starts a run of its own, which can't
+consume this run's approvals. To resume across processes, wire the adapter by hand (next section).
 
 ## Approvals: wire it by hand
 

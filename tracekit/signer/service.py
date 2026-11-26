@@ -350,7 +350,8 @@ from tracekit.identity.oidc import keys, person
 from tracekit.locking import lock_file
 from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
-from tracekit.signer.config_keys import CONFIG_KEYS
+from tracekit.signer import config_keys
+from tracekit.signer.config_keys import CONFIG_KEYS, DECISION_IMPORT, ON_BEHALF, OPERATOR
 from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog, approval, constraint_state,
@@ -431,26 +432,17 @@ _IGNORABLE = re.compile("[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u1
                         "\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8]|[\U0001bca0-\U0001bca3]|[\U0001d173-\U0001d17a]"
                         "|[\U000e0000-\U000e0fff]")
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
-ON_BEHALF = "approval_decide_on_behalf"   # an `authorize` grant, never a default: a bridge answers for its people
 OTLP_MAX_SPANS = 512
-DECISION_IMPORT = "decision_import"   # an `authorize` grant, never a default: an external policy system's decisions
 PASSKEYS = "passkeys.json"   # in data_dir: person id -> {id, key (base64 SPKI), count (last signCount)}
 CONTENT_READ = "content_read"   # an `authorize` grant, never a default: content_get (the content vault)
 # what an unconfigured uid peer or the dev token may call; every other method is an `authorize` grant only (NEVER_DEFAULT)
+NEVER_DEFAULT = config_keys.NEVER_DEFAULT
 DEFAULT_GRANTS = frozenset({
     "register_run", "decide", "complete", "observe", "state_write", "model_event", "approval_request",
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
     "passkey_register", "why_finding", "review_finding", "constraint_add", "pcm_sign", "pcm_grant", "pcm_delegate",
     "pcm_evidence", "grant_issue", "grant_list", "grant_revoke", "call_state", "call_claim"})
-OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
-                      "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
-# tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
-# heartbeats going with its own token; observe_effect: an egress observer's own identity, never an agent's;
-# channel_open: a box_daemons identity's alone, whatever `authorize` lists; export_run: any run of the caller's tenant
-NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase", "approval_review",
-                           "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open",
-                           "export_run"}) | OPERATOR
 EXPORT_CHUNK = (MAX_LINE - 4096) // 4 * 3   # bundle bytes per export_run answer: their base64 fits one frame
 # what an identity granted export_run may also call: calls that write nothing, so no agent's identity downloads runs
 EXPORT_READS = frozenset({"status", "read", "approval_get", "approval_list", "grant_list", "incident_list",
@@ -849,6 +841,26 @@ def _agents(approvals, authorize, multi_tenant_apps):
     return frozenset(agents)
 
 
+def check_identities(approvals, authorize, multi_tenant_apps=(), required=()):
+    """The checks of signer.yaml's identity sections that need no store: approvals.agents (_agents), no identity that
+    both runs agents (register_run) and decides approvals on someone's behalf (approval_decide_on_behalf), and no
+    harness_binding.required identity among the approvers, break_glass or agents. Returns approvals.agents as a set."""
+    approvals, authorize = approvals or {}, dict(authorize or {})
+    agents = _agents(approvals, authorize, set(multi_tenant_apps))
+    both = sorted(k for k, m in authorize.items() if isinstance(m, list) and "register_run" in m and ON_BEHALF in m)
+    if both:
+        raise ValueError(f"authorize grants {', '.join(both)} both register_run and {ON_BEHALF}: one identity can't "
+                         "both run agents and decide approvals on someone's behalf; give the bridge an identity of its "
+                         "own")
+    for name in ("approvers", "break_glass", "agents"):
+        table = {k: True for k in approvals.get(name, ()) if isinstance(k, str)}
+        clash = sorted(str(r) for r in required if isinstance(r, str) and lookup(table, r, False))
+        if clash:
+            raise ValueError(f"harness_binding.required: {', '.join(clash)} is also in approvals.{name}: an identity "
+                             "whose runs are bound to a harness is an agent, not an approver")
+    return agents
+
+
 def _escaped(value):
     """`value` with control, format (bidirectional overrides, TAG characters) and default-ignorable characters
     (variation selectors, Hangul fillers) in its strings (and keys) written as \\uXXXX text."""
@@ -1004,7 +1016,9 @@ class SignerService:
             raise ValueError("approvals takes self_approval (allow|deny), approvers, break_glass and agents (identity "
                              "lists), persons (identity -> person id) and ttl_s, agent_consume_s, agent_timeout_s "
                              "(seconds)")
-        self._agents = _agents(approvals or {}, dict(authorize or {}), set(multi_tenant_apps))
+        required = harness_binding.get("required", ()) if isinstance(harness_binding, dict) else ()
+        self._agents = check_identities(approvals, authorize, multi_tenant_apps, required if isinstance(
+            required, list) else ())
         policy = policy or load_policy()
         respond = policy.policy.get("respond", [])
         if any(r["mode"] == "enforce" and r["action"] == "notify" for r in respond) and \

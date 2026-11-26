@@ -240,22 +240,43 @@ def collect(config=None, issuer_key=None):
     return rows
 
 
-def _signer_answers(signer):
-    """D-SIGNER-ANSWERS: the system signer answers a status call on its socket (none when client.json names none)."""
+def _signer_answers(signer, wait=10.0):
+    """D-SIGNER-ANSWERS: the system signer answers a status call on its socket (none when client.json names none).
+    The call runs on a thread doctor stops waiting for after `wait` seconds, so a signer that trickles bytes can't hang
+    it; a refused call reads as refused."""
     if not signer:
         return []
+    import threading
+
     from .sdk import client as sdk_client
     from .signer.rpc_schema import RPCError
-    service_log = (f"sudo launchctl print system/{install.V2_LABEL}; tail {install.V2_DATA}/signer.log"
+    service_log = (f"sudo launchctl print system/{install.V2_LABEL}; sudo tail {install.V2_DATA}/signer.log"
                    if sys.platform == "darwin" else
                    f"systemctl status {install.V2_UNIT}; journalctl -u {install.V2_UNIT} -n 50")
-    try:
-        sdk_client.Client(signer, timeout=5).status({})
-    except (sdk_client.SignerUnavailable, RPCError, OSError) as e:
-        return [result("D-SIGNER-ANSWERS", FAIL, f"the signer does not answer on {signer}: {str(e)[:200]}",
-                       f"read why it is not running: {service_log}; fix what it says and start it again (re-running "
-                       "init keeps what you added to signer.yaml, and rewrites the service file)")]
-    return [result("D-SIGNER-ANSWERS", OK, f"the signer answers on {signer}")]
+    outcome = []
+
+    def ask():
+        c = sdk_client.Client(signer, timeout=5)
+        try:
+            c.status({})
+            outcome.append(None)
+        except (sdk_client.SignerUnavailable, sdk_client.Incompatible, RPCError, OSError) as e:
+            outcome.append(e)
+        finally:
+            c.close()
+
+    t = threading.Thread(target=ask, daemon=True)
+    t.start()
+    t.join(wait)
+    if outcome and outcome[0] is None:
+        return [result("D-SIGNER-ANSWERS", OK, f"the signer answers on {signer}")]
+    e = outcome[0] if outcome else None
+    detail = (f"the signer on {signer} refused a status call: {str(e)[:200]}" if isinstance(e, RPCError) else
+              f"the signer does not answer on {signer}: {str(e)[:200]}" if e else
+              f"the signer on {signer} did not answer within {wait:g} s")
+    return [result("D-SIGNER-ANSWERS", FAIL, detail,
+                   f"read what the signer says: {service_log}; fix it and start it again (re-running init keeps what "
+                   "you added to signer.yaml where it can, and rewrites the service file)")]
 
 
 def _managed():

@@ -108,9 +108,22 @@ class TestOpenRun(DevSigner):
                             "a = r.call('approval_request', tool_call_id='c1')['approval_id']; print(a, flush=True); "
                             "os._exit(0)").stdout.split()[0]
         err = self.sh("-m", "tracekit", "last", code=1).stderr
-        self.assertIn(f"approval {out} of it is not used yet", err)
+        self.assertIn(f"approval {out} of it waits for a person", err)
         self.assertIn(f"tracekit approvals approve {out}", err)
         self.assertNotIn("when the agent's process exits", err)
+
+    def test_last_words_an_answered_approval_by_its_state(self):
+        """A rejected approval was called "not used yet"."""
+        for decision, want in (("reject", "was answered reject: the run finishes when the agent's process exits"),
+                               ("approve", "was approved and not used yet")):
+            with self.subTest(decision):
+                aid = self.sh("-c", "import os; from tracekit.sdk.client import Client; r = Client().run('held-two'); "
+                                    "r.decide('c1', 'Bash', {'command': 'npm publish'}); "
+                                    "a = r.call('approval_request', tool_call_id='c1')['approval_id']; "
+                                    f"Client().approval_decide({{'approval_id': a, 'decision': '{decision}'}}); "
+                                    "print(a, flush=True); os._exit(0)").stdout.split()[0]
+                err = self.sh("-m", "tracekit", "last", code=1).stderr
+                self.assertIn(f"approval {aid} of it {want}", err)
 
     def test_last_warns_when_tracekit_signer_is_set_but_it_reads_the_dev_signer(self):
         p = subprocess.run([sys.executable, "-m", "tracekit", "last"], capture_output=True, text=True, cwd=self.dir,
@@ -171,6 +184,9 @@ class TestLastConfig(DevSigner):
         self.assertEqual(self.sh("-m", "tracekit", "last", code=1).stdout, "")
         p = self.sh("-m", "tracekit", "last", "--config", cfg, "-o", os.path.join(self.dir, "own.tkb"))
         self.assertIn(f"run {run['run_id']} (own-agent)\nVERIFIED", p.stdout)
+        self.assertIn(f"trusted: the log key in {data} (from {cfg})", p.stdout)
+        self.assertIn(f"next: tracekit view --config {cfg}", p.stdout)
+        self.assertNotIn("dev signer", p.stdout + p.stderr)
         self.sh("-m", "tracekit", "last", "--config", os.path.join(self.dir, "missing.yaml"), code=1)
 
 

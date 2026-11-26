@@ -2084,6 +2084,44 @@ class Detect(unittest.TestCase):
                 mock.patch.object(doctor, "v2_checks", return_value=[doctor.result("D-V2", "ok", "v2")]) as v2:
             return [r["id"] for r in doctor.collect(config)], v2
 
+    def test_collect_adds_the_signer_answers_row_in_system_mode(self):
+        """The wiring: collect() runs _signer_answers with the socket client.json names."""
+        row = doctor.result("D-SIGNER-ANSWERS", "fail", "no answer", "look")
+        with mock.patch.object(doctor.client, "system_config", return_value={
+                "signer": "/run/tracekit-signer/signer.sock", "hooks": {"user": "nobody-e16"}}), \
+                mock.patch.object(install, "v1_results", return_value=[]), \
+                mock.patch.object(doctor, "v2_checks", return_value=[]), \
+                mock.patch.object(doctor, "_signer_answers", return_value=[row]) as asked:
+            self.assertEqual([r["id"] for r in doctor.collect()], ["D-SIGNER-ANSWERS"])
+        asked.assert_called_once_with("/run/tracekit-signer/signer.sock")
+
+    def test_the_signer_check_closes_its_client_reads_a_refusal_as_one_and_gives_up_on_a_stall(self):
+        from tracekit.signer.rpc_schema import RPCError
+        with mock.patch("tracekit.sdk.client.Client") as c:
+            doctor._signer_answers("/s")
+        c.return_value.close.assert_called_once_with()
+        with mock.patch("tracekit.sdk.client.Client") as c:
+            c.return_value.status.side_effect = RPCError("forbidden", "not yours")
+            (row,) = doctor._signer_answers("/s")
+        self.assertIn("refused a status call", row["detail"])
+        self.assertNotIn("does not answer", row["detail"])
+        with mock.patch.object(doctor.sys, "platform", "darwin"), mock.patch("tracekit.sdk.client.Client") as c:
+            c.return_value.status.side_effect = OSError("gone")
+            (row,) = doctor._signer_answers("/s")
+        self.assertIn("sudo launchctl print", row["fix"])
+        self.assertIn("sudo tail", row["fix"])
+        d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "s.sock")
+        import socket as socketlib
+        srv = socketlib.socket(socketlib.AF_UNIX)
+        srv.bind(path)
+        srv.listen(4)   # accepts into its backlog and never answers
+        self.addCleanup(srv.close)
+        (row,) = doctor._signer_answers(path, wait=0.5)
+        self.assertEqual(row["status"], "fail")
+        self.assertIn("did not answer within 0.5 s", row["detail"])
+
     def test_a_signer_that_does_not_answer_fails_with_where_to_look(self):
         """System mode had no check that the signer runs: a crashed one (the re-init crash) left doctor green."""
         d = tempfile.mkdtemp()

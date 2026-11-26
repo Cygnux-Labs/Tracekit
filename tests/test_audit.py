@@ -637,7 +637,8 @@ class TestAudit(unittest.TestCase):
             os.environ.pop("CLAUDE_CONFIG_DIR", None)
             code, out, err = _run("--since", "7d")
         self.assertEqual((code, out), (2, ""))
-        self.assertIn(f"no coding-agent sessions found in {home}", err)
+        self.assertIn("no coding-agent sessions found", err)
+        self.assertIn(str(home), err)
         self.assertEqual(len(err.strip().splitlines()), 1 + ("experimental" in err), err)
 
     def test_help_names_every_reader(self):

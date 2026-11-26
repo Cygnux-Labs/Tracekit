@@ -164,6 +164,17 @@ SIGNER_HELP = ("the signer: its Unix socket, tcp://host:port, or https://host:po
                "the system signer in system mode, else the same-user dev signer)")
 
 
+def _plugin_python_missing(project):
+    """1 (after saying why) when the enabled Claude Code plugin's hook would find no Python with tracekit and so block
+    every tool call; else 0."""
+    from . import install
+    if install.plugin_hook_python(project):
+        return 0
+    print("tracekit: the plugin's hook finds no Python with tracekit (TRACEKIT_PYTHON, python3, python), so it blocks "
+          "every tool call: " + install.plugin_python_fix(), file=sys.stderr)
+    return 1
+
+
 def main(argv=None):
     for stream in (sys.stdout, sys.stderr):   # a legacy console encoding (Windows cp1252) can't print every character
         if hasattr(stream, "reconfigure") and getattr(stream, "errors", "strict") == "strict":
@@ -835,11 +846,13 @@ def _run(a):
                         except install.SettingsError as e:
                             print(f"tracekit: {e}", file=sys.stderr)
                             return 1
-                    if not install.plugin_hook_python():
-                        print("tracekit: the plugin's hook finds no Python with tracekit (TRACEKIT_PYTHON, python3, "
-                              "python), so it blocks every tool call: " + install.plugin_python_fix(), file=sys.stderr)
-                        return 1
-                    return 0
+                    if not a.project:   # as the branch below: doctor then knows init ran
+                        try:
+                            install.record_hooks_settings(hooks)
+                        except install.SettingsError as e:
+                            print(f"tracekit: {e}", file=sys.stderr)
+                            return 1
+                    return _plugin_python_missing(a.project)
                 try:
                     on = hooks and install.install_hooks(hooks, module=install.V2_HOOK,
                                                          thinking=not a.no_thinking_summaries)
@@ -860,7 +873,7 @@ def _run(a):
                 if hooks:
                     print(guidance())
                     print(next_step())
-                return 0
+                return 0 if hooks or not install.plugin_enabled(project=a.project) else _plugin_python_missing(a.project)
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, hooks, proxy=a.proxy, proxy_port=a.proxy_port,
                                        fail_mode="closed" if a.fail_closed else None, signer=signer)
@@ -1454,10 +1467,12 @@ def _last(a):
                         kinds.add(e["type"])
                         if e["type"] == "approval.request":
                             asked[e["data"]["approval_id"]] = None
+                        elif e["type"] == "approval" and e["data"].get("approval_id") in asked:
+                            asked[e["data"]["approval_id"]] = e["data"].get("decision")
                         elif e["type"] in ("approval.consumed", "approval.expired", "approval.abandoned",
                                            "approval.revoked"):
                             asked.pop(e["data"].get("approval_id"), None)
-                    held[key[1]] = list(asked)
+                    held[key[1]] = asked
                     runs.append((key, next((k for k in ("run.final", "run.closing") if k in kinds), "open"),
                                  ((first.get("data") or {}).get("agent") or {}).get("name") or "?"))
                     if runs[-1][1] == "run.final":
@@ -1482,12 +1497,16 @@ def _last(a):
     final = [x for x in runs if x[1] == "run.final"]
     for (_, run_id), kind, agent in [] if a.open else runs[:len(runs) - len(final)]:
         if kind == "run.closing":
-            why = "closed, and not finalised yet: is the dev signer still running (`tracekit up`)?"
+            why = ("closed, and not finalised yet: is the signer still running?" if a.config else
+                   "closed, and not finalised yet: is the dev signer still running (`tracekit up`)?")
         elif held.get(run_id):
-            ids = ", ".join(held[run_id][:3])
-            why = (f"still open: approval {ids} of it is not used yet: a person answers it (`tracekit approvals "
-                   f"approve {held[run_id][0]}`) and the agent resumes it, or it expires; tracekit last --open "
-                   "verifies the run as it stands")
+            aid, decision = next(iter(held[run_id].items()))
+            sock = f" --signer {_quote(cfg['socket'])}" if a.config and cfg.get("socket") else ""
+            why = (f"still open: approval {aid} of it " + (
+                f"waits for a person (`tracekit approvals{sock} approve {aid}`), or expires" if decision is None else
+                "was approved and not used yet: the agent resumes it, or it expires" if decision == "approve" else
+                f"was answered {decision}: the run finishes when the agent's process exits or after the signer's idle "
+                "timeout") + "; tracekit last --open verifies the run as it stands")
         elif agent == "claude-code":
             why = ("still open: it finishes when the session ends (`/exit` in Claude Code) "
                    "or after the signer's idle timeout; tracekit last --open verifies it as it stands")
@@ -1526,7 +1545,7 @@ def _last(a):
         trust = write_trust(os.path.splitext(out)[0] + ".trust.json", read_vkeys(cfg["data_dir"]),
                             cfg.get("witnesses") or ())
     except (OSError, ValueError) as e:
-        print(f"tracekit last: cannot pin the dev signer's key: {e}", file=sys.stderr)
+        print(f"tracekit last: cannot pin {who} key: {e}", file=sys.stderr)
         return 1
     rep, code = v2.verify(out, trust)
     print(f"run {run_id} ({agent})")
@@ -1536,7 +1555,9 @@ def _last(a):
         from .verify import summary
         summary(rep, code, rep.integrity, rep.assurance)
     print(f"bundle: {out}\ncheck it again: tracekit verify {_quote(out)} --trust {_quote(trust)}\n"
-          "next: tracekit view --dev   (every run, replayed and reviewed)")
+          + (f"trusted: the log key in {cfg['data_dir']} (from {a.config})\n"
+             f"next: tracekit view --config {_quote(a.config)}   (every run, replayed and reviewed)" if a.config else
+             "next: tracekit view --dev   (every run, replayed and reviewed)"))
     return code
 
 
@@ -1797,7 +1818,7 @@ def _approvals(a):
         except (OSError, ValueError) as e:
             print(f"tracekit approvals: {e}", file=sys.stderr)
             return 2
-    c = Client(a.signer)
+    c = Client(a.signer or (cfg or {}).get("socket"))
     try:
         if a.action == "list":
             page, approvals = {"next_cursor": None}, []
