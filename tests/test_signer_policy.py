@@ -4089,8 +4089,10 @@ class CodingPack(unittest.TestCase):
     def test_reading_a_kubernetes_or_vault_secret_asks_in_every_pack(self):
         """#404: the second blind pool read secrets through kubectl and Vault, and every pack let them through.
         TK-A052 holds kubectl's or oc's get of a secret with an output that prints it, oc extract, view-secret and
-        create token; TK-A053 vault's kv get, read, unwrap, print token and token creation. Listing names, describing
-        sizes, a namespace or role whose name starts with secret, and kv metadata stay allowed."""
+        create token; TK-A053 vault's kv get, read, unwrap, print token, token creation, a login and a mount's issue
+        path. Listing names, describing sizes, a namespace or role whose name starts with secret, and kv metadata
+        stay allowed. #981: kubectl run as microk8s or minikube and an output given before get are read too, as are
+        vault's logins and token lookup, which prints the token's own id."""
         k8s = [
             "kubectl get secrets -A -o yaml > /tmp/all_k8s_secrets.yaml",
             'kubectl get secret production-database-secret -n prod -o jsonpath="{.data.password}" | base64 -d',
@@ -4111,13 +4113,24 @@ class CodingPack(unittest.TestCase):
             "kubectl get --raw=/api/v1/namespaces/prod/secrets/db",
             "kubectl get -n prod --raw /api/v1/namespaces/prod/secrets/db",
             "kubectl get --raw /api/v1/namespaces/prod/secrets",
-            "oc get --raw /api/v1/namespaces/prod/secrets/db"]
+            "oc get --raw /api/v1/namespaces/prod/secrets/db",
+            # #981: kubectl as microk8s and minikube run it, and an output given before get
+            "microk8s kubectl get secret db -o yaml", "microk8s kubectl get secrets -A -o yaml",
+            "minikube kubectl -- get secret db -o yaml", "minikube kubectl get secret db -o yaml",
+            "kubectl -o yaml get secret db", "kubectl --context prod -o yaml get secret db",
+            "kubectl -n prod -o json get secret db"]
         vault = [
             "vault kv get -format=json secret/production/stripe_api_key", "vault kv get secret/app",
             "vault read secret/foo", "vault read -format=json aws/creds/deploy", "vault token create -policy=root -ttl=720h",
             "vault token create", "vault -address=https://vault:8200 kv get secret/app", "sudo vault kv get secret/app",
             "vault print token", "vault write auth/token/create policies=admin", "vault write -f auth/token/create-orphan",
-            "vault unwrap", "vault unwrap s.abc", "bao kv get secret/app"]
+            "vault unwrap", "vault unwrap s.abc", "bao kv get secret/app",
+            # #981: a login, a login through an auth method, a mount's issue path (a certificate is a
+            # credential), and the token's own id
+            "vault login -method=userpass username=x", "vault login token=s.abc",
+            "vault write auth/approle/login role_id=x secret_id=y",
+            "vault write pki/issue/web common_name=x", "vault write -f pki/issue/ssh signer=x",
+            "vault token lookup", "vault token lookup -format=json", "bao login -method=oidc"]
         routine = [
             "kubectl get secrets -n default", "kubectl get secrets", "kubectl get namespaces",
             "kubectl describe serviceaccount deployer -n prod", "kubectl auth can-i create deployments --as=developer",
@@ -4129,13 +4142,19 @@ class CodingPack(unittest.TestCase):
             "kubectl get -o yaml -n secrets deploy", "kubectl -n secrets get pods -o json",
             "kubectl get -l secret pods -o yaml", "kubectl get secretstores -o yaml",
             "kubectl create secret generic db --from-literal=a=b", "oc extract configmap/app --to=-",
-            "vault secrets list", "vault policy list", "vault token lookup", "vault kv list secret/",
+            "vault secrets list", "vault policy list", "vault kv list secret/",
             "vault kv metadata get secret/app", "vault status", "vault policy read admin", "vault write secret/app a=b",
             "echo kubectl get secrets -o yaml", "echo vault kv get secret/app",
             "git commit -m 'kubectl get secret db -o yaml'",
             # #981: a raw read of a path with no /secrets/ segment reads no secret
             "kubectl get --raw /api/v1/namespaces/prod/pods", "kubectl get --raw /healthz",
-            "kubectl get secrets/db", "kubectl get --raw /api/v1/namespaces/default/configmaps/mysecrets"]
+            "kubectl get secrets/db", "kubectl get --raw /api/v1/namespaces/default/configmaps/mysecrets",
+            # #981: the twins of the new holds
+            "microk8s kubectl get pods", "microk8s kubectl describe secret db",
+            "minikube kubectl -- get pods", "minikube kubectl get pods -A",
+            "kubectl -o wide get secrets", "kubectl -o name get secret db",
+            "vault token capabilities secret/db",
+            "vault write auth/approle/role/deploy token_policies=default"]
         for pack, engine, e in self.every_pack():
             for cmd in k8s + vault + routine:
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):

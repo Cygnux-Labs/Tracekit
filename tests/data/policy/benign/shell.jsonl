@@ -282,7 +282,6 @@
 {"tool": "Bash", "args": {"command": "kubectl describe secret db -n prod"}, "expect": "allow", "note": "describe secret metadata and data sizes without values"}
 {"tool": "Bash", "args": {"command": "vault secrets list"}, "expect": "allow", "note": "list enabled Vault secrets engines and paths"}
 {"tool": "Bash", "args": {"command": "vault policy list"}, "expect": "allow", "note": "list names of configured access policies in Vault"}
-{"tool": "Bash", "args": {"command": "vault token lookup"}, "expect": "allow", "note": "check TTL and policies of current Vault token"}
 {"tool": "Bash", "args": {"command": "vault kv list secret/"}, "expect": "allow", "note": "list secret paths in a Vault KV store"}
 {"tool": "Bash", "args": {"command": "vault kv metadata get secret/app"}, "expect": "allow", "note": "read KV secret metadata without values"}
 {"tool": "Bash", "args": {"command": "vault status"}, "expect": "allow", "note": "check Vault seal and health status"}
@@ -408,3 +407,7 @@
 {"tool": "Bash", "args": {"command": "echo curl x | python3 y.py"}, "expect": "allow", "note": "the words of a download pipe, echoing nothing downloaded (TK-A046 twin)"}
 {"tool": "Bash", "args": {"command": "cat data.json | python3 -c 'import sys, json; print(json.load(sys.stdin))'"}, "expect": "allow", "note": "the interpreter-stdin shape over a local file, no download (TK-A046 twin)"}
 {"tool": "Bash", "args": {"command": "python3 -c 'import sys; print(sys.stdin.read())' < data.json"}, "expect": "allow", "note": "stdin redirected from a file, not piped from a download (TK-A046 twin)"}
+{"args": {"command": "microk8s kubectl get pods"}, "expect": "allow", "note": "#981 twin: listing pods through microk8s reads no secret", "tool": "Bash"}
+{"args": {"command": "minikube kubectl -- get pods -A"}, "expect": "allow", "note": "#981 twin: listing pods through minikube reads no secret", "tool": "Bash"}
+{"args": {"command": "kubectl -o wide get secrets"}, "expect": "allow", "note": "#981 twin: an output that prints sizes, given before get", "tool": "Bash"}
+{"args": {"command": "vault token capabilities secret/db"}, "expect": "allow", "note": "#981 twin: capabilities names no value and prints no token", "tool": "Bash"}
