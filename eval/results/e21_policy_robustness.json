@@ -5633,45 +5633,45 @@
   "latency": {
     "default/re2": {
       "p50_us": 175,
-      "p99_us": 479,
-      "max_us": 1315,
-      "calls": 3106,
+      "p99_us": 480,
+      "max_us": 1296,
+      "calls": 3116,
       "p99_ref": 8.69
     },
     "default/regex": {
       "p50_us": 196,
-      "p99_us": 550,
-      "max_us": 1735,
-      "calls": 3106,
-      "p99_ref": 10.39
+      "p99_us": 555,
+      "max_us": 1758,
+      "calls": 3116,
+      "p99_ref": 10.36
     },
     "strict/re2": {
       "p50_us": 176,
-      "p99_us": 437,
-      "max_us": 1173,
-      "calls": 3106,
-      "p99_ref": 8.02
+      "p99_us": 434,
+      "max_us": 1170,
+      "calls": 3116,
+      "p99_ref": 7.84
     },
     "strict/regex": {
-      "p50_us": 197,
-      "p99_us": 537,
-      "max_us": 1773,
-      "calls": 3106,
-      "p99_ref": 9.84
+      "p50_us": 198,
+      "p99_us": 541,
+      "max_us": 1758,
+      "calls": 3116,
+      "p99_ref": 9.53
     },
     "dev/re2": {
-      "p50_us": 185,
-      "p99_us": 503,
-      "max_us": 1312,
-      "calls": 3106,
-      "p99_ref": 9.01
+      "p50_us": 184,
+      "p99_us": 507,
+      "max_us": 1369,
+      "calls": 3116,
+      "p99_ref": 9.15
     },
     "dev/regex": {
-      "p50_us": 208,
+      "p50_us": 209,
       "p99_us": 596,
-      "max_us": 1883,
-      "calls": 3106,
-      "p99_ref": 10.68
+      "max_us": 1890,
+      "calls": 3116,
+      "p99_ref": 10.55
     }
   },
   "engine_mismatches": [],
