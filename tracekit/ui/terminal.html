@@ -1439,7 +1439,7 @@
     }
 
     #wf .tn-main {
-      --wfw: clamp(150px, 31cqw, 380px);
+      --wfw: clamp(200px, 36cqw, 560px);
       flex: 1;
       min-height: 0;
       position: relative;
@@ -1451,7 +1451,7 @@
     #wf .tn-th,
     #wf .tn-r {
       display: grid;
-      grid-template-columns: 14px 28px minmax(0, 1fr) 112px 74px 62px var(--wfw);
+      grid-template-columns: 14px 28px minmax(120px, 1fr) 120px 84px 64px var(--wfw);
       align-items: center;
       column-gap: 9px;
       padding: 0 14px 0 14px
@@ -1512,7 +1512,6 @@
     #wf .wh .tks {
       position: absolute;
       inset: 0;
-      mask-image: linear-gradient(to right, transparent 84px, var(--text) 100px);
       pointer-events: none
     }
 
@@ -2164,7 +2163,7 @@
 
       #wf .tn-th,
       #wf .tn-r {
-        grid-template-columns: 14px 28px minmax(0, 1fr) 92px 64px var(--wfw)
+        grid-template-columns: 14px 28px minmax(110px, 1fr) 104px 64px var(--wfw)
       }
 
       #wf .sz {
@@ -2176,7 +2175,7 @@
 
       #wf .tn-th,
       #wf .tn-r {
-        grid-template-columns: 14px 28px minmax(0, 1fr) 56px var(--wfw)
+        grid-template-columns: 14px 28px minmax(100px, 1fr) 56px var(--wfw)
       }
 
       #wf .ag,
@@ -6846,18 +6845,21 @@
         const arrow = WFSORT.k === k ? '<span class="ar2' + (WFSORT.dir < 0 ? " dn" : "") + '">' + wfSvg("chev", 10) + "</span>" : "";
         return `<button type="button" class="th ${esc(cls)}" role="columnheader" data-wfs="${esc(k)}" aria-sort="${esc(WFSORT.k === k ? (WFSORT.dir > 0 ? "ascending" : "descending") : "none")}">${esc(wfSortWord(k))}` + arrow + `</button>`;
       };
-      const step = tickStep(m.span, 4);
+      const step = tickStep(m.span, 4), cw = Math.min(560, Math.max(200, .36 * ($("wf").clientWidth - 2)));
       let ticks = "";
-      for (let t = Math.ceil((m.t0 + .0001) / step) * step; t < m.t0 + m.span; t += step) ticks += `<span class="tk" style="--a:${esc(+t.toFixed(3))}">${esc(wfRel(t, step))}</span>`;
+      for (let t = Math.ceil((m.t0 + .0001) / step) * step; t < m.t0 + m.span; t += step) {
+        const w = wfRel(t, step).length * 6.4 + 10, x = (t - m.t0) / m.span * cw;
+        if (x - w / 2 >= 100 && x + w / 2 <= cw - 2) ticks += `<span class="tk" style="--a:${esc(+t.toFixed(3))}">${esc(wfRel(t, step))}</span>`;   // whole, and clear of "Waterfall"
+      }
       return `<span></span><span></span>` + (cell("name", "nm")) + `` + (cell("agent", "ag")) + `` + (cell("size", "sz")) + `` + (cell("time", "tm")) + `<span class="wf wh">` + (cell("start", "wfb")) + `<span class="tks">` + (ticks) + `</span></span>`;
     }
     function wfChipsHtml(m) {
       return WFCHIPS.map(([c, w]) => `<button type="button" class="chip2${WFCHIP === c ? " on" : ""}" data-wfc="${esc(c)}" aria-pressed="${esc(WFCHIP === c)}">${esc(w)} <span class="n">${esc(m.counts[c])}</span></button>`).join("");
     }
     function wfStripHtml(m) {
-      const step = tickStep(m.os, 7);
+      const step = tickStep(m.os, 7), width = $("tnov").clientWidth || 800;
       let ticks = "";
-      for (let t = Math.ceil((m.o0 + .0001) / step) * step; t < m.o0 + m.os; t += step) ticks += `<span class="tk" style="--a:${esc(+t.toFixed(3))}"><em>${esc(wfRel(t, step))}</em></span>`;
+      for (let t = Math.ceil((m.o0 + .0001) / step) * step; t < m.o0 + m.os; t += step) if ((t - m.o0) / m.os * width + 8 + wfRel(t, step).length * 6.4 <= width) ticks += `<span class="tk" style="--a:${esc(+t.toFixed(3))}"><em>${esc(wfRel(t, step))}</em></span>`;
       return ticks;
     }
     function wfFoot(m) {
@@ -6988,13 +6990,13 @@
       if (WFR) { sel.style.setProperty("--a", WFR[0]); sel.style.setProperty("--e", WFR[1]); put("tnrl", `<span>${esc(wfRel(WFR[0], 1) + " – " + wfRel(WFR[1], 1))}</span><button type="button" data-wfclr aria-label="Clear the selected window">Clear ×</button>`); }
       if (document.activeElement !== $("tnq") && $("tnq").value !== (F.find || "")) $("tnq").value = F.find || "";
       const empty = m.all.length ? (shown.length ? "" : `<div class="tn-empty">No call matches the filters${WFR ? " in this window" : ""}.</div>`) : `<div class="tn-empty">${esc(S.actList.length ? "No call matches the filters." : "No calls yet.")}</div>`;
-      const inEl = $("tnin"), stick = !inEl._h || rowsEl.scrollTop + rowsEl.clientHeight >= rowsEl.scrollHeight - 24, fk = document.activeElement?.dataset?.k, was = inEl._h;
+      const inEl = $("tnin"), stick = m.live && (!inEl._h || rowsEl.scrollTop + rowsEl.clientHeight >= rowsEl.scrollHeight - 24), fk = document.activeElement?.dataset?.k, was = inEl._h;
       put("tnin", (more ? `<div class="tn-more">${esc(`${more} ${WFSORT.k === "start" && WFSORT.dir > 0 ? "earlier " : ""}${more === 1 ? "call is" : "calls are"} not drawn: ${WFSORT.k === "start" && WFSORT.dir > 0 ? "the newest" : "the first"} ${WFMAX} are. Narrow them with AGT, TOOL, FIND or FLAG.`)}</div>` : "")
         + shown.map(r => wfRowHtml(r, base)).join("") + empty + `<i class="tn-now"></i>`);
       if (inEl._h !== was) {
         const fresh = wfNew(WF.keys, shown), first = !WF.keys.size;
         if (fk) rowsEl.querySelector(`[data-k="${CSS.escape(fk)}"]`)?.focus({ preventScroll: true });
-        if (stick) { rowsEl.scrollTop = rowsEl.scrollHeight; WF.unseen = 0; } else if (!first) WF.unseen += fresh;
+        if (stick) { rowsEl.scrollTop = rowsEl.scrollHeight; WF.unseen = 0; } else if (first && !m.live) rowsEl.scrollTop = 0; else if (!first && m.live) WF.unseen += fresh;
         WF.keys = new Set(shown.map(r => r.key));
       }
       const nb = $("tnnew"); nb.hidden = !WF.unseen; nb.textContent = `↓ ${WF.unseen} new`;

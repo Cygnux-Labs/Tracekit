@@ -1214,7 +1214,7 @@ class Waterfall(unittest.TestCase):
         # the pill's words, its click (to the newest, clearing the count) and the scroll that clears it
         self.assertIn("`↓ ${WF.unseen} new`", PAGE)
         self.assertIn("if (t.dataset.wfnew !== undefined) { const el = $(\"tnrows\"); WF.unseen = 0; el.scrollTop = el.scrollHeight;", PAGE)
-        self.assertIn("else if (!first) WF.unseen += fresh;", PAGE)
+        self.assertIn("else if (first && !m.live) rowsEl.scrollTop = 0; else if (!first && m.live) WF.unseen += fresh;", PAGE)   # a closed run opens at the top; only a live one follows
 
     def test_a_row_is_opened_by_click_and_enter_and_the_headers_say_how_they_sort(self):
         self.assertIn("if (t.dataset.wf) return select(S.actList[+t.dataset.wf]);", PAGE)
