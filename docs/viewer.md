@@ -781,7 +781,9 @@ that citation joins the two.
   risky call, graded exact, measured or seen, then each kind of content and the tools called after it, with tested
   effects). **DESK** shows every panel at once.
 - **Alerts**: the why alerts (a sensitive call using a value only untrusted content supplied, a call downstream of
-  untrusted input, evidence alerts) join the alert panel labelled `WHY`; signed records' alerts are labelled `SIGNED`.
+  untrusted input, evidence alerts) join the alert panel labelled `WHY`; signed records' alerts are labelled `SIGNED`. A call the signer blocked is one alert, the `SIGNED` BLOCKED one: its
+  why import's "was blocked by Tracekit policy" alert is left out of the panel (`/api/why/workspace`) while that signed
+  record is on the page's live view; a why log with no signed record keeps its own.
 
 FIND THE CAUSE and RUN TEST replay the run, so they run only for the programs passed with `--allow-program` (the run
 names its program; replay imports it). Otherwise the panel shows the `tracekit why` command to run instead. New runs

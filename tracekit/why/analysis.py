@@ -1084,7 +1084,7 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
                 "the approval was abandoned", "revoked": "the approval was revoked"}.get(said, "not approved")
                 if pol.get("decision") == "ask" else
                 f"{ev['tool']} was blocked by " + ("Tracekit policy" if pol.get("decision") == "deny" else "the guard"))
-            out.append({**base, "severity": "high", "title": title,
+            out.append({**base, "severity": "high", "title": title, "blocked": True,
                         "detail": (ev.get("guard") or {}).get("reason", "")})
         elif ev.get("status") == "error":
             out.append({**base, "severity": "review", "title": f"{ev['tool']} failed",

@@ -419,16 +419,21 @@ class Store:
         tools = {(r.get("session_id"), r.get("tool_use_id")): r["tool_name"] for r in rows if r.get("tool_name")}
         signed = {f"{r.get('session_id')}|{r['v2'].get('run_seq')}": r.get("tool_name")
                   or tools.get((r.get("session_id"), r.get("tool_use_id"))) for r in rows}
+        denied = {f"{r.get('session_id')}|{r['v2'].get('run_seq')}" for r in rows if r["v2"].get("decision") == "deny"}
         for a in items:
             run = a.get("run")
             if run is None:
                 continue
-            out["alerts"] += [{"run_id": run.run_id, **{k: al.get(k) for k in ("severity", "title", "detail", "node",
-                                                                                 "tool", "agent", "seq")}}
-                              for al in a["alerts"]]
+            keys = {}
             for ev in run.of_type("action"):
                 tk = ev.get("tracekit")
-                key = isinstance(tk, dict) and f"{tk.get('run_id')}|{tk.get('run_seq')}"
+                keys["ev:" + ev["id"]] = isinstance(tk, dict) and f"{tk.get('run_id')}|{tk.get('run_seq')}"
+            # a block the signer's own deny record already shows is that record's alert, not a second one
+            out["alerts"] += [{"run_id": run.run_id, **{k: al.get(k) for k in ("severity", "title", "detail", "node",
+                                                                                 "tool", "agent", "seq")}}
+                              for al in a["alerts"] if not (al.get("blocked") and keys.get(al.get("node")) in denied)]
+            for ev in run.of_type("action"):
+                key = keys["ev:" + ev["id"]]
                 if key and signed.get(key) == ev["tool"]:
                     out["calls"][key] = [run.run_id, "ev:" + ev["id"]]
         return out
