@@ -13,7 +13,7 @@ from unittest import mock
 
 import yaml
 
-from tracekit import cli, install
+from tracekit import agent_hooks, cli, install
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.signer import service
@@ -155,6 +155,13 @@ class DocCommands(unittest.TestCase):
         unknown = [f"{os.path.relpath(p, ROOT)}: tracekit {m}" for p in pages for _, block in FENCE.findall(read(p))
                    for m in COMMAND.findall(block) if m not in known]
         self.assertEqual(unknown, [])
+
+    def test_the_agent_lists_name_every_coding_agent(self):
+        # the README's `--agent` list and coding-agents.md's v1 one, which once lacked kiro and interpreter
+        readme = re.search(r"add `--agent codex`, (.*?) for the others", read(os.path.join(ROOT, "README.md")), re.S)
+        v1 = re.search(r"tracekit init --dev --agent codex +# v1; or (.*)", read(os.path.join(ROOT, "docs", "coding-agents.md")))
+        self.assertEqual({"codex", *re.findall(r"`([a-z]+)`", readme.group(1))}, set(agent_hooks.HARNESSES))
+        self.assertEqual({"codex", *re.findall(r"[a-z]+", v1.group(1))}, set(agent_hooks.HARNESSES))
 
     def test_no_command_needs_tracekit_on_roots_path(self):
         """System-mode init installs Tracekit only into /opt/tracekit (install._install_venv) and puts no `tracekit`
