@@ -797,7 +797,8 @@ class Prefilter(unittest.TestCase):
         for backend in BACKENDS:
             e = Engine(dev, backend)
             compiled = [c for _, _, tool, pat, unless, *_ in e.rules for c in (tool, pat, unless) if c is not None]
-            compiled += [rx for parts in e._parts.values() for rx, *_ in parts]
+            compiled += [c for parts in e._parts.values() for rx, _, _, group in parts
+                         for c in ([rx] if group is None else [x for x, _ in group[0]])]
             with self.subTest(backend=backend):
                 self.assertGreater(len(compiled), 150)
                 self.assertEqual([c.pattern[:40] for c in compiled if c.groups], [])
@@ -7807,6 +7808,30 @@ class CellSource(unittest.TestCase):
                 d = self.cell(self.browser, code)
                 self.assertEqual(d["verdict"], "deny")
                 self.assertIn("TK-B001", d["rule_ids"])
+
+
+class SearchParts(unittest.TestCase):
+    """The fallback engine searches a pattern a part at a time (Engine._parts): a group after a lazy any is split too, and
+    its parts find what the whole pattern finds."""
+
+    def test_a_group_after_a_lazy_any_is_searched_by_its_alternatives(self):
+        pattern = r"^ACT:[\w\W]*?(?:/etc/tracekit|\bkill\b[^\n]*tracekit|x(?:y|z)abc)"
+        self.assertEqual(engine._after_lazy_any(pattern), [
+            r"^ACT:[\w\W]*?/etc/tracekit", r"^ACT:[\w\W]*?\bkill\b[^\n]*tracekit", r"^ACT:[\w\W]*?x(?:y|z)abc"])
+        self.assertIsNone(engine._after_lazy_any(r"^ACT:[\w\W]*?(?:ab|cd)x"))
+        self.assertIsNone(engine._after_lazy_any(r"^ACT:[\w\W]*?(?:abcd)"))
+        for text in ("ACT:rm /etc/tracekit", "ACT:kill -9 tracekit", "ACT:q xzabc", "ACT:xyab", "READ:/etc/tracekit"):
+            whole = regex.search(pattern, text) is not None
+            parts = any(regex.search(a, text) for a in engine._after_lazy_any(pattern))
+            self.assertEqual(whole, parts, text)
+
+    def test_every_rule_decides_the_same_by_parts_as_by_its_whole_pattern(self):
+        pol = pc.build(os.path.join(os.path.dirname(engine.__file__), "packs", "dev.yaml"))[0]
+        by_parts, whole = Engine(pol, "regex"), Engine(pol, "regex")
+        whole._parts = {}
+        for command in ("rm -rf /*", "find ~ -delete", "kill -9 $(pgrep tracekitd)", "git status", "cat ~/.ssh/id_rsa"):
+            call = ("Bash", {"command": command})
+            self.assertEqual(by_parts.decide(*call), whole.decide(*call), command)
 
 
 if __name__ == "__main__":
