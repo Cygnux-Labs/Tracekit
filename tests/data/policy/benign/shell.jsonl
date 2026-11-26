@@ -408,3 +408,7 @@
 {"tool": "Bash", "args": {"command": "echo curl x | python3 y.py"}, "expect": "allow", "note": "the words of a download pipe, echoing nothing downloaded (TK-A046 twin)"}
 {"tool": "Bash", "args": {"command": "cat data.json | python3 -c 'import sys, json; print(json.load(sys.stdin))'"}, "expect": "allow", "note": "the interpreter-stdin shape over a local file, no download (TK-A046 twin)"}
 {"tool": "Bash", "args": {"command": "python3 -c 'import sys; print(sys.stdin.read())' < data.json"}, "expect": "allow", "note": "stdin redirected from a file, not piped from a download (TK-A046 twin)"}
+{"tool": "Bash", "args": {"command": "gh alias list"}, "expect": "allow", "note": "listing aliases runs none of them (TK-A084 twin)"}
+{"tool": "Bash", "args": {"command": "gh extension list"}, "expect": "allow", "note": "listing extensions runs none of them (TK-A084 twin)"}
+{"tool": "Bash", "args": {"command": "gh pr list"}, "expect": "allow", "note": "a command of gh's own is no alias or extension (TK-A084 twin)"}
+{"tool": "Bash", "args": {"command": "gh repo view"}, "expect": "allow", "note": "reading a repository runs no alias's words (TK-A084 twin)"}
