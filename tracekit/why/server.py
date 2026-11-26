@@ -254,12 +254,19 @@ class Store:
 
     def watch(self, interval: float = 0.5) -> None:
         """Poll the runs folder in a daemon thread (ingest wakes it at once). Existing runs are indexed silently
-        first, so only alerts raised after the server started are announced. stop() ends it."""
+        before this returns, so only alerts raised after the server started are announced. stop() ends it."""
         if self._watcher is not None:
             return
 
+        announce = False   # until a scan completes: a run it didn't reach is still indexed silently
+        try:   # before watch returns: a run written after it is announced, however long this takes
+            self.scan(False)
+            announce = True
+        except Exception as e:
+            print(f"tracekit why: watcher: {e}", file=sys.stderr)
+
         def loop() -> None:
-            announce = False   # until a scan completes: a run it didn't reach is still indexed silently
+            nonlocal announce
             while True:
                 try:   # one bad log must not end the watcher: _changed() records its stat first, so it isn't retried
                     self.scan(announce)
