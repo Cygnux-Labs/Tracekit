@@ -1876,6 +1876,8 @@ def _approvals(a):
                 approvals.extend(page["approvals"])
                 if page["next_cursor"] is None:
                     break
+            # one whose run ended while it paged is in both parts: its ended state, once
+            approvals = list({x["approval_id"]: x for x in approvals}.values())
             # the live ones (still waiting for an answer) first, newest first: an approval expires a fixed time after
             # it was requested; the expired ones only with --all
             shown = sorted((x for x in approvals if a.all or x["state"] != "expired"),

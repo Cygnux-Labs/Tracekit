@@ -2104,7 +2104,7 @@
         },
         "run_clean": {
           "type": "boolean",
-          "description": "format 1.8: a person's answer to an approval_agent approval: whether the run still met the AI approver's run bound when they answered (their answer is a precedent only then)"
+          "description": "format 1.8: a person's answer to an approval_agent approval: whether the run still met the AI approver's run bound when they answered and the answering identity never ran an agent session in the tenant (their answer is a precedent only then)"
         }
       }
     },

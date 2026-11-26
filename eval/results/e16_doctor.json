@@ -50,7 +50,7 @@
       "result": {
         "id": "D-APPROVER-AGENT",
         "status": "fail",
-        "detail": "approvals.approvers list uid:54321, the agent's user e16-agent, whose sessions register the runs: it answers approvals as a person (the signer refuses its changes to the AI reviewer and its take-backs, as an identity an agent session ran as)",
+        "detail": "approvals.approvers list uid:54321, the agent's user e16-agent, whose sessions register the runs: it answers approvals as a person (the signer refuses its changes to the AI reviewer and its take-backs, and records its answers as no precedent, as an identity an agent session ran as)",
         "fix": "list a person's own user in approvals.approvers, another than the agent's (init's --approver), and take the agent's uid out"
       }
     },

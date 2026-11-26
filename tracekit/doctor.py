@@ -1673,12 +1673,16 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "runs" if listed else f"{agent.pw_name} is not in analyzers",
             "remove the agent's uid from analyzers in signer.yaml; run tracekit analyze --v2 as an operator identity",
             bad=WARN)
+    # lean: the agent's uid only; which other identities registered runs is in the signer's records alone, a read of the
+    # whole log on every doctor run (the signer treats each as an agent's itself: SignerService._agent_session); read
+    # them if an operator lists approvers that also run agents on servers
     if prod and agent:   # the uid whose sessions register the runs, answering approvals as a person
         a = cfg.get("approvals") or {}
         listed = [k for k in ("approvers", "break_glass") if f"uid:{agent.pw_uid}" in (a.get(k) or ())]
         add("D-APPROVER-AGENT", not listed, f"approvals.{' and approvals.'.join(listed)} list uid:{agent.pw_uid}, the "
             f"agent's user {agent.pw_name}, whose sessions register the runs: it answers approvals as a person (the "
-            "signer refuses its changes to the AI reviewer and its take-backs, as an identity an agent session ran as)"
+            "signer refuses its changes to the AI reviewer and its take-backs, and records its answers as no precedent, "
+            "as an identity an agent session ran as)"
             if listed else f"no approver is {agent.pw_name}, the agent's user",
             "list a person's own user in approvals.approvers, another than the agent's (init's --approver), and take the "
             "agent's uid out")

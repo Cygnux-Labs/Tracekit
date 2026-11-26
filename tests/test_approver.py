@@ -2558,6 +2558,24 @@ class TestAnAgentThatClosedItsRuns(Case):
         self.assertEqual(self.s.call(ALICE, "approver", {"request_id": rid(), "action": "retire",
                                                          "id": lesson["id"]})["action"], "retire")   # a person may
 
+    def test_its_answers_stand_but_are_no_precedent(self):
+        """Review: its answer to another agent's held install was a person's precedent, and the AI then approved that
+        agent's repeats. The answer stands, recorded run_clean false, and seeds nothing; a person's answer still does."""
+        aid = self.other(INDEX.format("b1"))
+        self.assertEqual(self.person(aid, who=AGENT)["state"], "approved")   # nobody is locked out of answering
+        self.assertNotIn(aid, self.s.log.agent["precedents"])
+        again = self.other(INDEX.format("b2"))
+        self.assertEqual(self.s.log.approvals[again]["agent"]["reason"], "no person has approved a call like this one "
+                         "yet (the same rules, tool, target and project, in a clean session): a person decides")
+        self.person(again)   # alice's answer to the same kind of call: a precedent
+        self.assertIn(again, self.s.log.agent["precedents"])
+        third = self.other(INDEX.format("b3"))
+        self.assertTrue(self.s.log.approvals[third]["agent"]["eligible"])
+        self.assertEqual(self.ai(third)["state"], "approved")
+        answers = {e["data"]["approval_id"]: e["data"]["run_clean"] for e in self.events()
+                   if e["type"] == "approval" and e["data"].get("approver_kind") != "agent"}
+        self.assertEqual((answers[aid], answers[again]), (False, True))
+
 
 class TestTheRunBoundsLabels(Case):
     """The run bound's labels, under a policy with no run condition of its own: the signer records them because
@@ -2735,6 +2753,33 @@ class TestWhatPeopleSee(Case):
         self.assertEqual(built.call_count, 2)
         self.assertFalse(set(self.s.log.ended) & {x["approval_id"] for x in self.s.call(
             REVIEWER, "approval_list", {"ended": True})["approvals"]})
+
+    def test_a_cursor_holds_while_its_approvals_run_ends(self):
+        """Review: the cursor was the last approval listed, found again by its presence: when that approval's run ended
+        between two pages, the next page found no cursor and skipped the rest. The cursor is a place in the order."""
+        for ended in (False, True):
+            with self.subTest(ended=ended):
+                first, runs = self.register(), [self.register() for _ in range(4)]
+                ours = [self.ask("pip", project=None, run=first)[0] for _ in range(3)]
+                later = [self.ask("pip", project=None, run=run)[0] for run in runs]
+                req = {"limit": 3, **({"ended": True} if ended else {})}
+                page = self.s.call(ALICE, "approval_list", req)
+                self.assertEqual([x["approval_id"] for x in page["approvals"]][-3:], ours)
+                self.s.call(AGENT, "close_run", {"request_id": rid(), **first[0]})   # the cursor's run ends
+                self.s.sweep(time.monotonic() + svc.GRACE_S + 1)
+                self.assertIn(ours[-1], self.s.log.ended)
+                rest, cursor = [], page["next_cursor"]
+                while cursor:
+                    page = self.s.call(ALICE, "approval_list", {**req, "cursor": cursor})
+                    rest += [x["approval_id"] for x in page["approvals"]]
+                    cursor = page["next_cursor"]
+                self.assertEqual(rest[:4], later)   # the rest, once each
+                self.assertEqual(len(rest), len(set(rest)))
+                self.assertEqual(set(rest[4:]), set(self.s.log.ended) if ended else set())   # then the ended ones
+                for run in runs:   # the next round starts with no live approval
+                    self.s.call(AGENT, "close_run", {"request_id": rid(), **run[0]})
+                self.s.sweep(time.monotonic() + svc.GRACE_S + 1)
+        self.assertEqual(self.s.call(ALICE, "approval_list", {"cursor": "apr-" + "0" * 32})["approvals"], [])
 
     def test_a_person_takes_back_an_ai_yes_from_the_cli(self):
         """The acceptance test's veto window: `approvals reject` answered approval_not_pending and `reviewer revoke`

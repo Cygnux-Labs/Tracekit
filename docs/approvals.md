@@ -550,9 +550,13 @@ AI reviewer, so a new install starts without one. Only a person who answers appr
 identity an agent session runs or ran as in its tenant (one any run, open or ended, had as its client or a writer; an
 agent that closes its sessions first is still refused): the signer refuses that, `tracekit doctor` fails
 `D-APPROVER-AGENT` where `approvals.approvers` lists the agent's user, and the policy denies the agent's own `tracekit
-reviewer` changes and `approvals revoke` (TK-D012). `tracekit reviewer status` says whether it is on, who switched it
-and when, what it may answer (nothing while the operator's `approval_agents` kill switch is off), what it never
-answers, and how often people agreed with it per rule.
+reviewer` changes and `approvals revoke` (TK-D012). Such an identity may still answer approvals, but its answers are
+never precedents (`run_clean: false` in their records). This is permanent by design: an identity an agent ran as
+can't be trusted to change the reviewer or teach it, however long ago the session was. If a person's own identity
+once ran an agent session, give the person an identity of their own (another user, or their OIDC login) and list
+that in `approvals.approvers`. `tracekit reviewer status` says whether it is on, who switched it and when, what it may
+answer (nothing while the operator's `approval_agents` kill switch is off), what it never answers, and how often
+people agreed with it per rule.
 
 **Taking one back.** You can take back an AI approval before the agent's retry runs it: `tracekit approvals revoke
 apr-… --reason …` (`reject` of it does the same, and so does the viewer's approvals desk). `approvals show` and `list`,
@@ -638,7 +642,8 @@ database, host or working folder, a run in the background, a sandbox escalation 
 another call. The one argument left out is the Bash tool's `description`: a caption Claude Code's model rewords on
 almost every retry and nothing runs, so a call that differs from a precedent in its description alone is the same call
 (another tool's `description` still counts). The person's answer counts when the run was clean both when the
-call was asked and when they answered (`run_clean` in their record), in the last 30 days; under a policy without
+call was asked and when they answered, and the answering identity never ran an agent session in the tenant (`run_clean`
+in their record), in the last 30 days; under a policy without
 `approval_agent` (a restart under another) it is no precedent, and an AI approval not yet used doesn't run. With no such answer, people answer
 it. A person's rejection of a call like it lets the AI reject, never approve; when people answered both ways, people
 answer it. Only people's own answers count: never an agent's, a self-approval or a break-glass answer. A precedent

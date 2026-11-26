@@ -1016,6 +1016,22 @@ def precedent_key(tool, target, project):
     return key, "sha256:" + hashlib.sha256(canonical(key)).hexdigest()
 
 
+def list_cursor(cursor):
+    """(phase, the place approval_list's page starts after) of its `cursor`, a place, never an approval, so it holds
+    while that approval's run ends: ("L", None) for the first page; "L" and (requested_at, approval id) in the live
+    approvals; "E" and (when its run ended, approval id) in the ended ones; ("?", None) for a cursor this signer didn't
+    give, which lists nothing."""
+    if cursor is None:
+        return "L", None
+    phase, _, rest = cursor.partition(":")
+    key, _, aid = rest.rpartition(":")
+    try:
+        return ("L", (key, aid)) if phase == "L" and aid else ("E", (float(key), aid)) if phase == "E" and aid else (
+            "?", None)
+    except ValueError:
+        return "?", None
+
+
 def wide_key(tool, target):
     """The digest of precedent_key's key of a call of `tool` with `target` in any project, each TK-A025 source as the
     same source however it is spelled (engine._source has the scheme and host in lower case already; here a default
@@ -4468,9 +4484,10 @@ class SignerService:
             if held:
                 data["incident_id"] = held
             if a.get("ai"):   # whether the run still met the AI approver's run bound now: a precedent only then (never
-                # under a policy without one, which may not read its labels)
+                # under a policy without one, which may not read its labels), and never from an identity an agent
+                # session runs or ran as, whatever approvers lists: its answer stands, as no person's precedent
                 data["run_clean"] = a["ai"]["clean"] and "approval_agent" in self.policy.policy and not self._unclean(
-                    run, a["requester"])
+                    run, a["requester"]) and not self._agent_session(identity, run["tenant"], allowed=False)
             tx.emit(run, "approval", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"])
             return {"approval_id": aid, "state": a["state"], "self_approved": same}
         out = self.log.submit(identity, "approval_decide" if groups is None else ON_BEHALF, req, fn, run_key)
@@ -4675,17 +4692,17 @@ class SignerService:
             self._cond.notify_all()
         return out
 
-    def _agent_session(self, identity, tenant):
+    def _agent_session(self, identity, tenant, allowed=True):
         """(on the writer) The id of a run of `tenant`, open or ended, that `identity` is a requester of (its client, a
         writer it was delegated to, a gateway's caller: a final run keeps them), but the signer's own and findings or
         replay runs: the identity an agent session runs or ran as, which is no person whatever approvers lists, and an
-        agent that closes its runs first is still that; None when there is none, or when self_approval lets the run's
-        own identity answer."""
-        if (self.approvals or {}).get("self_approval") == "allow":
+        agent that closes its runs first is still that; None when there is none, or (`allowed`) when self_approval
+        lets the run's own identity answer."""
+        if allowed and (self.approvals or {}).get("self_approval") == "allow":
             return None
         mine = owner(identity)
-        # lean: visits every run the signer holds, final ones too, on each person's change; index requesters by
-        # identity if a signer holds millions of runs
+        # lean: visits every run the signer holds, final ones too, on each person's change and each answer to an AI
+        # approver's hold; index requesters by identity if a signer holds millions of runs
         return next((r["run_id"] for k, r in self.log.runs.items() if r["tenant"] == tenant and k[1] != SIGNER_RUN[1]
                      and not r.get("replay") and mine in labels.requesters(r)), None)
 
@@ -5042,48 +5059,51 @@ class SignerService:
         agent_view, people = self._is_agent(identity), self._a_person(identity)
         if agent_view and "run_id" in req:   # an agent never learns which run an approval belongs to
             raise RPCError("forbidden", "an agent approver lists approvals without a run_id")
-        # copied on the writer, so only committed states are listed: the live approvals, then with `ended` those of runs
-        # gone final (ENDED_S), in the order their runs ended, each one's view built only for the page it is on
-        live = self.log.write(lambda tx: [
+        # copied on the writer, so only committed states are listed: the live approvals by when they were requested,
+        # then with `ended` those of runs gone final (ENDED_S) by when their runs ended, each one's view built only for
+        # the page it is on. The cursor is the last one's place in that order (list_cursor), not the approval itself:
+        # one whose run ends between two pages moves to the ended ones, and the next page goes on after its place
+        live = self.log.write(lambda tx: sorted((
             (aid, {**a, "run_closing": a["state"] == "requested" and self.log.runs[a["run_key"]]["closed"],
                    **self._agent_views(aid, a)})
-            for aid, a in self.log.approvals.items()])
-        page, cursor, limit, at = [], req.get("cursor"), req.get("limit", LIST_PAGE), [req.get("cursor") is None]
+            for aid, a in self.log.approvals.items()), key=lambda x: (x[1]["requested_at"], x[0])))
+        page, limit, (phase, after), marks = [], req.get("limit", LIST_PAGE), list_cursor(req.get("cursor")), []
 
-        def asked(aid, a):   # past the cursor, and what the request's filters name
-            if not at[0]:
-                at[0] = aid == cursor
-                return False
+        def asked(a):   # what the request's filters name
             return req.get("run_id") in (None, a["run_key"][1]) and req.get("state") in (None, a["state"]) and \
                 req.get("escalated") in (None, bool(a.get("escalated")))
 
-        def add(aid, a):   # an agent approver keeps whether its answer counts (`agent`); its allow-list drops the rest
+        def add(aid, a, mark):   # an agent approver keeps whether its answer counts (`agent`); its allow-list drops
             s = {**self._summary(aid, a, people or agent_view), **({"run_closing": True} if a["run_closing"] else {})}
-            page.append({k: v for k, v in s.items() if k in rpc_schema.AGENT_SUMMARY["properties"]}
+            page.append({k: v for k, v in s.items() if k in rpc_schema.AGENT_SUMMARY["properties"]}   # the rest
                         if agent_view else s)
-        # lean: every page scans the approvals from the first; index them by tenant once a signer holds ~100k
-        for aid, a in live:   # for: agent, those an agent may still answer (shadow too); person, those it can't decide
-            if asked(aid, a) and self._may_see(identity, a) and (
-                    "for" not in req or req["for"] == "agent" and a["agent_mode"] is not None
-                    or req["for"] == "person" and a["agent_mode"] != "enforce"):
+            marks.append(mark)
+
+        def more():
+            return {"approvals": page, "next_cursor": ":".join(map(str, marks[-1]))}
+        # lean: every page sorts and scans the approvals; index them by tenant once a signer holds ~100k
+        for aid, a in live if phase == "L" else ():   # for: agent, those an agent may still answer (shadow too);
+            if (after is None or (a["requested_at"], aid) > after) and asked(a) and self._may_see(identity, a) and (
+                    "for" not in req or req["for"] == "agent" and a["agent_mode"] is not None   # person, those it
+                    or req["for"] == "person" and a["agent_mode"] != "enforce"):              # can't decide
                 if len(page) == limit:
-                    return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
-                add(aid, a)
-        if not req.get("ended") or agent_view or req.get("for") == "agent":
+                    return more()
+                add(aid, a, ("L", a["requested_at"], aid))
+        if not req.get("ended") or agent_view or req.get("for") == "agent" or phase not in ("L", "E"):
             return {"approvals": page, "next_cursor": None}
 
         def ended(tx):   # (no agent's answer counts on them: never for an agent)
             out = []
-            for aid, a in self.log.ended.items():
-                if asked(aid, a) and self._may_read_ended(identity, a):
+            for aid, a in sorted(self.log.ended.items(), key=lambda kv: (kv[1]["ended"], kv[0])):
+                if (phase == "L" or (a["ended"], aid) > after) and asked(a) and self._may_read_ended(identity, a):
                     if len(page) + len(out) == limit:
                         return out, True
                     out.append((aid, {**a, "run_closing": False, **self._ended_views(aid, a)}))
             return out, False
-        more, full = self.log.write(ended)
-        for aid, a in more:
-            add(aid, a)
-        return {"approvals": page, "next_cursor": page[-1]["approval_id"] if full else None}
+        got, full = self.log.write(ended)
+        for aid, a in got:
+            add(aid, a, ("E", repr(a["ended"]), aid))
+        return more() if full else {"approvals": page, "next_cursor": None}
 
     def _approval_abandon(self, identity, req):
         key, aid = self._authorize(identity, req), req["approval_id"]

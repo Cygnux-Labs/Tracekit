@@ -987,9 +987,11 @@ lists `approval_get`. A box's agent channel may call it too.
 Lists the approvals the caller may see, a page at a time, oldest first. Send the previous answer's `next_cursor` as
 `cursor` to get the next page. `state`, `escalated` and `for` narrow the list: `for: agent` gives the approvals an agent
 approver may answer now, and `for: person` gives all the others, including the approvals an agent reviews in shadow mode. An agent approver lists without `run_id`, and the
-signer refuses the request if it sends one. The live approvals come first; with `ended: true` (version 29), the
-approvals of runs that ended in the last day follow them, in the order their runs ended (never to an agent approver).
-`approval_get` answers such an approval by its id either way.
+signer refuses the request if it sends one. The live approvals come first, by when they were requested; with `ended:
+true` (version 29), the approvals of runs that ended in the last day follow them, in the order their runs ended (never
+to an agent approver). `approval_get` answers such an approval by its id either way. `next_cursor` is a place in that
+order, not an approval: when an approval's run ends between two pages the next page goes on after its place, and with
+`ended: true` an approval listed live may come again among the ended ones (`tracekit approvals list --all` keeps one).
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `approval_list`. An agent approver may call it too, with an `authorize` entry that lists it.
