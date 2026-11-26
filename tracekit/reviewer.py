@@ -4,7 +4,7 @@ commands for people (docs/approvals.md#the-ai-approver).
 
     tracekit reviewer serve --config reviewer.yaml
     tracekit reviewer eval --config reviewer.yaml (--store DATA_DIR | --bundle RUN.tkb)
-    tracekit reviewer friction (--store DATA_DIR | --bundle RUN.tkb)
+    tracekit reviewer friction (--store DATA_DIR | --bundle RUN.tkb) [--json]   # a signer's DATA_DIR: as root
     tracekit reviewer status | accept ID | retire ID | revoke APPROVAL_ID | enable RULE... [--signer S] [--reason R]
 
 reviewer.yaml (relative paths are from this file):
@@ -60,6 +60,7 @@ import ipaddress
 import json
 import logging
 import os
+import shlex
 import stat
 import statistics
 import subprocess
@@ -560,6 +561,23 @@ def friction(events):
             "median_person_s": median(person)}
 
 
+def friction_lines(out):
+    """What `tracekit reviewer friction` prints: friction's counts in plain words (`--json`: as they are)."""
+    def n(x):
+        return "none yet" if x is None else f"{x:.0f} s"
+    share = "" if out["cleared_share"] is None else f" ({out['cleared_share']:.0%} of the calls a person approved)"
+    return [f"held by the AI approver's rules: {out['holds']} call(s)",
+            f"  a person's earlier yes let the AI answer: {out['covered']}",
+            f"  a person approved: {out['benign']}",
+            f"  the AI cleared (approved or suggested approving, and no person said no or took it back): "
+            f"{out['cleared']}{share}",
+            f"  where both answered: the AI agreed with the person {out['agree']} time(s), disagreed {out['disagree']}",
+            f"  false approves (an AI yes a person said no to or took back): {out['false_approve']}",
+            f"  taken back by a person: {out['revoked']}",
+            f"  median time to an answer: the AI {n(out['median_ai_s'])}, a person {n(out['median_person_s'])}",
+            "switch to enforce once false approves are none and agreement holds"]
+
+
 # what each rule the AI reviewer may answer holds, in people's words (compile.APPROVER_RULES)
 RULE_WORDS = {"TK-SHELL-PARSE": "a line the policy can't read", "TK-A062": "an unmapped tool given a command line",
               "TK-A025": "an install from a package index you chose, its line pinned (PIP_CONFIG_FILE=/dev/null pip "
@@ -691,8 +709,9 @@ def main(argv=None):
     for p in (p, sub.add_parser("friction", help="what the AI approver cleared and cost, from a store's or bundle's "
                                                  "records (a shadow week); no model call")):
         src = p.add_mutually_exclusive_group(required=True)
-        src.add_argument("--store", help="a signer's data_dir")
+        src.add_argument("--store", help="a signer's data_dir (its user's alone: run as root)")
         src.add_argument("--bundle", help="a .tkb bundle")
+    p.add_argument("--json", action="store_true", help="print the counts as one JSON object")
     for name, what in (("status", "whether it is on, what it may answer, how often people agreed with it, the "
                                   "circuit breaker's dropped rules and the playbook, in force and proposed"),
                        ("on", "a person switches the AI reviewer on, for --rules only when given"),
@@ -721,10 +740,16 @@ def main(argv=None):
         return people(a)
     if a.cmd == "friction":
         try:
-            print(json.dumps(friction(records(a.store, a.bundle))))
+            out = friction(records(a.store, a.bundle))
+        except PermissionError as e:   # a signer's data dir is its own user's: root reads it
+            print(f"tracekit reviewer friction: {e}: the signer's data dir is its user's alone; run it as root: `sudo "
+                  f"{shlex.quote(sys.executable)} -I -m tracekit reviewer friction --store {shlex.quote(a.store)}`"
+                  if a.store else f"tracekit reviewer friction: {e}", file=sys.stderr)
+            return 2
         except (OSError, ValueError) as e:
             print(f"tracekit reviewer friction: {e}", file=sys.stderr)
             return 2
+        print(json.dumps(out) if a.json else "\n".join(friction_lines(out)))
         return 0
     from tracekit.sdk.client import Client
     try:

@@ -799,10 +799,16 @@ another system prompt, answers in shadow until you run `tracekit reviewer enable
 escalates. Check it all, as the reviewer's user: `sudo -u _tkreviewer /opt/tracekit/bin/python -m tracekit doctor
 --reviewer "/Library/Application Support/tracekit-reviewer/reviewer.yaml"` (`D-REVIEWER-CONFIG`, `D-REVIEWER-MODEL`).
 
-**Before you enforce.** Run a week with `mode: shadow`, then `tracekit reviewer friction --store
-/var/lib/tracekit-signer` (no model call): the holds, how many a precedent let the AI answer, how many a person
-approved, how many the AI cleared and its share of those, its agreement with people, its false approves, the
-revocations, and the median seconds to an answer. Switch to `enforce` once false approves are none and agreement holds.
+**Before you enforce.** Run a week with `mode: shadow`, then, as root (the signer's data dir is its user's alone):
+
+```
+sudo /opt/tracekit/bin/python -I -m tracekit reviewer friction --store /var/lib/tracekit-signer
+```
+
+It makes no model call and prints the holds, how many a precedent let the AI answer, how many a person approved, how
+many the AI cleared and its share of those, its agreement with people, its false approves, the revocations, and the
+median seconds to an answer (`--json`: the counts as one object). Switch to `enforce` once false approves are none and
+agreement holds.
 
 ## Expiry and abandon
 

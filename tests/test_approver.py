@@ -2241,6 +2241,26 @@ class TestReviewerOnTheSigner(Case):
                           "disagree": 1, "false_approve": 1})
         self.assertGreaterEqual(out["median_ai_s"], 0)
 
+        def friction(*argv):
+            with contextlib.redirect_stdout(io.StringIO()) as o, contextlib.redirect_stderr(io.StringIO()) as e:
+                code = reviewer.main(["friction", "--store", self.dir, *argv])
+            return code, o.getvalue(), e.getvalue()
+        # the acceptance test: one unlabelled JSON line by default, and a person's Permission denied with no way on
+        code, text, _ = friction()
+        self.assertEqual(code, 0)
+        self.assertIn("held by the AI approver's rules: 5 call(s)\n  a person's earlier yes let the AI answer: 3\n", text)
+        self.assertIn("  the AI cleared (approved or suggested approving, and no person said no or took it back): 2 (67% "
+                      "of the calls a person approved)\n", text)
+        self.assertIn("  false approves (an AI yes a person said no to or took back): 1\n", text)
+        code, text, _ = friction("--json")
+        self.assertEqual((code, json.loads(text)), (0, out))
+        denied = PermissionError(13, "Permission denied", os.path.join(self.dir, "store"))
+        with mock.patch.object(reviewer, "records", side_effect=denied):
+            code, _, err = friction()
+        self.assertEqual(code, 2)
+        self.assertIn(f"Permission denied: '{self.dir}/store': the signer's data dir is its user's alone; run it as "
+                      f"root: `sudo {sys.executable} -I -m tracekit reviewer friction --store {self.dir}`", err)
+
     def test_a_change_to_the_approver_needs_a_request_id(self):
         schema = svc.REQUESTS["approver"]
         self.assertEqual(validate(schema, {"action": "status"}), [])   # a read
