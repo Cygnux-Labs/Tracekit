@@ -561,6 +561,16 @@
 {"tool": "Bash", "args": {"command": "kubectl get --raw /api/v1/namespaces/prod/secrets/db"}, "expect": "ask", "note": "#981: --raw of a secrets path reads the secret's value, not just its name"}
 {"tool": "Bash", "args": {"command": "netlify sites:delete abc-123"}, "expect": "ask", "note": "netlify sites:delete destroys the deployed site"}
 {"tool": "Bash", "args": {"command": "curl -X DELETE https://api.netlify.com/api/v1/sites/abc-123"}, "expect": "ask", "note": "DELETE of Netlify's site endpoint destroys the site"}
+{"tool": "Bash", "args": {"command": "sysadminctl -addUser bob -admin"}, "expect": "ask", "note": "creating a macOS admin login with sysadminctl (#996)"}
+{"tool": "Bash", "args": {"command": "sysadminctl -resetPasswordFor bob -newPassword x"}, "expect": "ask", "note": "resetting a macOS user's password with sysadminctl (#996)"}
+{"tool": "Bash", "args": {"command": "dseditgroup -o edit -a bob -t user admin"}, "expect": "ask", "note": "adding a user to macOS's admin group (#996)"}
+{"tool": "Bash", "args": {"command": "setcap cap_dac_override+ep ./x"}, "expect": "ask", "note": "a file capability that writes any file (#996)"}
+{"tool": "Bash", "args": {"command": "setcap cap_sys_ptrace+ep ./x"}, "expect": "ask", "note": "a file capability that traces any process (#996)"}
+{"tool": "Bash", "args": {"command": "echo cap_setuid+ep | setcap - ./x"}, "expect": "ask", "note": "setuid capability given to setcap on stdin (#996)"}
+{"tool": "Bash", "args": {"command": "cat <<EOF | setcap - ./x\n$CAPS\nEOF"}, "expect": "ask", "note": "a heredoc holding a variable piped into setcap - reads as every capability (#1030)"}
+{"tool": "Bash", "args": {"command": "cat <<EOF | setcap - ./x\n$(echo cap_setuid)+ep\nEOF"}, "expect": "ask", "note": "a heredoc holding a substitution piped into setcap - reads as every capability (#1030)"}
+{"tool": "Bash", "args": {"command": "setcap - ./x <<EOF\n$CAPS\nEOF"}, "expect": "ask", "note": "setcap's own heredoc holding a variable reads as every capability (#1030)"}
+{"tool": "Bash", "args": {"command": "setcap - ./x <<< \"$CAPS\""}, "expect": "ask", "note": "setcap's own herestring holding a variable reads as every capability (#1030)"}
 {"tool": "Bash", "args": {"command": "wrangler delete"}, "expect": "ask", "note": "wrangler delete destroys the deployed Worker"}
 {"tool": "Bash", "args": {"command": "wrangler pages project delete myproj --yes"}, "expect": "ask", "note": "wrangler pages project delete destroys the deployed Pages project"}
 {"tool": "Bash", "args": {"command": "lerna publish"}, "expect": "ask", "note": "dev-only: lerna publish releases every package", "packs": ["dev"]}

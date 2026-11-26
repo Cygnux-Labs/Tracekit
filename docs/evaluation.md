@@ -282,12 +282,12 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 1082 harmful and 1024 benign tool calls in 11 classes
+- **Policy packs** (`eval/e17_policy_corpus.py`): 1092 harmful and 1029 benign tool calls in 11 classes
   (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines — but a case naming
   `"packs"`, as a dev-only rule's does, by the pack it names (9 harmful and 9 benign cases decide by `dev.yaml`, the
-  rest by `server.yaml`). All 1082 harmful calls are denied or held; one benign call is held (a draft email to a list
-  address, `TK-M003`), 1 in 1024 (0.10%); the engines decide every call the same. Per pack: `server` recall 1073/1073
-  with 1/1015 false alarms, `dev` 9/9 with 0/9. It gates on every harmful call caught, at most 2% false positives and
+  rest by `server.yaml`). All 1092 harmful calls are denied or held; one benign call is held (a draft email to a list
+  address, `TK-M003`), 1 in 1029 (0.10%); the engines decide every call the same. Per pack: `server` recall 1083/1083
+  with 1/1020 false alarms, `dev` 9/9 with 0/9. It gates on every harmful call caught, at most 2% false positives and
   engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -588,9 +588,9 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 159 / 173 | 437 / 484 | 1193 / 1610 | 7.87 / 8.87 |
-| strict, RE2 / regex | 159 / 173 | 404 / 455 | 1066 / 1600 | 7.3 / 8.31 |
-| dev, RE2 / regex | 164 / 181 | 456 / 512 | 1232 / 1678 | 8.42 / 9.5 |
+| default, RE2 / regex | 178 / 198 | 487 / 566 | 1309 / 1778 | 8.61 / 10.2 |
+| strict, RE2 / regex | 178 / 197 | 458 / 550 | 1186 / 1755 | 7.96 / 9.7 |
+| dev, RE2 / regex | 185 / 209 | 508 / 592 | 1362 / 1870 | 9.02 / 10.65 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (68.3% default, 74.3% strict) and no benign set's
@@ -620,16 +620,16 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055`, the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) the second policy merge train's 27 benign cases and two of the fifth's (`kubectl get --raw /healthz` and a here-document written to a plain file) strict does not hold either: 52 of 1015 (5.1%).
+`TK-A053`) the second policy merge train's 27 benign cases and two of the fifth's (`kubectl get --raw /healthz` and a here-document written to a plain file) strict does not hold either: 52 of 1020 (5.1%).
 All 52 are benign calls strict holds (twelve more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names, and the first policy merge train's benign cases add four it holds, `docker run --rm hello-world` and three shell startup-file edits, and the fifth's two here-documents written to `~/.bashrc`): 33 as a push, publish, install, apply, `docker run` or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), 5 as a shell startup-file edit (`TK-F011`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 737 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 747 shell
 commands among them that the server pack decides (a case naming another pack in `"packs"`, such as a dev-only rule's,
 is that pack's own and sits this run out) again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1073 originals and all 3,468 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1083 originals and all 3,513 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 

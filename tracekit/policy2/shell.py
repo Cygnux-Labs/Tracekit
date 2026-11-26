@@ -2019,6 +2019,11 @@ def _home_readings(ctx):
     the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`) or a here-string gives it (_xargs_here_words),
     and a Windows root or home (_windows_home: C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so
     TK-D004 reads them as that home or root, and TK-D014 as a system folder.
+    Also `setcap -` read with the capabilities on its stdin in place of its `-` (`echo cap_setuid+ep | setcap - ./x`),
+    so TK-A077 reads them as setcap's own words: what the stage before it prints when the line gives that exactly
+    (echo, printf's %s and %b, a herestring or heredoc cat copies), else its own herestring or heredoc; piped input
+    the line doesn't give exactly, a pipe and a herestring or heredoc both, or a heredoc or herestring whose text holds
+    a variable or a substitution the parser didn't resolve, reads as every capability.
     lean: in the line's order, whatever subshell or branch the cd is in; a cd elsewhere (or one it can't name) ends it"""
     where, links, printed, fed = None, {}, {}, None
     for c in list(ctx["cmds"]):
@@ -2043,6 +2048,20 @@ def _home_readings(ctx):
                 argv = argv + extra
         if c["via"][-1:] in (["xargs"], ["gxargs"]):
             argv = argv + _xargs_here_words(fed, c)
+        if argv[0] == "setcap" and "-" in argv:
+            # what the stage before it prints (Parser.said; a heredoc cat copies is in that cat's stdin), else its own
+            # herestring or heredoc; None, input the line doesn't give exactly, is read as every capability (all+ep)
+            # (one inside a group, subshell, function or shell that is itself a piped stage reads that pipe: None too),
+            # and so is a heredoc or herestring with a $ or backtick left in its text: an expansion the parser didn't
+            # resolve (a variable it doesn't know, a substitution, a heredoc's body as written), as a variable echo
+            # prints is
+            feed = c.get("setcap_in", None if any(s > 0 for _, s in c.get("reaches") or ()) else c["stdin"])
+            texts = [t if isinstance(t, str) else " ".join(x for d in t["cmds"] for x in d["stdin"]) for t in feed or ()]
+            given = ["all+ep"] if feed is None or any(re.search(r"[$`]", t) for t in texts) else \
+                [w for t in texts for w in t.split()]
+            if given:
+                i = argv.index("-")
+                ctx["cmds"].append({**c, "argv": argv[:i] + given + argv[i + 1:], "via": c["via"] + ["setcap's stdin"]})
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
             continue
         read = [argv[0]]
@@ -4812,6 +4831,8 @@ class _Parser:
         for c in cmds:
             c["stdin"] += strings
             c["out"], c["in"], c["stage"] = outs, ins, stage
+            if piped and c["argv"][0] == "setcap":   # what `setcap -` reads (_home_readings): None when not exact
+                c["setcap_in"] = None if strings or docs or stdin_redirect else self.said.get((pid, stage - 1))
         own = {id(c) for c in cmds}   # what its substitutions and subshells run prints into it
         for c in self.ctx["cmds"][first:]:
             if id(c) not in own:

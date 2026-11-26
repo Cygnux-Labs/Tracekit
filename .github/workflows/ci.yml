@@ -29,6 +29,7 @@ jobs:
       contrib: ${{ steps.paths.outputs.contrib }}
       go_verifier: ${{ steps.paths.outputs.go_verifier }}
       strands: ${{ steps.paths.outputs.strands }}
+      deepagents: ${{ steps.paths.outputs.deepagents }}
       crewai: ${{ steps.paths.outputs.crewai }}
       browser_use: ${{ steps.paths.outputs.browser_use }}
       quickstart: ${{ steps.paths.outputs.quickstart }}
@@ -69,6 +70,7 @@ jobs:
           need contrib '^(contrib/|tracekit_sdk\.py|tracekit/(__init__|agent_sdk|bundle|client|core|cost|coverage|daemon|findings|hook|install|ledger|policy)\.py|tracekit/(adapters|policy|verify)/)'
           need go_verifier '^(contrib/independent-go-verifier/|tracekit/(bundle|bundle_v2)\.py|tracekit/(verify|format|schema)/|tests/(golden|kit)/|tests/test_(go_verifier|bounded|ts_verifier)\.py)'
           need strands '^(tracekit/integrations/(__init__|strands|said|gate|version_check)\.py|tracekit/(parsers|autowire|gateway|policy)\.py|tracekit/(sdk|signer|format)/|tests/test_(strands|examples_v2|said)\.py|examples/v2/strands/)'
+          need deepagents '^(tracekit/integrations/|tracekit/policy2/|tracekit/(sdk|signer|format)/|tests/test_deepagents\.py)'
           need crewai '^(tracekit/integrations/(__init__|crewai|version_check)\.py|tracekit/autowire\.py|tracekit/(sdk|format)/|tracekit/signer/rpc_schema\.py|tests/test_(crewai|examples_v2)\.py|examples/v2/crewai/)'
           need browser_use '^(tracekit/integrations/|tracekit/(__init__|autowire|testing|wiki|policy)\.py|tracekit/(sdk|signer|format)/|tests/test_(contract_browser_use|instrument)\.py)'
           need quickstart '^(docs/quickstart-v2\.md|tests/(test_quickstart|quickstart_agents)\.py|tracekit/(__init__|autowire|cli|install)\.py|tracekit/(integrations|sdk|signer)/)'
@@ -479,6 +481,20 @@ jobs:
       - run: python -m pip install -e . pytest PyYAML regex "strands-agents>=1.66,<2"
       - run: python -m pytest -q tests/test_strands.py
       - run: python -m pytest -q tests/test_examples_v2.py -k test_strands
+
+  deepagents:
+    name: "Deep Agents integration (own environment: needs deepagents)"
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.deepagents != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e . pytest PyYAML regex "deepagents==0.7.41" "langgraph>=1.2.24,<1.3"
+      - run: python -m pytest -q tests/test_deepagents.py
 
   google-adk-latest:
     # the newest Google ADK 2.x the docs' install line allows (google-adk>=2.12,<3), tested as the floor the dev extra pins is

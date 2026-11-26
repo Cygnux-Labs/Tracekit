@@ -354,6 +354,12 @@ class TestDecisions(Case):
         self.assertEqual(f.decide("r", ("read_secret_v2", {}))["sequences"], [{"id": "Q", "step": 1}])   # unknown
         self.assertEqual(f.types(), [])
 
+    def test_a_deep_agents_decision_has_its_mapped_class_not_an_unknown_one(self):
+        f = Feed({**POLICY, "tools": {**POLICY["tools"], "Read": "fs"}})
+        f.register("r")
+        self.assertEqual(f.decide("r", ("deepagents:read_file", {"file_path": "/srv/a.txt"}))["sequences"], [])
+        self.assertEqual(f.types(), [])
+
     def test_a_restart_that_lost_the_state_keeps_open_runs_scopes(self):
         s = self.signer()
         root = s.register()
