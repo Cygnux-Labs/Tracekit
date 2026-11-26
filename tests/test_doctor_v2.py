@@ -320,6 +320,29 @@ class CodingAgentHooks(unittest.TestCase):
                 self.assertEqual(status, want, detail)
                 if want == doctor.WARN:
                     self.assertIn(f, detail)
+        # system mode fails rather than warns, as Claude Code's row does
+        with open(local, "w") as out:
+            json.dump({"disableAllHooks": True}, out)
+        with mock.patch("os.getcwd", return_value=proj):
+            prod = {}
+            rank = {doctor.OK: 0, doctor.INFO: 1, doctor.WARN: 2, doctor.FAIL: 3}
+            doctor._harness_hook_checks(
+                lambda rid, ok, detail, fix, bad=doctor.FAIL: prod.__setitem__(
+                    rid, max(prod.get(rid, doctor.OK), doctor.OK if ok else bad, key=lambda s: rank[s])),
+                {"codebuddy": user}, True, home)
+        self.assertEqual(prod["D-HOOKS-EVENT"], doctor.FAIL, "system mode: FAIL, not WARN")
+        # the reader returns true only for a literal true, and a later null does not lift an earlier true
+        for value, want in (("false", doctor.OK), (1, doctor.OK), ([], doctor.OK), ({}, doctor.OK),
+                            (None, doctor.WARN)):
+            with open(local, "w") as out:
+                json.dump({"disableAllHooks": value if value is not None else True}, out)
+            if value is None:   # a later null: the earlier file's true stands
+                with open(project, "w") as out:
+                    json.dump({"disableAllHooks": True}, out)
+                with open(local, "w") as out:
+                    json.dump({"disableAllHooks": None}, out)
+            with self.subTest(value=value):
+                self.assertEqual(row()[0], want, f"disableAllHooks: {value!r}")
 
     def test_a_codebuddy_config_dir_naming_another_folder_is_named(self):
         """Init writes the file `$CODEBUDDY_CONFIG_DIR` names when it runs; a CodeBuddy Code that starts with another

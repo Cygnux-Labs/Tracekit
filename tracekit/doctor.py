@@ -1238,23 +1238,28 @@ def _opencode_loads(add, path, fix, bad):
 
 
 def _codebuddy_off(home=None):
-    """The CodeBuddy Code settings file whose `disableAllHooks` is in force, or None. CodeBuddy's bundle
-    (`@tencent-ai/codebuddy-code` 2.183.0, dist/codebuddy.js, `settingsDisableAllHooks`) reads
-    `<home>/settings.json`, the project's `.codebuddy/settings.json` and `settings.local.json` beside it, keeps the
-    last one that sets the key (`eA?.disableAllHooks !== void 0 && (el = eA.disableAllHooks)`) and returns
-    `true === el`: a later file's `false` lifts an earlier file's `true`, as Claude Code's drop-ins do.
+    """The CodeBuddy Code settings file whose `disableAllHooks` is in force, or None. The layers are CodeBuddy's own
+    settings order — its settings page, "Settings Priority": the user's `settings.json`, the project's
+    `.codebuddy/settings.json`, then `settings.local.json` beside it — and the last file that sets the key decides.
+    `@tencent-ai/codebuddy-code` 2.183.0 (`dist/codebuddy.js`) reads exactly those three files for the key in
+    `settingsDisableAllHooks`, which is `codebuddy plugin test`'s refusal helper (module 902551, beside
+    `pluginTestFormOf` and `pluginTestRefusal`, called only from `runPluginTestFastPath`) — not the code that decides
+    whether a session runs its hooks, which the bundle doesn't expose. It keeps the last value
+    (`eA?.disableAllHooks !== void 0 && (el = eA.disableAllHooks)`) and returns `true === el`, so this reads a literal
+    `true`: a later file's `false` lifts an earlier file's `true`, and a later `null` does not, which matches it rather
+    than JavaScript truthiness.
     lean: `allowManagedHooksOnly` turns the hooks off too ("hooks modules are turned off here (disableAllHooks,
     allowManagedHooksOnly or a policy)"), but CodeBuddy reads it only from its managed settings documents
     (`parseManagedModSettings`), which doctor can't see"""
     from . import agent_hooks
     user = agent_hooks.config_path("codebuddy", home=home) if home else agent_hooks.config_path("codebuddy")
     project = agent_hooks.config_path("codebuddy", os.getcwd())
-    at = None
+    at, value = None, None
     for f in dict.fromkeys([user, project, os.path.join(os.path.dirname(project), "settings.local.json")]):
         v = _setting(f, "disableAllHooks")
         if v is not None:
-            at = None if v is False or v == 0 or v == "" else f
-    return at
+            at, value = f, v
+    return at if value is True else None
 
 
 def _codebuddy_later(home=None):
@@ -1263,7 +1268,10 @@ def _codebuddy_later(home=None):
     settings.local.json (doctor's working directory's), each in its order, and the last permissionDecision stands.
     Tracekit's hook is the first that runs its module; after it, any hook but the exact PreToolUse command init writes
     (v1 or v2, dev or system mode) is named: one that only names the module, in a comment, may answer anything.
-    lean: a plugin's, a skill's or an SDK host's hooks, which run later too, aren't read (docs/limits.md)"""
+    lean: a plugin's, a skill's or an SDK host's hooks, which run later too, aren't read (docs/limits.md). The bundle
+    names the file a plugin's hooks live in — `hooks/hooks.json` inside the plugin ("no hooks module to load;
+    hooks/hooks.json names none in …", "hooks.json declares PreToolUse/PermissionRequest at its top") — but not the root
+    a plugin or a skill is installed under, which is what a check would have to walk"""
     from . import agent_hooks
     mine = {agent_hooks._command("codebuddy", "PreToolUse", v2, python)
             for v2 in (True, False) for python in (None, install.OPT_PYTHON)}
