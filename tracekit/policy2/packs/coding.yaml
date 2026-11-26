@@ -1235,8 +1235,8 @@ ask:
     # 0x13, 020, 0x10), or every capability (`all`, or an
     # empty list before =: =ep), after up to sixteen words: a list of up to 64 names holding one of them, then
     # operators each with its flags, one a + or = that adds e, i or p (+ep, =eip, =+ep, -e+p); also what `setcap -`
-    # reads on its stdin, as its own words (shell._home_readings: piped input the line doesn't give exactly reads as
-    # all+ep). Removing it (chmod u-s,
+    # reads on its stdin, as its own words (shell._home_readings: piped input the line doesn't give exactly, and a
+    # heredoc or herestring holding a variable or a substitution, read as all+ep). Removing it (chmod u-s,
     # install -m u-s, setcap -r, cap_setuid-ep, cap_setuid=), the sticky bit alone (1777) and setcap -v (verify only)
     # stay unheld. lean: the word and list bounds keep the fallback engine linear
     pattern: '^(?:chmod(?: -[^ ]+){0,8}? (?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|install(?: [^ ]+){0,64}? (?:-[a-zA-Z]*m ?|--m(?:o(?:de?)?)?[ =])(?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|setcap(?: [^ ]+){0,16}? (?:(?:[A-Za-z0-9_]+,){0,64}?(?:[Cc][Aa][Pp]_(?:[Ss][Ee][Tt][Uu][Ii][Dd]|[Ss][Ee][Tt][Gg][Ii][Dd]|[Ss][Yy][Ss]_(?:[Aa][Dd][Mm][Ii][Nn]|[Pp][Tt][Rr][Aa][Cc][Ee]|[Mm][Oo][Dd][Uu][Ll][Ee])|[Dd][Aa][Cc]_(?:[Oo][Vv][Ee][Rr][Rr][Ii][Dd][Ee]|[Rr][Ee][Aa][Dd]_[Ss][Ee][Aa][Rr][Cc][Hh])|[Ff][Oo][Ww][Nn][Ee][Rr]|[Cc][Hh][Oo][Ww][Nn])|[Aa][Ll][Ll]|0*[0-367]|1[69]|21|0+2[035]|0[Xx]0*(?:[0-367]|1[035]))(?:,[A-Za-z0-9_]+){0,64})?(?:[-+=][EeIiPp]*){0,8}?[+=][EeIiPp])'

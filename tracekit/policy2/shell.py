@@ -2022,7 +2022,8 @@ def _home_readings(ctx):
     Also `setcap -` read with the capabilities on its stdin in place of its `-` (`echo cap_setuid+ep | setcap - ./x`),
     so TK-A077 reads them as setcap's own words: what the stage before it prints when the line gives that exactly
     (echo, printf's %s and %b, a herestring or heredoc cat copies), else its own herestring or heredoc; piped input
-    the line doesn't give exactly, or a pipe and a herestring or heredoc both, reads as every capability.
+    the line doesn't give exactly, a pipe and a herestring or heredoc both, or a heredoc or herestring whose text holds
+    a variable or a substitution the parser didn't resolve, reads as every capability.
     lean: in the line's order, whatever subshell or branch the cd is in; a cd elsewhere (or one it can't name) ends it"""
     where, links, printed, fed = None, {}, {}, None
     for c in list(ctx["cmds"]):
@@ -2050,10 +2051,14 @@ def _home_readings(ctx):
         if argv[0] == "setcap" and "-" in argv:
             # what the stage before it prints (Parser.said; a heredoc cat copies is in that cat's stdin), else its own
             # herestring or heredoc; None, input the line doesn't give exactly, is read as every capability (all+ep)
-            # (one inside a group, subshell, function or shell that is itself a piped stage reads that pipe: None too)
+            # (one inside a group, subshell, function or shell that is itself a piped stage reads that pipe: None too),
+            # and so is a heredoc or herestring with a $ or backtick left in its text: an expansion the parser didn't
+            # resolve (a variable it doesn't know, a substitution, a heredoc's body as written), as a variable echo
+            # prints is
             feed = c.get("setcap_in", None if any(s > 0 for _, s in c.get("reaches") or ()) else c["stdin"])
-            given = ["all+ep"] if feed is None else [w for t in feed for w in (t if isinstance(t, str) else " ".join(
-                x for d in t["cmds"] for x in d["stdin"])).split()]
+            texts = [t if isinstance(t, str) else " ".join(x for d in t["cmds"] for x in d["stdin"]) for t in feed or ()]
+            given = ["all+ep"] if feed is None or any(re.search(r"[$`]", t) for t in texts) else \
+                [w for t in texts for w in t.split()]
             if given:
                 i = argv.index("-")
                 ctx["cmds"].append({**c, "argv": argv[:i] + given + argv[i + 1:], "via": c["via"] + ["setcap's stdin"]})

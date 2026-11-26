@@ -567,3 +567,7 @@
 {"tool": "Bash", "args": {"command": "setcap cap_dac_override+ep ./x"}, "expect": "ask", "note": "a file capability that writes any file (#996)"}
 {"tool": "Bash", "args": {"command": "setcap cap_sys_ptrace+ep ./x"}, "expect": "ask", "note": "a file capability that traces any process (#996)"}
 {"tool": "Bash", "args": {"command": "echo cap_setuid+ep | setcap - ./x"}, "expect": "ask", "note": "setuid capability given to setcap on stdin (#996)"}
+{"tool": "Bash", "args": {"command": "cat <<EOF | setcap - ./x\n$CAPS\nEOF"}, "expect": "ask", "note": "a heredoc holding a variable piped into setcap - reads as every capability (#1030)"}
+{"tool": "Bash", "args": {"command": "cat <<EOF | setcap - ./x\n$(echo cap_setuid)+ep\nEOF"}, "expect": "ask", "note": "a heredoc holding a substitution piped into setcap - reads as every capability (#1030)"}
+{"tool": "Bash", "args": {"command": "setcap - ./x <<EOF\n$CAPS\nEOF"}, "expect": "ask", "note": "setcap's own heredoc holding a variable reads as every capability (#1030)"}
+{"tool": "Bash", "args": {"command": "setcap - ./x <<< \"$CAPS\""}, "expect": "ask", "note": "setcap's own herestring holding a variable reads as every capability (#1030)"}

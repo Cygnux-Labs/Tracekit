@@ -345,6 +345,12 @@ class CodingPack(unittest.TestCase):
             "printf '%b' 'cap_net_raw+ep\\ncap_setuid+ep' | setcap - ./x",
             "printf '%s+ep' cap_setuid | setcap - ./x", "printf 'cap_%s+ep' setuid | setcap - ./x",
             "cat <<EOF | setcap - ./x\ncap_setuid+ep\nEOF", "echo $CAPS | setcap - ./x",
+            # #1030: a heredoc or herestring holding a variable or a substitution reads as every capability, as a
+            # variable's input does (its raw body reached setcap as `$CAPS`, which the rule doesn't match)
+            "cat <<EOF | setcap - ./x\n$CAPS\nEOF", "C=cap_setuid; cat <<EOF | setcap - ./x\n${C}+ep\nEOF",
+            "cat <<EOF | setcap - ./x\n$(echo cap_setuid)+ep\nEOF", "cat <<EOF | setcap - ./x\n`echo cap_setuid`+ep\nEOF",
+            "setcap - ./x <<EOF\n$CAPS\nEOF", 'setcap - ./x <<< "$CAPS"', "setcap - ./x <<< $(echo cap_setuid)+ep",
+            'cat <<< "$CAPS" | setcap - ./x', "cat <<EOF | setcap - ./x\n${X:-cap_net_bind_service+ep}\nEOF",
             # and a setcap - inside a stage that is itself piped (round 2)
             "echo cap_setuid+ep | (setcap - ./x)", "echo cap_setuid+ep | bash -c 'setcap - ./x'",
             "echo cap_setuid+ep | if true; then setcap - ./x; fi", "f() { setcap - ./x; }; echo cap_setuid+ep | f")] + [
@@ -385,7 +391,12 @@ class CodingPack(unittest.TestCase):
                   "setcap -v cap_net_bind_service+ep ./x", "echo cap_net_bind_service+ep | setcap - ./x",
                   "printf '%s+ep' cap_net_bind_service | setcap - ./x",
                   "cat <<EOF | setcap - ./x\ncap_net_bind_service+ep\nEOF", "setcap - ./x <<< cap_net_bind_service+ep",
-                  "setcap cap_dac_override-ep x")
+                  "setcap cap_dac_override-ep x",
+                  # #1030's twins: a heredoc or herestring without an expansion, quoted delimiter or not, and a
+                  # herestring's variable the parser resolves
+                  "cat <<'EOF' | setcap - ./x\ncap_net_bind_service+ep\nEOF",
+                  "setcap - ./x <<'EOF'\ncap_net_bind_service+ep\nEOF", "setcap - ./x <<EOF\ncap_net_bind_service+ep\nEOF",
+                  "C=cap_net_bind_service+ep; setcap - ./x <<< $C", "cat <<< cap_net_bind_service+ep | setcap - ./x")
         new = {want for _, want in held}
         for pack, engine, e in self.every_pack():
             for command, want in held:

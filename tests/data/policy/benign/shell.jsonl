@@ -384,3 +384,5 @@
 {"tool": "Bash", "args": {"command": "sysadminctl -secureTokenStatus bob"}, "expect": "allow", "note": "reading a macOS user's secure token status (#996)"}
 {"tool": "Bash", "args": {"command": "dseditgroup -o read admin"}, "expect": "allow", "note": "listing macOS's admin group (#996)"}
 {"tool": "Bash", "args": {"command": "setcap -v cap_net_bind_service+ep ./x"}, "expect": "allow", "note": "verifying a file's capabilities (#996)"}
+{"tool": "Bash", "args": {"command": "cat <<'EOF' | setcap - ./x\ncap_net_bind_service+ep\nEOF"}, "expect": "allow", "note": "a quoted-delimiter heredoc giving setcap - an ordinary capability (#1030)"}
+{"tool": "Bash", "args": {"command": "setcap - ./x <<EOF\ncap_net_bind_service+ep\nEOF"}, "expect": "allow", "note": "setcap's own heredoc giving it an ordinary capability (#1030)"}

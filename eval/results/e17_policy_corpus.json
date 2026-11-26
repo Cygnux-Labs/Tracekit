@@ -60,9 +60,9 @@
       "fp": 0
     },
     "shell": {
-      "deny": 569,
-      "caught": 569,
-      "benign": 386,
+      "deny": 573,
+      "caught": 573,
+      "benign": 388,
       "fp": 0
     },
     "sql": {
@@ -1101,6 +1101,10 @@
     "deny/shell:567": "ask TK-A077",
     "deny/shell:568": "ask TK-A077",
     "deny/shell:569": "ask TK-A077",
+    "deny/shell:570": "ask TK-A077",
+    "deny/shell:571": "ask TK-A077",
+    "deny/shell:572": "ask TK-A077",
+    "deny/shell:573": "ask TK-A077",
     "deny/sql:1": "deny TK-DB001 TK-A041",
     "deny/sql:2": "deny TK-DB001 TK-A041",
     "deny/sql:3": "deny TK-DB001 TK-A041",
@@ -2066,6 +2070,8 @@
     "benign/shell:384": "allow",
     "benign/shell:385": "allow",
     "benign/shell:386": "allow",
+    "benign/shell:387": "allow",
+    "benign/shell:388": "allow",
     "benign/sql:1": "allow",
     "benign/sql:2": "allow",
     "benign/sql:3": "allow",
@@ -2191,6 +2197,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0009823182711198428,
+  "benign_fp_rate": 0.000980392156862745,
   "ok": true
 }
