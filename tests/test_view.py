@@ -2413,10 +2413,10 @@ class WhyLive(WhyServer):
         store = Store(os.path.join(self.tmp, "late"))
         scan = store.scan
 
-        def slow_first(announce=True):
+        def slow_first(announce=True, quiet=()):
             if not store._stat:
                 time.sleep(0.5)
-            scan(announce)
+            scan(announce, quiet)
         with mock.patch.object(store, "scan", slow_first):
             store.watch()
             self.addCleanup(store.stop)

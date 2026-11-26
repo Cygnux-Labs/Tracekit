@@ -31,7 +31,7 @@ import re
 import sys
 import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Collection, Dict, Iterable, List, Optional, Tuple
 
 from .analysis import analyse, workspace
 from .core import GENESIS, REF, SCHEMA, content_hash, event_hash, event_problem, load_run, referenced_refs, ts_seconds
@@ -235,15 +235,15 @@ class Store:
                 if al["severity"] == "high":
                     self.webhook.send(al, run.run_id)
 
-    def scan(self, announce: bool = True) -> None:
+    def scan(self, announce: bool = True, quiet: Collection[str] = ()) -> None:
         """Analyses each run that changed since the last scan (once, however many batches changed it), and forgets
-        runs that are gone."""
+        runs that are gone. A run in `quiet` is analysed without announcing it."""
         paths = self.paths()
         for p in paths:
             st = _stat(p)
             if st is not None and self._stat.get(p) != st:
                 try:   # one run's error skips that run (retried when its log changes), never the runs after it
-                    self._changed(p, announce)
+                    self._changed(p, announce and p not in quiet)
                 except Exception as e:
                     print(f"tracekit why: {p}: {type(e).__name__}: {e}", file=sys.stderr)
         gone = set(self._stat) - set(paths)
@@ -253,24 +253,25 @@ class Store:
                     d.pop(p, None)
 
     def watch(self, interval: float = 0.5) -> None:
-        """Poll the runs folder in a daemon thread (ingest wakes it at once). Existing runs are indexed silently
-        before this returns, so only alerts raised after the server started are announced. stop() ends it."""
+        """Poll the runs folder in a daemon thread (ingest wakes it at once). The runs there when this is called are
+        indexed silently, and a run written after it is announced, however late the first scan reaches it. stop()
+        ends it.
+        lean: a run already there that grows before the first scan reaches it is indexed silently too, so an alert it
+        raises in that window is shown but not announced; upgrade: index each such log up to its size at the call"""
         if self._watcher is not None:
             return
-
-        announce = False   # until a scan completes: a run it didn't reach is still indexed silently
-        try:   # before watch returns: a run written after it is announced, however long this takes
-            self.scan(False)
-            announce = True
-        except Exception as e:
+        try:
+            there = set(self.paths())   # names only: the analysis runs in the thread, so the server starts at once
+        except Exception as e:   # unlisted: every run the first completed scan finds is indexed silently
+            there = None
             print(f"tracekit why: watcher: {e}", file=sys.stderr)
 
         def loop() -> None:
-            nonlocal announce
+            quiet = there   # until a scan completes
             while True:
                 try:   # one bad log must not end the watcher: _changed() records its stat first, so it isn't retried
-                    self.scan(announce)
-                    announce = True
+                    self.scan(quiet is not None, quiet or ())
+                    quiet = ()
                 except Exception as e:
                     print(f"tracekit why: watcher: {e}", file=sys.stderr)
                 self._wake.wait(interval)
