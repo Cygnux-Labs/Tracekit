@@ -4233,6 +4233,64 @@ class CodingPack(unittest.TestCase):
             d = e.decide("mcp__aws-api__call_aws", {"cli_command": "aws ssm get-parameter " + "x\t" * 19000})
             self.assertEqual(("TK-A036" in d["rule_ids"], d.get("nondeterministic")), (False, None), d)
 
+    def test_mcp_command_runner_holds_tk_a021_credential_reads(self):
+        """#1083: TK-A021 credential-read commands arriving through an MCP command-runner tool are held on
+        coding (and every pack), not merely flagged by TK-F006; non-secret subcommands stay outside TK-A093."""
+        tools = ("mcp:x/run", "mcp__shell__run_command", "mcp__aws-api__call_aws", "mcp__ops__execute")
+        held = [
+            {"cmd": "gh auth token"},
+            {"cmd": "gh  auth\ttoken --hostname ghe.corp"},
+            {"cmd": "gh auth status --show-token"},
+            {"cmd": "gh auth status -h github.com -t"},
+            {"cmd": "gh auth git-credential get"},
+            {"cmd": "pass github"},
+            {"cmd": "gopass show email/github"},
+            {"cmd": "security find-generic-password -s x"},
+            {"cmd": "security -q find-internet-password -s x"},
+            {"cmd": "secret-tool lookup service github"},
+            {"cmd": "kwallet-query kdewallet -r item"},
+            {"cmd": "ssh-add -L"},
+            {"cmd": "ssh-add -q -L"},
+            {"cmd": "git credential fill"},
+            {"cmd": "git -C repo credential-store get"},
+            {"cmd": "git-credential-libsecret get"},
+            {"cli_command": "aws configure get aws_secret_access_key"},
+            {"cli_command": "aws --profile prod configure get prod.aws_session_token"},
+            {"command": "glab config get token"},
+            {"command": "glab auth status -t"},
+            {"command": "kubectl config view --raw"},
+            {"command": "oc -n prod config view --minify --raw=true"},
+            {"command": "gcloud auth print-access-token"},
+            {"command": "gcloud --project p auth application-default print-identity-token"},
+            {"command": "keepassxc-cli show passwords.kdbx Github"},
+        ]
+        routine = [
+            {"cmd": "gh auth status"},
+            {"cmd": "gh auth login"},
+            {"cmd": "gh auth git-credential store"},
+            {"cmd": "ssh-add -l"},
+            {"cmd": "git credential approve"},
+            {"cmd": "git status"},
+            {"cli_command": "aws configure get region"},
+            {"cli_command": "aws configure get aws_access_key_id"},
+            {"command": "glab auth status"},
+            {"command": "glab config get editor"},
+            {"command": "kubectl config view"},
+            {"command": "kubectl config view --raw=false"},
+            {"command": "gcloud auth list"},
+            {"command": "keepassxc-cli ls passwords.kdbx"},
+            {"command": "gh auth", "params": "token"},
+        ]
+        for pack, engine, e in self.every_pack():
+            for tool in tools:
+                for args in held + routine:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                        d = e.decide(tool, args)
+                        self.assertEqual("TK-A093" in d["rule_ids"], args in held, d)
+                        if args in held:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+            self.assertNotIn("TK-A093", e.decide("mcp__x__get_thing", held[0])["rule_ids"])
+
     def test_an_mcp_tool_that_returns_a_secrets_value_asks_in_every_pack_and_one_that_lists_or_describes_does_not(self):
         held = [("mcp__aws__get_secret_value", {"secret_id": "prod/db-password"}),
                 ("mcp:aws/get_secret_value", {"secret_id": "prod/db-password"}),
