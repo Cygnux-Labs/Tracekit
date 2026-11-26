@@ -157,10 +157,14 @@ class DocCommands(unittest.TestCase):
         self.assertEqual(unknown, [])
 
     def test_the_agent_lists_name_every_coding_agent(self):
-        # the README's `--agent` list and coding-agents.md's v1 one, which once lacked kiro and interpreter
+        # the README's `--agent` list, deploy.md's (once 8 of them) and coding-agents.md's v1 one (once without kiro and
+        # interpreter)
         readme = re.search(r"add `--agent codex`, (.*?) for the others", read(os.path.join(ROOT, "README.md")), re.S)
+        deploy = re.search(r"own hook with `--agent` \((.*?); \[coding agents\]", read(os.path.join(ROOT, "docs", "deploy.md")),
+                           re.S)
         v1 = re.search(r"tracekit init --dev --agent codex +# v1; or (.*)", read(os.path.join(ROOT, "docs", "coding-agents.md")))
         self.assertEqual({"codex", *re.findall(r"`([a-z]+)`", readme.group(1))}, set(agent_hooks.HARNESSES))
+        self.assertEqual(set(re.findall(r"`([a-z]+)`", deploy.group(1))), set(agent_hooks.HARNESSES))
         self.assertEqual({"codex", *re.findall(r"[a-z]+", v1.group(1))}, set(agent_hooks.HARNESSES))
 
     def test_privacy_md_names_every_tool_call_field_kept_in_clear(self):
