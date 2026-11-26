@@ -13,7 +13,7 @@ from unittest import mock
 
 import yaml
 
-from tracekit import agent_hooks, cli, install
+from tracekit import agent_hooks, cli, install, privacy
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.signer import service
@@ -162,6 +162,12 @@ class DocCommands(unittest.TestCase):
         v1 = re.search(r"tracekit init --dev --agent codex +# v1; or (.*)", read(os.path.join(ROOT, "docs", "coding-agents.md")))
         self.assertEqual({"codex", *re.findall(r"`([a-z]+)`", readme.group(1))}, set(agent_hooks.HARNESSES))
         self.assertEqual({"codex", *re.findall(r"[a-z]+", v1.group(1))}, set(agent_hooks.HARNESSES))
+
+    def test_privacy_md_names_every_tool_call_field_kept_in_clear(self):
+        # it once left out `commands`, `paths` and `urls`
+        row = next(r for r in read(os.path.join(ROOT, "docs", "privacy.md")).splitlines()
+                   if r.startswith("| `tool.call` | `command`"))
+        self.assertEqual(set(re.findall(r"`([a-z_]+)`", row.split("|")[2])), privacy.ALWAYS_CLEAR)
 
     def test_no_command_needs_tracekit_on_roots_path(self):
         """System-mode init installs Tracekit only into /opt/tracekit (install._install_venv) and puts no `tracekit`

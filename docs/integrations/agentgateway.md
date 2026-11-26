@@ -10,7 +10,7 @@ Both cover MCP. For A2A, Tracekit's own [A2A gateway](../a2a.md) decides and rec
 
 | | The `ext_mcp` processor | The OTLP import |
 |---|---|---|
-| What it does | Decides each MCP `tools/call` in the signer before agentgateway forwards it, holds an `ask` for a person, and records the result | Records each MCP `tools/call` agentgateway traced, after it ran |
+| What it does | Decides each MCP `tools/call` in the signer before agentgateway forwards it, refuses an `ask` until a person approves it, and records the result | Records each MCP `tools/call` agentgateway traced, after it ran |
 | Gates calls | Yes, and fails closed | No |
 | Arguments and results | Committed to by the signer | Not in agentgateway's spans |
 | Evidence | `source: gateway`, tier T2, when the agent reaches its MCP servers only through agentgateway | `source: import`, tier T3: the spans were received |

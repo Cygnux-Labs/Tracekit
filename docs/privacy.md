@@ -37,7 +37,7 @@ Both settings are off by default, recorded in each run's `run.start`, and the ve
 | `run.start` | agent, model, host, os_user, cwd, commit, policy, fail_mode, sandbox | clear | clear |
 | `run.start` | repo (git remote URL) | clear, credentials redacted | same |
 | `user.prompt` | content | hash | redacted text |
-| `tool.call` | `command`, `file_path`, `notebook_path`, `path`, `url`, `pattern`, `query`, `glob`, `description`, `subagent_type`, `child_agent_id`, `timeout`, `run_in_background`, `offset`, `limit` | clear, redacted | clear, redacted |
+| `tool.call` | `command`, `file_path`, `notebook_path`, `path`, `url`, `pattern`, `query`, `glob`, `description`, `subagent_type`, `child_agent_id`, `timeout`, `run_in_background`, `offset`, `limit`, `commands`, `paths`, `urls` | clear, redacted | clear, redacted |
 | `tool.call` | everything else (file contents for Write/Edit, `old_string`/`new_string`, MCP arguments) | hash | redacted text |
 | `policy.decision` | decision, rule_ids, reasons | clear | clear |
 | `tool.result` | output | hash | redacted text |

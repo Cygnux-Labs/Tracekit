@@ -135,7 +135,7 @@ and then `@cygnuxlabs/tracekit`, and adds their files to `SHA256SUMS`; `github-r
 
 `@cygnuxlabs/tracekit` lists `@cygnuxlabs/tracekit-signer-{darwin-arm64,linux-x64-gnu,linux-arm64-gnu,win32-x64}`
 as `optionalDependencies` at its own version; npm installs the one matching the platform, with no postinstall. There
-is no Intel-Mac package (its dependencies publish no usable wheels there): on an Intel Mac, `pip install
+is no Intel-Mac package (the pinned `cryptography` publishes no wheel for it): on an Intel Mac, `pip install
 'tracekit-ai[signer]'` and the launcher uses that `tracekit` from PATH. Each
 holds a python-build-standalone CPython (release and sha256 pinned in the script) with `tracekit-ai[signer]` and its
 wheels unpacked into site-packages. The release workflow builds them from the release's own files:
