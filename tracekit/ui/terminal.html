@@ -8121,7 +8121,7 @@
       const runs = WHY.runs.map(r => r.run_id), run = V2 && scope ? RUNS.get(scope) : null;
       // a selected signed run shows its own why run (or says why it has none), never another run's
       if (!runs.includes(WRUN)) WRUN = run ? whyRunOf(scope)
-        :whyRef(selected)?.run || WHY.runs.find(r => r.tests)?.run_id || runs[0] || null;
+        : whyRef(selected)?.run || WHY.runs.find(r => r.tests)?.run_id || runs[0] || null;
       // Equal counts can hide replaced effects or changed links after ingestion or live-buffer eviction.
       const fx = VIEW === "graph" ? JSON.stringify([...S.effects].filter(([, e]) => e.call)
         .map(([id, e]) => [id, e.call, e.how, e.status])) : "";
