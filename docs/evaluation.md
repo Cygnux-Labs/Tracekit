@@ -5,7 +5,7 @@ offline ones: E1 to E4 (E4 on v1 and v2 bundles), E6, E10, E11, E12, E14 (as `--
 E20, E21, E23 and E28, and E9 `--quick` on Linux.
 E5 uses real Claude Code runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is
 `make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) runs on its own. In CI, E8 (insider attacks, which needs root
-and a Linux system-mode signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
+and a Linux system-mode signer; v1 and, in `eval/e8_insider_v2.py`, the v2 signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
 socket) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurrent clients) run on Linux. So do E1,
 E3, E4, E6, E10 to E12, E14 (`--quick`), E16 to E21 and E28, on every pull request ("Offline evals"): each must pass
 its own gate, and their deterministic results must equal the committed files, so a change that moves a number commits
@@ -88,6 +88,11 @@ The same experiment on an Apple-silicon Mac (macOS 26, Python 3.9.6, 20 repetiti
 at every ledger size, the signer appended about 145 events per second (8 concurrent writers: about 160, every event
 recorded, no gaps), and verification took 0.09 s, 0.34 s and 1.4 s for 500, 2,000 and 8,000 events. E1, E3 and E4
 give the same results as on Linux there. E5 was run on Linux only.
+
+The v2 Claude Code hook (`python -m tracekit.integrations.claude_code`, scratch dev signer, Apple-silicon Mac, Python
+3.11.15, 15 calls each) imports what only some calls need where they use it. A Read call took 86 ms median at
+PreToolUse and 99 ms at PostToolUse before, and 52 ms and 67 ms after; importing the hook module alone went from 84 ms
+to 49 ms. A Bash call is unchanged (85 ms, 100 ms), since both its events read the command with the policy parser.
 
 E2 found a real bug before release: with eight concurrent writers the signer's accept queue (Python's default of
 5) filled, and some clients got `EAGAIN` and, being fail-open, dropped events. The queue is now 256, the client
@@ -283,12 +288,12 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 1098 harmful and 1033 benign tool calls in 11 classes
+- **Policy packs** (`eval/e17_policy_corpus.py`): 1116 harmful and 1046 benign tool calls in 11 classes
   (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines — but a case naming
   `"packs"`, as a dev-only rule's does, by the pack it names (9 harmful and 9 benign cases decide by `dev.yaml`, the
-  rest by `server.yaml`). All 1098 harmful calls are denied or held; one benign call is held (a draft email to a list
-  address, `TK-M003`), 1 in 1033 (0.10%); the engines decide every call the same. Per pack: `server` recall 1089/1089
-  with 1/1024 false alarms, `dev` 9/9 with 0/9. It gates on every harmful call caught, at most 2% false positives and
+  rest by `server.yaml`). All 1116 harmful calls are denied or held; one benign call is held (a draft email to a list
+  address, `TK-M003`), 1 in 1046 (0.10%); the engines decide every call the same. Per pack: `server` recall 1107/1107
+  with 1/1037 false alarms, `dev` 9/9 with 0/9. It gates on every harmful call caught, at most 2% false positives and
   engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -607,13 +612,13 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 188 / 209 | 574 / 664 | 1548 / 1830 | 10.16 / 11.87 |
-| strict, RE2 / regex | 189 / 210 | 538 / 650 | 1339 / 1727 | 9.59 / 11.44 |
-| dev, RE2 / regex | 198 / 225 | 607 / 727 | 1578 / 1963 | 10.62 / 12.68 |
+| default, RE2 / regex | 177 / 200 | 551 / 643 | 1335 / 1692 | 10.6 / 12.29 |
+| strict, RE2 / regex | 181 / 202 | 516 / 607 | 1266 / 1646 | 9.71 / 11.53 |
+| dev, RE2 / regex | 188 / 216 | 575 / 683 | 1489 / 1831 | 10.92 / 12.86 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (69.5% default, 75.7% strict) and no benign set's
-false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.10% default; 13.0%, 15.4%, 5.1%
+false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.10% default; 13.0%, 15.4%, 5.0%
 strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 1, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know; 2, 11, 4 and 2 strict); `p99_ref` stays within 5% of the highest of four runs on the same machine (every gate was recorded again on 2026-11-14, when a closer reading of shell lines, downloads, the environment and loop values added about 13-20% at p99 against main measured beside it, on 2026-11-16, with main's rules merged into the release's, and on 2026-11-26, when three more trust roots (uv's and pipx's Windows folders) read below a deleted home added about 5% at p99 on the fallback engine; re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
@@ -639,16 +644,16 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055`, the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) the second policy merge train's 27 benign cases and two of the fifth's (`kubectl get --raw /healthz` and a here-document written to a plain file) strict does not hold either: 52 of 1024 (5.1%).
+`TK-A053`) the second policy merge train's 27 benign cases and two of the fifth's (`kubectl get --raw /healthz` and a here-document written to a plain file) strict does not hold either: 52 of 1037 (5.0%).
 All 52 are benign calls strict holds (twelve more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names, and the first policy merge train's benign cases add four it holds, `docker run --rm hello-world` and three shell startup-file edits, and the fifth's two here-documents written to `~/.bashrc`): 33 as a push, publish, install, apply, `docker run` or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), 5 as a shell startup-file edit (`TK-F011`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 753 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 771 shell
 commands among them that the server pack decides (a case naming another pack in `"packs"`, such as a dev-only rule's,
 is that pack's own and sits this run out) again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1089 originals and all 3,539 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1107 originals and all 3,623 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 

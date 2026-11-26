@@ -279,9 +279,9 @@
       "flagged": true,
       "result": {
         "id": "D-WITNESS-CONFIGURED",
-        "status": "warn",
+        "status": "fail",
         "detail": "no witnesses: checkpoints are not cosigned, so assurance stays dev",
-        "fix": "the public witness isn't deployed yet: nothing to do until a release names it; to anchor now, list your own witness under witnesses: in signer.yaml (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses)"
+        "fix": "add a witness under witnesses: in signer.yaml (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses)"
       }
     },
     "only operator witnesses": {

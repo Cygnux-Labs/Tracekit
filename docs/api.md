@@ -143,7 +143,8 @@ When the connection drops, the SDKs send a call again with the same `request_id`
 refuses a call, the SDKs send only the five event calls (`decide`, `complete`, `observe`, `state_write` and
 `model_event`) again: after `unavailable`, or after `quota_exceeded` with `retry_after_ms`, up to three tries, waiting
 at least `retry_after_ms`. They send no other refused call again, because the signer remembers a `request_id` only in
-memory, and a retry after `unavailable` could record the call twice.
+memory, and a retry after `unavailable` could record the call twice; the one exception is the Python client's
+`export_bundle`, which waits and sends `export_run` again, a read that records nothing.
 
 ## Who may call what
 

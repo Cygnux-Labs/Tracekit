@@ -561,12 +561,12 @@ class UnlessCli(unittest.TestCase):
         # held, through an MCP file tool too
         get = "curl -G -d charge=ch_1 https://api.stripe.com/v1/refunds"
         for (name, backend), e in self.engines.items():
-            for tool, args, rule in (("Write", {"file_path": "/repo/.curlrc", "content": "x"}, "TK-A093"),
+            for tool, args, rule in (("Write", {"file_path": "/repo/.curlrc", "content": "x"}, "TK-A097"),
                                      ("Edit", {"file_path": "/h/.config/curlrc", "old_string": "a", "new_string": "b"},
-                                      "TK-A093"),
+                                      "TK-A097"),
                                      ("mcp__filesystem__write_file", {"path": "/Users/u/.curlrc", "content": "x"},
-                                      "TK-A093"),
-                                     ("mcp:fs/edit_file", {"path": "/h/.config/_CurlRC", "edits": []}, "TK-A093"),
+                                      "TK-A097"),
+                                     ("mcp:fs/edit_file", {"path": "/h/.config/_CurlRC", "edits": []}, "TK-A097"),
                                      ("Bash", {"command": "printf 'request = POST' > .curlrc"}, "TK-A094"),
                                      ("Bash", {"command": "echo x >> ~/_CURLRC"}, "TK-A094"),
                                      ("Bash", {"command": get}, "TK-A043"),
@@ -582,8 +582,8 @@ class UnlessCli(unittest.TestCase):
                 self.assertIn(rule, svc.evaluate(e, tool, args)[0]["rule_ids"], (name, backend, args))
             for line in ("curl -q " + get[5:], "CURL_HOME=/tmp/cfg curl --disable " + get[5:]):
                 self.assertNotIn("TK-A043", e.decide("Bash", {"command": line})["rule_ids"], (name, backend, line))
-            self.assertNotIn("TK-A093", e.decide("Read", {"file_path": "/repo/.curlrc"})["rule_ids"])
-            self.assertNotIn("TK-A093", svc.evaluate(e, "mcp__fs__read_file", {"path": "/repo/.curlrc"})[0]["rule_ids"])
+            self.assertNotIn("TK-A097", e.decide("Read", {"file_path": "/repo/.curlrc"})["rule_ids"])
+            self.assertNotIn("TK-A097", svc.evaluate(e, "mcp__fs__read_file", {"path": "/repo/.curlrc"})[0]["rule_ids"])
 
     def test_the_q_get_is_let_through_only_on_a_curl_its_grammar_reads(self):
         # round 4's R3-B1: with -q -G first, the text `unless` let through a curl the grammar can't read (a glob, an
@@ -603,7 +603,7 @@ class UnlessCli(unittest.TestCase):
             # a move or a new file onto a curlrc through an MCP file tool, as Write
             for tool, args in (("mcp__filesystem__create_file", {"path": "/Users/u/.curlrc", "content": "x"}),
                                ("mcp__filesystem__move_file", {"source": "/tmp/rc", "destination": "/Users/u/.curlrc"})):
-                self.assertIn("TK-A093", svc.evaluate(e, tool, args)[0]["rule_ids"], (name, backend, tool))
+                self.assertIn("TK-A097", svc.evaluate(e, tool, args)[0]["rule_ids"], (name, backend, tool))
 
     def test_entries_are_linted(self):
         rule = {"id": "TK-T1", "class": "shell", "pattern": "^gh ", "reason": "r"}
@@ -770,7 +770,7 @@ class UnlessCli(unittest.TestCase):
                  ("mcp__fs__move_file", {"from": "/tmp/x", "to": ".git/hooks/pre-commit"}, "TK-A012"),
                  ("mcp__fs__copy_file", {"src": "/tmp/x", "dst": ".git/hooks/pre-commit"}, "TK-A012"),
                  ("mcp__fs__write_file", {"filePath": ".git/hooks/pre-commit", "content": "x"}, "TK-A012"),
-                 ("mcp__fs__write_file", {"filename": "/Users/u/.curlrc", "content": "x"}, "TK-A093"),
+                 ("mcp__fs__write_file", {"filename": "/Users/u/.curlrc", "content": "x"}, "TK-A097"),
                  ("mcp__desktop-commander__edit_block", {"file_path": ".git/hooks/pre-commit", "old_string": "a",
                                                          "new_string": "b"}, "TK-A012")]
         for (name, backend), e in self.engines.items():

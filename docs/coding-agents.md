@@ -39,7 +39,7 @@ edit or turn off) is for Claude Code only, and init refuses it with these agents
 `--v2` and write the same files:
 
 ```bash
-tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush, devin, cline, gptme, openhands, copilot, codebuddy, jcode
+tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush, devin, cline, gptme, openhands, copilot, codebuddy, jcode, kiro, interpreter
 tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
 

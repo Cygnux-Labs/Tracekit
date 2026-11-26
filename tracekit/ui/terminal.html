@@ -8152,10 +8152,15 @@
       const c = WHY && WHY.calls, hit = c && r.v2 && (c[`${r.session_id}|${r.v2.run_seq}`] || a.post && c[`${r.session_id}|${a.post.v2?.run_seq}`]);
       return hit ? { run: hit[0], node: hit[1] } : null;
     }
+    // a signed run's why import: the run of a call that has a record (a call held and not answered has none), else the
+    // import named for it (tk-<run id>-<hash>)
+    function whyRunOf(id) {
+      return Object.entries(WHY.calls).find(([k]) => k.startsWith(id + "|"))?.[1][0] || WHY.runs.find(r => r.run_id.startsWith("tk-" + id + "-"))?.run_id || null;
+    }
     function whyAlerts() {
       if (!WHY) return [];
-      const runs = V2 && scope ? new Set(Object.entries(WHY.calls).filter(([k]) => k.startsWith(scope + "|")).map(([, v]) => v[0])) : null;
-      return WHY.alerts.filter(a => !runs || runs.has(a.run_id));
+      const run = V2 && scope ? whyRunOf(scope) : null;
+      return WHY.alerts.filter(a => !V2 || !scope || a.run_id === run);
     }
     function whySource(d, p) {
       if (p.status === "hashed") return `<span class="dim">content hashed: can't trace</span>`;
@@ -8322,7 +8327,7 @@
       if (!WHY) { el.innerHTML = `<div class="empty">This view needs why logs: none are loaded (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why).</div>`; return; }
       const runs = WHY.runs.map(r => r.run_id), run = V2 && scope ? RUNS.get(scope) : null;
       // a selected signed run shows its own why run (or says why it has none), never another run's
-      if (!runs.includes(WRUN)) WRUN = run ? Object.entries(WHY.calls).find(([k]) => k.startsWith(scope + "|"))?.[1][0] || null
+      if (!runs.includes(WRUN)) WRUN = run ? whyRunOf(scope)
         : whyRef(selected)?.run || WHY.runs.find(r => r.tests)?.run_id || runs[0] || null;
       // Equal counts can hide replaced effects or changed links after ingestion or live-buffer eviction.
       const fx = VIEW === "graph" ? JSON.stringify([...S.effects].filter(([, e]) => e.call)
@@ -8370,11 +8375,13 @@
       $("wvsum").textContent = `${R.length} runs`;
     }
     // OVERVIEW: what the agents did, what needs attention, the run's numbers, how to read the evidence (Causeway's)
+    // a call held for a person and not answered has no result: the why log leaves it out, CALLS lists it
+    const noCalls = (none) => V2 && scope && RUNS.get(scope)?.decisions?.ask ? "The why log has no tool call yet. Calls held for a person show in CALLS." : none;
     function overviewView(el, d) {
       const s = d.summary, acts = d.nodes.filter(n => n.type === "action"), flagged = new Set(d.alerts.filter(a => a.severity === "high").map(a => a.node));
       const tok = (s.usage.input_tokens || 0) + (s.usage.output_tokens || 0);
       el.innerHTML = runHead(d) + `<div class="sec">WHAT THE AGENTS DID</div><div class="wflow">`
-        + (acts.map(a => `<span class="wstep${flagged.has(a.id) ? " unt" : ""}" data-wwhy="${esc(a.id)}" data-wr="${esc(d.run_id)}" title="${esc(JSON.stringify(a.args))}">${esc(`${a.agent} · ${a.label}${flagged.has(a.id) ? " ⚑" : ""}`)}</span>`).join(" ") || `<span class="dim">No tool calls.</span>`) + `</div>`
+        + (acts.map(a => `<span class="wstep${flagged.has(a.id) ? " unt" : ""}" data-wwhy="${esc(a.id)}" data-wr="${esc(d.run_id)}" title="${esc(JSON.stringify(a.args))}">${esc(`${a.agent} · ${a.label}${flagged.has(a.id) ? " ⚑" : ""}`)}</span>`).join(" ") || `<span class="dim">${esc(noCalls("No tool calls."))}</span>`) + `</div>`
         + `<div class="sec">NEEDS ATTENTION</div>` + (d.alerts.map(a => {
           const c = a.node && d.actions[a.node] ? d.actions[a.node].candidates.filter(c => c.status === "confirmed") : [];
           return `<div class="al"><span class="sev ${esc(a.severity === "review" ? "med" : a.severity)}">${esc(String(a.severity).toUpperCase())}</span><span class="tx">${esc(a.title)}</span><span class="sub">${esc(a.detail)}</span>`
@@ -8408,7 +8415,7 @@
     // WHY DID IT HAPPEN?: the run's tool calls, flagged first, and the one picked (Causeway's tWhy)
     function whyView(el, d) {
       const acts = d.nodes.filter(n => n.type === "action");
-      if (!acts.length) { el.innerHTML = runHead(d) + `<div class="empty">This run has no tool calls to investigate.</div>`; return; }
+      if (!acts.length) { el.innerHTML = runHead(d) + `<div class="empty">${esc(noCalls("This run has no tool calls to investigate."))}</div>`; return; }
       const sev = dict(), rank = { high: 0, review: 1, info: 2 };
       d.alerts.forEach(a => { if (a.node && !(a.node in sev)) sev[a.node] = a.severity; });
       const ordered = [...acts].sort((a, b) => (rank[sev[a.id]] ?? 3) - (rank[sev[b.id]] ?? 3) || a.seq - b.seq);

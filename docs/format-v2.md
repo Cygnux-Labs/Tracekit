@@ -56,8 +56,9 @@ someone holding the record's salt can test a guess against.
   signer's redaction ([privacy](privacy.md)).
 - **Salt:** `HMAC-SHA256(args_salt.key, label)`, where `args_salt.key` is the signer's secret (`keys/args_salt.key`) and
   `label` is fixed per record: `<type>:<salt_id>` when the record's `data` has a `salt_id` (current records), else
-  the older labels in `pipeline.salt_label` (the `decision_id` for `policy.decision`, `"result:" + decision_id` for
-  `tool.result`).
+  the older labels in `pipeline.salt_label` (the `decision_id` for `policy.decision`, `approval.request` and
+  `approval.binding_mismatch`, `"result:" + decision_id` for `tool.result`, `<type>:<tenant>:<run_id>:<request_id>`
+  for `model.exchange` and `state.write`).
 - **Commitment:** `"hmac-sha256:" + hex(HMAC-SHA256(salt, UTF-8 bytes of the digest string))`.
 
 Worked example (salt = bytes `00 01 02 … 1f`):
@@ -750,7 +751,7 @@ line and verdict is in [verdicts](verdicts.md).
    name, one witness key per name and one class per witness. Failure: `UNVERIFIABLE (the trust file can't be used)`,
    exit 2. A witness vkey's type is not checked here: a key of another type pinned as a witness fails step 4.
 2. **Read the zip** under the limits of §9. Parse `manifest.json`; `format` must be `tracekit.bundle.v2` and
-   `verifier_min_version` a version number (one to three dot-separated runs of ASCII digits) not above the version of
+   `verifier_min_version` a version number (one to three dot-separated runs of 1 to 9 ASCII digits) not above the version of
    the format the verifier implements, else `UNVERIFIABLE (needs tracekit >= x)`, exit 2, the `bundle readable` line
    listing commands that verify it with the user's paths: `uvx --from "tracekit-ai>=x" tracekit verify <bundle>
    --trust <trust>`, `npx -y @cygnuxlabs/tracekit@latest verify <bundle> --trust <trust>` (the TypeScript verifier
@@ -898,7 +899,7 @@ tell a later v1 record from a genuine one; only this check reports it.
 |---|---|---|
 | Python, the reference | `tracekit/verify/v2.py` (`tracekit verify`) | everything on this page |
 | TypeScript, independent | `sdk/typescript/src/verify` (`@cygnuxlabs/tracekit/verify`, `npx @cygnuxlabs/tracekit verify`) | written from this page; Node ≥ 20.12 and browsers, Web Crypto only |
-| TypeScript, in a browser | `verify.html` (`make verify-page`; a release asset, in the npm package as `dist/verify.html`, hosted at https://cygnux-labs.github.io/Tracekit/verify/) | the TypeScript verifier in one self-contained page: file inputs for the bundle and the trust config, and a Content Security Policy (`default-src 'none'`, its one script and style by hash, `connect-src 'none'`) that lets it load and send nothing |
+| TypeScript, in a browser | `verify.html` (`make verify-page`; a release asset, in the npm package as `dist/verify.html`, hosted at https://cygnux-labs.github.io/Tracekit/verify/) | the TypeScript verifier in one self-contained page: file inputs for the bundle and the trust config, and a Content Security Policy (`default-src 'none'`, its one script and style by hash, `worker-src blob:`, `connect-src 'none'`) that lets it load and send nothing |
 
 The TypeScript verifier does not implement SLH-DSA (§6, Web Crypto has none), Rekor anchors (§8) or record-key
 certificates ([issuer.md](issuer.md)), nor `tracekit why` findings (a bundle with a `why.finding` or a replay run): a

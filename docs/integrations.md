@@ -36,6 +36,8 @@ Another agent: record its calls with the SDK's run handle ([custom agent](quicks
 | Claude Code hooks (`tracekit init --dev --v2`) | Stable | [quickstart](quickstarts/claude-code.md) |
 | The Claude Code plugin | Experimental | [plugin](../plugin/README.md) |
 | Codex CLI, Cursor, Gemini CLI, OpenCode | Experimental | [coding agents](coding-agents.md) |
+| Kilo Code (`tracekit init --dev --v2 --agent kilo`) | Experimental | [coding agents](coding-agents.md) |
+| Devin CLI and Devin Desktop (`tracekit init --dev --v2 --agent devin`) | Experimental | [coding agents](coding-agents.md) |
 | goose (`tracekit init --dev --v2 --agent goose`) | Experimental | [coding agents](coding-agents.md#on-the-v2-signer) |
 | Qwen Code (`tracekit init --dev --v2 --agent qwen`) | Experimental | [coding agents](coding-agents.md) |
 | Factory Droid (`tracekit init --dev --v2 --agent droid`) | Experimental | [coding agents](coding-agents.md) |

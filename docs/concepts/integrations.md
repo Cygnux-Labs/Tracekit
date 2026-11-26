@@ -76,8 +76,8 @@ Other agents: the SDK's run handle ([custom agent](../quickstarts/custom.md)).
 
 ## Coding agents
 
-`tracekit init --dev --v2` wires Claude Code's hooks to a dev signer; add `--agent codex`, `--agent cursor` or
-`--agent gemini` for the others (experimental). In system mode, `tracekit init --v2 --user AGENT` run as root
+`tracekit init --dev --v2` wires Claude Code's hooks to a dev signer; add `--agent NAME` for another coding
+agent ([coding agents](../coding-agents.md), experimental). In system mode, `tracekit init --v2 --user AGENT` run as root
 ([laptop system mode](../deploy.md#laptop-system-mode)) does the same
 against the system signer. The Claude Code plugin (experimental) runs the same v2 hook; use it or `init`'s hooks, not
 both, or each call is decided twice.
@@ -85,7 +85,8 @@ both, or each call is decided twice.
 For Claude Code, each tool call runs the hook before and after:
 
 - **Before (`PreToolUse`):** the hook asks the signer to decide. A deny exits with code 2, which makes Claude Code block
-  the call. An ask waits up to 9 minutes for a person. An allow consumes and lets the call run.
+  the call. An ask returns at once with the command that approves it, and the agent's retry runs once it is approved;
+  with `TRACEKIT_APPROVAL_WAIT` set the hook waits for the answer, up to 9 minutes. An allow consumes and lets the call run.
 - **After (`PostToolUse`):** the hook reports the result. `SessionEnd` closes the run.
 - **Any error** in a `PreToolUse` hook (a missing id, an unreadable payload, a failed call) also exits 2: a tool call
   fails closed. A hook for any other event (a prompt, `Stop`) that fails exits 1, an error Claude Code shows without

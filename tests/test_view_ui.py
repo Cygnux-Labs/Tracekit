@@ -3968,7 +3968,7 @@ class FinalQA(unittest.TestCase):
         Now they say why it has none and what shows it."""
         needs_node(self)
         rid = "72c9631d2ab83ca8cc88feaee340293c"
-        out = json.loads(page_js(["esc", "shq", "word", "signerArg", "NEEDWHY", "renderWhyView"], f"""
+        out = json.loads(page_js(["esc", "shq", "word", "signerArg", "NEEDWHY", "whyRunOf", "renderWhyView"], f"""
             let VIEW = "graph", WRUN = null, WPICK = null, WBUSY = null, WMSG = "", wvKey = "", SIGNER = null;
             const V2 = true, scope = "{rid}", GV = {{ inferred: false, ruled: false, focus: null, fit: true }}, S = {{ effects: new Map() }}, WD = new Map();
             const RUNS = new Map([[scope, {{ id: scope, verdict: "verified", decisions: {{ allow: 2, deny: 1 }} }}]]);
@@ -3995,6 +3995,29 @@ class FinalQA(unittest.TestCase):
                                   f"{rid} --out NEWDIR, then tracekit view --config /etc/tk/signer.yaml --why NEWDIR")
         self.assertEqual(said[3], "This run's graph is built once a checkpoint covers its records.")
         self.assertEqual(said[4], said[1])   # never "once a checkpoint covers it" when no checkpoint brings one
+
+    def test_an_open_run_whose_only_call_is_held_shows_its_own_why_import(self):
+        """The why import of a run whose one call is held and unanswered has no call with a result, so the page found it
+        by no call: WHY said "being built…" for good with "no why run" selected, and the run's alerts were not shown."""
+        needs_node(self)
+        rid, imp = "e3bd0c793160e213936f8b0400a2568b", "tk-e3bd0c793160e213936f8b0400a2568b-81b628c44ab03df4"
+        out = json.loads(page_js(["esc", "NEEDWHY", "whyRunOf", "whyAlerts", "noCalls", "whyDetail", "renderWhyView"], f"""
+            let VIEW = "overview", WRUN = null, WPICK = null, WBUSY = null, WMSG = "", wvKey = "";
+            const V2 = true, scope = "{rid}", GV = {{ inferred: false, ruled: false, focus: null, fit: true }}, S = {{ effects: new Map() }};
+            const WD = new Map([["{imp}", {{ error: "detail" }}]]), SIGNER = {{ dev: true }};
+            const RUNS = new Map([[scope, {{ id: scope, verdict: "verified", decisions: {{ ask: 1 }} }}]]);
+            const WHY = {{ runs: [{{ run_id: "tk-other-1", agents: [] }}, {{ run_id: "{imp}", agents: ["held-agent"] }}], calls: {{}},
+                          alerts: [{{ run_id: "tk-other-1", title: "x" }}, {{ run_id: "{imp}", title: "y" }}] }};
+            const document = {{ body: {{ classList: {{ toggle() {{}} }} }}, activeElement: null }};
+            const got = {{ whyv: {{ clientWidth: 900, clientHeight: 600 }} }}, $ = id => got[id] ??= {{}};
+            renderWhyView();
+            process.stdout.write(JSON.stringify([WRUN, got.whyv.innerHTML, whyAlerts().map(a => a.title), noCalls("none"),
+                                                 got.wrun.innerHTML.includes("selected>no why run")]));"""))
+        self.assertEqual(out[0], imp)
+        self.assertEqual(out[1], '<div class="empty">detail</div>')   # its own import, not "being built" or another run's
+        self.assertEqual(out[2], ["y"])
+        self.assertEqual(out[3], "The why log has no tool call yet. Calls held for a person show in CALLS.")
+        self.assertFalse(out[4])
 
     @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
     def test_a_runs_copied_commands_run_as_they_are_for_a_viewer_of_a_data_dir(self):

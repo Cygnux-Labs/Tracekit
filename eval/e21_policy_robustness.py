@@ -203,6 +203,8 @@ def run(record=False):
     # deleted home or / (`find ~ -delete` 452 to 762 us on the fallback engine), about +5% at p99 and none at p50 beside
     # the assembly measured the same way (dev/regex p99 694 to 735 us); p50 180 to 230 us, p99 523 to 753 us, caps 9.97
     # to 13.84 times the reference.
+    # Recorded again (--record) on 2026-11-27 after main's policy train (TK-A093, TK-F029, TK-A046 and TK-A084 cases) was
+    # merged into the 1.8 combine: p50 177 to 216 us, p99 516 to 683 us, caps 10.23 to 13.5 times the reference.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},

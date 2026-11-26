@@ -1073,6 +1073,18 @@ def tool(harness, name, ti):
             ti.pop("content", None)   # what a remember or a correct writes is its `text` (a forget's is a query)
             text = {"content": ti["text"]} if ti["action"] != "forget" and isinstance(ti.get("text"), str) else {}
             return "Edit" if ti["action"] == "forget" else "Write", {**ti, "file_path": paths[0], "paths": paths, **text}
+        if harness in PLUGIN_TOOLS and name in ("artifact_create", "artifact_update"):
+            # OpenCode 2.x's artifact tools send their `files` (relative path -> the file's text) to an artifact
+            # provider and return its URL. The name stays its own so a rule reads the call by it (TK-F029: flagged on the
+            # laptop packs, held on server and strict), and the text is dropped as a remember's is, keeping the paths it
+            # publishes. The bundle's only provider, `console`, uploads them over HTTP ("Uploads only the files Console
+            # doesn't store yet, then publishes them as the artifact", packages/core/src/plugin/provider/
+            # opencode-artifacts.ts on `dev`), and `provider` is a free-form override, so a call it can't tell is read
+            # as that upload
+            files = ti.get("files")
+            ti.pop("files", None)
+            ti["paths"] = [k for k in files if isinstance(k, str)] if isinstance(files, dict) else []
+            return name, ti
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
             # (1.2.0) read a header only up to its next ':' (split(":", 2)): both are decided

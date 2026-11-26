@@ -69,6 +69,12 @@ ask:
     label: side_effect
     reason: writing a Git config section (an alias, a remote, a URL rewrite or an include) into a file a Git config may include
     remedy: Have a person approve the held call, or set the one setting the task needs with `git config` or on the command line.
+  - id: TK-F029
+    tool: '^(?:artifact_create|artifact_update)$'
+    pattern: '^'
+    label: egress
+    reason: publishing an artifact sends its files off the machine
+    remedy: Have a person approve the held call, or keep the files in the workspace.
 
 flag:
   - id: TK-F006

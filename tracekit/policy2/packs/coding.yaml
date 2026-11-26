@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-116'
+version: '2026.11-v2-111'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -33,6 +33,8 @@ tools:
   Read: fs
   Grep: fs
   Glob: fs
+  artifact_create: fs        # OpenCode 2.x: sends its `files` to an artifact provider (TK-F029)
+  artifact_update: fs        # OpenCode 2.x: the same, for an artifact it already published (TK-F029)
   LibraryUpload: fs          # CodeBuddy Code: sends the local file at its path to its library (TK-D022, TK-F024)
   WebFetch: http
   WebSearch: http
@@ -1096,7 +1098,7 @@ ask:
     reason: applying a patch through the shell
     remedy: Have a person approve the held call, or edit files with the apply_patch tool, which Tracekit decides file by file.
     rationale: A patch applied from the shell writes files that no file rule reads; a person confirms it.
-  - id: TK-A093
+  - id: TK-A097
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
@@ -1110,7 +1112,7 @@ ask:
   - id: TK-A094
     class: shell
     field: effects
-    # each file a command writes, as TK-A093 names curl's config file
+    # each file a command writes, as TK-A097 names curl's config file
     pattern: '^WRITE_TARGET:(?:[\w\W]*?[/\\])?[._]?[Cc][Uu][Rr][Ll][Rr][Cc]$'
     reason: writing curl's config file
     remedy: Have a person approve the held call, or give curl its options on the command line.
@@ -1155,6 +1157,17 @@ ask:
     label: secrets_access
     remedy: Have a person approve the held call, or ask the person for the one value the task needs.
     rationale: The MCP twin of TK-A035 for a tool that runs a CLI command; the same value-reading commands are held.
+  - id: TK-A093
+    class: mcp
+    # TK-A021's CLI credential-read commands as the cli_command, command or cmd argument of an MCP command-runner tool,
+    # using the same JSON word-separator and value-bounded scan rules as TK-A036. No `unless`: the call is one subject,
+    # so an exemption could be smuggled in another argument, and TK-A021's help and names-only forms (`pass ls`,
+    # `gopass sync`, `gh auth token --help`) are held here too.
+    tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])([Aa]ws|[Cc]li|[Cc]ommand|[Cc]md|[Ee]xec(ute)?|[Rr]un|[Ss]hell|[Bb]ash|[Tt]erminal)|mcp(:[^/]+/|__).*(Aws|Cli|Command|Cmd|Exec|Execute|Run|Shell|Bash|Terminal)'
+    pattern: '"(cli[_-]?[Cc]ommand|command|cmd)":"(?: |\\[tnr])*?(security(?: |\\[tnr])+?(?:(?:-[hilqv]+|-p(?: |\\[tnr])+?(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*)(?: |\\[tnr])+?){0,8}(?:find-generic-password|find-internet-password)(?:["]| |\\[tnr]|$)|secret-tool(?: |\\[tnr])+?(?:lookup|search)(?:["]| |\\[tnr]|$)|kwallet-query(?:["]| |\\[tnr]|$)|ssh-add(?: |\\[tnr])+?(?:-(?:[^" \\L]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}-[A-KM-Za-z]*L[A-Za-z]*(?:["]| |\\[tnr]|$)|(?:pass|gopass)(?: |\\[tnr])+?(?:[^" \\]|\\[^tnr])+|gh(?: |\\[tnr])+?auth(?: |\\[tnr])+?(?:token(?:["]| |\\[tnr]|$)|status(?:(?: |\\[tnr])(?:[^"\\]|\\.)*?)?(?: |\\[tnr])(?:--show-token|-[a-z]*t[a-z]*)(?:["]| |\\[tnr]|$)|git-credential(?: |\\[tnr])+?get(?:["]| |\\[tnr]|$))|glab(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:auth(?: |\\[tnr])+?status(?:(?: |\\[tnr])(?:[^"\\]|\\.)*?)?(?: |\\[tnr])(?:--show-token|-[a-z]*t[a-z]*)(?:["]| |\\[tnr]|$)|config(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}get(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}token(?:["]| |\\[tnr]|$))|aws(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}configure(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}get(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:[^" \\.]+\.){0,2}(?:aws_secret_access_key|aws_session_token|aws_security_token)(?:["]| |\\[tnr]|$)|(?:kubectl|oc)(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}config(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}view(?:(?: |\\[tnr])(?:[^"\\]|\\.)*?)?(?: |\\[tnr])--raw(?:=(?:true|t|T|1|TRUE|True))?(?:["]| |\\[tnr]|$)|gcloud(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}auth(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,4}(?:application-default(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,4})?print-(?:access|identity)-token(?:["]| |\\[tnr]|$)|(?:git(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}credential|git-credential)(?:-(?:[^" \\]|\\[^tnr])+)?(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:fill|get)(?:["]| |\\[tnr]|$)|keepassxc-cli(?:\.exe)?(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?){0,8}(?:show|clip|attachment-export)(?:["]| |\\[tnr]|$))'
+    reason: reading credentials from an operating-system, browser or CLI store, or listing an SSH agent's keys, through an MCP tool
+    remedy: Have a person approve the held call, or ask the person for the one credential or key the task needs.
+    rationale: The MCP twin of TK-A021 for a tool that runs a CLI command; the same credential-reading commands are held.
   - id: TK-A037
     class: mcp
     # a tool whose name ends in a word for reading a secret, as `mcp__<server>__<tool>` or `mcp:<server>/<tool>`, with
@@ -1878,3 +1891,10 @@ flag:
     field: git_config
     pattern: '(?:^|\n)[ \t\f\v\r]*\[[ \t]*(?:[Aa][Ll][Ii][Aa][Ss][ \t]*\]|(?:[Rr][Ee][Mm][Oo][Tt][Ee]|[Uu][Rr][Ll]|[Ii][Nn][Cc][Ll][Uu][Dd][Ee][Ii][Ff])[ \t]+"|[Ii][Nn][Cc][Ll][Uu][Dd][Ee][ \t]*\])'
     label: side_effect
+  - id: TK-F029
+    tool: '^(?:artifact_create|artifact_update)$'
+    # every call of OpenCode 2.x's artifact tools: the `files` it is given (relative path -> the file's text) leave the
+    # machine to an artifact provider, as an uploaded file does (TK-F024); a publish is ordinary work on a laptop, so it
+    # is flagged here and held on server and strict. No path is read from disk, so TK-D022 has nothing to hold
+    pattern: '^'
+    label: egress
