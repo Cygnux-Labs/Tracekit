@@ -439,7 +439,7 @@ class SystemV2Install(unittest.TestCase):
             "V2_DATA": os.path.join(base, "data"), "V2_CONFIG": os.path.join(etc, "signer.yaml"), "SYSTEMD_DIR": base,
             "OPT": os.path.join(base, "opt"), "V2_USER": "tk-test-signer", "V2_UNIT": "tk-test-signer",
             "V2_TAILER": "tk-test-tailer", "TAILER_SUDOERS": os.path.join(base, "sudoers"),
-            "_install_source": mock.Mock(return_value=None), "_install_venv": mock.Mock()}.items()]
+            "_install_source": mock.Mock(return_value=None), "_install_venv": mock.Mock(), "_signer_refuses": mock.Mock(return_value=None)}.items()]
         patches += [mock.patch.object(client, "SYSTEM_CONFIG", os.path.join(etc, "client.json")),
                     mock.patch.dict(install.MANAGED_SETTINGS, linux=path, darwin=path)]
         for p in patches:

@@ -40,8 +40,9 @@ print(Runner.run_sync(agent, "pay acct-42 $15").final_output)
 
 The tools of every `Agent` built after `instrument()` are gated: function tools, ShellTool with a local executor,
 LocalShellTool and ApplyPatchTool. Hosted tools, ComputerTool and handoffs are recorded only in the signed model
-responses. An `ask` interrupts the run (`result.interruptions`); to resume it once a person decided, wire the adapter by
-hand (below).
+responses. An `ask` interrupts the run: `Runner.run_sync` returns at once with `final_output` None and
+`result.interruptions`, and at exit the process prints each held approval's id with its approve and reject commands.
+To resume it once a person decided, see the next section.
 
 ## 3. See it verified
 
@@ -51,6 +52,30 @@ tracekit last
 
 It exports the most recent finished run, pins the dev signer's key, verifies the bundle and says where it is
 ([the v2 quickstart](../quickstart-v2.md#3-see-it-verified)).
+
+## Resume a held call under `instrument()`
+
+`instrument()` returns the run handle, and `run.openai_agents` is the adapter it wired into every `Agent`:
+
+```python
+import asyncio, time, tracekit
+from agents import Runner
+
+run = tracekit.instrument()
+...
+result = Runner.run_sync(agent, "pay acct-42 $15")
+while result.interruptions:             # an ask; approve it in another terminal: tracekit approvals approve <id>
+    state = result.to_state()
+    if asyncio.run(run.openai_agents.apply_decisions(state)):   # calls nobody has decided yet
+        time.sleep(2)
+        continue
+    result = Runner.run_sync(agent, state, hooks=run.openai_agents)
+print(result.final_output)
+```
+
+In async code, `await run.openai_agents.apply_decisions(state)` and `await Runner.run(agent, state,
+hooks=run.openai_agents)`. Resume in the process that paused: another process starts a run of its own, which can't
+consume this run's approvals. To resume across processes, wire the adapter by hand (next section).
 
 ## Approvals: wire it by hand
 
@@ -99,6 +124,8 @@ quickstart](../quickstart-v2.md#export-and-verify-by-hand) explains every line.
   come from another account: [system mode](../quickstart-v2.md#system-mode-linux-macos-experimental).
 - **Witnesses** cosign the signer's checkpoints from another host, so a rolled-back or forked log shows:
   [witnesses](../witnesses.md). Pin them in the trust config and the report reads `Assurance: witnessed`.
-- **Your own policy**: the dev signer uses the coding pack plus two demo rules (`tracekit/policy2/packs/dev.yaml`); a
-  configured signer takes `policy:` in `signer.yaml`.
+- **Your own policy**: the dev signer runs `tracekit/policy2/packs/dev.yaml` (the coding, browser, data, network,
+  cloud, comms and core packs, two demo rules, unmapped tools flagged) and can't take another. To run yours, start
+  `tracekit signer serve --config signer.yaml` with `policy:` set and point the agent at it with `TRACEKIT_SIGNER`:
+  [run your own policy on your machine](../policy-guide.md#run-your-own-policy-on-your-machine).
 - **Reference**: [the OpenAI Agents integration](../integrations/openai-agents.md), with every option and what it doesn't cover.

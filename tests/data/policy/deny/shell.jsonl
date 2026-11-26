@@ -588,3 +588,9 @@
 {"tool": "Bash", "args": {"command": "env applypatch < p"}, "expect": "ask", "note": "the one-word spelling behind env (TK-A034)"}
 {"tool": "Bash", "args": {"command": "codex --codex-run-as-apply-patch PATCH"}, "expect": "ask", "note": "Codex's own apply-patch invocation (TK-A034)"}
 {"tool": "Bash", "args": {"command": "node --no-warnings codex.js --codex-run-as-apply-patch PATCH"}, "expect": "ask", "note": "the flag through a runtime wrapper (TK-A034)"}
+{"tool": "Bash", "args": {"command": "glab variable delete DB_PASSWORD"}, "expect": "ask", "note": "deleting a project's CI/CD variable removes what guards its deploys (TK-A087)"}
+{"tool": "Bash", "args": {"command": "glab variable delete DEPLOY_KEY --group acme"}, "expect": "ask", "note": "the group form of the variable delete (TK-A087)"}
+{"tool": "Bash", "args": {"command": "glab api -X DELETE projects/42/protected_branches/main"}, "expect": "ask", "note": "removing branch protection through the API (TK-A087)"}
+{"tool": "Bash", "args": {"command": "glab api -X DELETE projects/42/push_rule"}, "expect": "ask", "note": "deleting a project's push rule (TK-A087)"}
+{"tool": "Bash", "args": {"command": "glab api -X DELETE groups/7/variables/DEPLOY_KEY"}, "expect": "ask", "note": "deleting a group variable through the API (TK-A087)"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE https://gitlab.com/api/v4/projects/42/protected_branches/main -H 'PRIVATE-TOKEN: x'"}, "expect": "ask", "note": "the same removal through curl, no glab in sight (TK-A087)"}

@@ -229,3 +229,11 @@ class VaultDocs(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertNotIn("restart it after turning the vault on or off", rows[0])
         self.assertIn("minute", rows[0])   # and says what an operator should allow instead
+
+
+class ReadmePromises(unittest.TestCase):
+    def test_the_readme_names_the_verdict_a_tampered_bundle_gets(self):
+        """The README promised `FAILED` for a tampered bundle; the verifier prints `TAMPERED at event N`."""
+        row = next(line for line in read(os.path.join(ROOT, "README.md")).splitlines() if line.startswith("| **Prove**"))
+        self.assertIn("`TAMPERED at event N`", row)
+        self.assertNotIn("FAILED", row)
