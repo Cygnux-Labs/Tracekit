@@ -22,6 +22,9 @@ _FLOAT = re.compile(r"^[-+]?(\d+\.\d*|\.\d+)([eE][-+]?\d+)?$")
 def _strip_comment(line, depth=0):
     """`line` without its comment; `depth`: the flow brackets an earlier line left open. A quote opens a string only where a scalar starts (the line's start, after `- `,
     `: `, a flow `[`, `{` or `,`, or a quoted key's `:`); inside a plain scalar it is text, as in PyYAML."""
+    if type(line) is str and type(depth) is int and "#" not in line:
+        return line.rstrip()
+
     out, q, start, dash, closed = [], None, True, False, False
     i = 0
     while i < len(line):
