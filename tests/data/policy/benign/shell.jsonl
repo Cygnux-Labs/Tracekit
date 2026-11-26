@@ -282,7 +282,6 @@
 {"tool": "Bash", "args": {"command": "kubectl describe secret db -n prod"}, "expect": "allow", "note": "describe secret metadata and data sizes without values"}
 {"tool": "Bash", "args": {"command": "vault secrets list"}, "expect": "allow", "note": "list enabled Vault secrets engines and paths"}
 {"tool": "Bash", "args": {"command": "vault policy list"}, "expect": "allow", "note": "list names of configured access policies in Vault"}
-{"tool": "Bash", "args": {"command": "vault token lookup"}, "expect": "allow", "note": "check TTL and policies of current Vault token"}
 {"tool": "Bash", "args": {"command": "vault kv list secret/"}, "expect": "allow", "note": "list secret paths in a Vault KV store"}
 {"tool": "Bash", "args": {"command": "vault kv metadata get secret/app"}, "expect": "allow", "note": "read KV secret metadata without values"}
 {"tool": "Bash", "args": {"command": "vault status"}, "expect": "allow", "note": "check Vault seal and health status"}
@@ -412,6 +411,10 @@
 {"tool": "Bash", "args": {"command": "gh extension list"}, "expect": "allow", "note": "listing extensions runs none of them (TK-A084 twin)"}
 {"tool": "Bash", "args": {"command": "gh pr list"}, "expect": "allow", "note": "a command of gh's own is no alias or extension (TK-A084 twin)"}
 {"tool": "Bash", "args": {"command": "gh repo view"}, "expect": "allow", "note": "reading a repository runs no alias's words (TK-A084 twin)"}
+{"args": {"command": "microk8s kubectl get pods"}, "expect": "allow", "note": "#981 twin: listing pods through microk8s reads no secret", "tool": "Bash"}
+{"args": {"command": "minikube kubectl -- get pods -A"}, "expect": "allow", "note": "#981 twin: listing pods through minikube reads no secret", "tool": "Bash"}
+{"args": {"command": "kubectl -o wide get secrets"}, "expect": "allow", "note": "#981 twin: an output that prints sizes, given before get", "tool": "Bash"}
+{"args": {"command": "vault token capabilities secret/db"}, "expect": "allow", "note": "#981 twin: capabilities names no value and prints no token", "tool": "Bash"}
 {"tool": "Bash", "args": {"command": "tracekit tips"}, "expect": "allow", "note": "reading lessons is the agent's own work (TK-D012 twin)"}
 {"tool": "Bash", "args": {"command": "tracekit tips --for-agent"}, "expect": "allow", "note": "the agent's own lesson block answers nothing (TK-D012 twin)"}
 {"tool": "Bash", "args": {"command": "tracekit approvals list"}, "expect": "allow", "note": "listing approvals answers none of them (TK-D012 twin)"}
