@@ -60,15 +60,29 @@
       "fp": 0
     },
     "shell": {
-      "deny": 565,
-      "caught": 565,
-      "benign": 383,
+      "deny": 569,
+      "caught": 569,
+      "benign": 387,
       "fp": 0
     },
     "sql": {
       "deny": 70,
       "caught": 70,
       "benign": 123,
+      "fp": 0
+    }
+  },
+  "packs": {
+    "server": {
+      "deny": 1073,
+      "caught": 1073,
+      "benign": 1015,
+      "fp": 1
+    },
+    "dev": {
+      "deny": 4,
+      "caught": 4,
+      "benign": 4,
       "fp": 0
     }
   },
@@ -1097,6 +1111,10 @@
     "deny/shell:563": "ask TK-A042 TK-F001 TK-F012 TK-F013",
     "deny/shell:564": "ask TK-A042",
     "deny/shell:565": "ask TK-A042",
+    "deny/shell@dev:566": "ask TK-A056",
+    "deny/shell@dev:567": "ask TK-A056",
+    "deny/shell@dev:568": "ask TK-A056",
+    "deny/shell@dev:569": "ask TK-A056",
     "deny/sql:1": "deny TK-DB001 TK-A041",
     "deny/sql:2": "deny TK-DB001 TK-A041",
     "deny/sql:3": "deny TK-DB001 TK-A041",
@@ -2059,6 +2077,10 @@
     "benign/shell:381": "allow",
     "benign/shell:382": "flag TK-F001 TK-F011 TK-F025",
     "benign/shell:383": "allow",
+    "benign/shell@dev:384": "allow",
+    "benign/shell@dev:385": "allow",
+    "benign/shell@dev:386": "allow",
+    "benign/shell@dev:387": "allow",
     "benign/sql:1": "allow",
     "benign/sql:2": "allow",
     "benign/sql:3": "allow",
@@ -2184,6 +2206,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0009852216748768472,
+  "benign_fp_rate": 0.0009813542688910696,
   "ok": true
 }

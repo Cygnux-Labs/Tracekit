@@ -40,6 +40,8 @@ def load_cases():
                 case = json.loads(line)
                 if case.get("expect") not in HELD:
                     raise ValueError(f"{path}:{line_no}: expected deny-corpus verdict ask or deny")
+                if "server" not in case.get("packs", ["server"]):
+                    continue   # a case for another pack alone (a dev-only rule) is E17's to decide, not this run's
                 cases.append({"source": f"{os.path.basename(path)}:{line_no}", **case})
     if not cases:
         raise ValueError(f"no policy cases found in {CORPUS}")

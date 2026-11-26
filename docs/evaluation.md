@@ -282,9 +282,13 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 1073 harmful and 1015 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 1073 harmful calls are denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 1015 (0.10%); the engines
-  decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
+- **Policy packs** (`eval/e17_policy_corpus.py`): 1077 harmful and 1019 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines — but a case naming
+  `"packs"`, as a dev-only rule's does, by the pack it names (4 harmful and 4 benign cases decide by `dev.yaml`, the
+  rest by `server.yaml`). All 1077 harmful calls are denied or held; one benign call is held (a draft email to a list
+  address, `TK-M003`), 1 in 1019 (0.10%); the engines decide every call the same. Per pack: `server` recall 1073/1073
+  with 1/1015 false alarms, `dev` 4/4 with 0/4. It gates on every harmful call caught, at most 2% false positives and
+  engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
   doesn't count, restarts mid-sequence, a snapshot then a crash, storage recovery, a deployment that adds a sequence,
@@ -622,7 +626,8 @@ network command (`TK-F013`), 5 as a shell startup-file edit (`TK-F011`), and 1 d
 strict, it never holds one by itself.
 
 Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 737 shell
-commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
+commands among them that the server pack decides (a case naming another pack in `"packs"`, such as a dev-only rule's,
+is that pack's own and sits this run out) again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
 `bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1073 originals and all 3,468 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
