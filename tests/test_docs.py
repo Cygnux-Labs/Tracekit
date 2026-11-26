@@ -16,6 +16,7 @@ import yaml
 from tracekit import agent_hooks, cli, install, privacy
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
+from tracekit.policy2 import compile as pc
 from tracekit.signer import service
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -139,6 +140,22 @@ class LimitsIndex(unittest.TestCase):
         self.assertIn("`browser_open` and `repo_clone` are decided as a `WebFetch`", kilo)
         self.assertIn("`kilo_memory_save` is decided as a `Write`", kilo)
         self.assertNotIn("is decided as a path, not by the fetch rules", text)
+
+    def test_a_rule_the_docs_call_flagged_held_or_denied_decides_so_in_a_shipped_pack(self):
+        # limits.md once called TK-F009 and TK-F015 "flagged" after they had become holds in every pack
+        sections = {}
+        for pack in ("coding", "dev", "server", "strict"):
+            policy = pc.build(os.path.join(ROOT, "tracekit", "policy2", "packs", pack + ".yaml"))[0]
+            for sec in ("deny", "ask", "flag"):
+                for r in policy.get(sec, []):
+                    sections.setdefault(r["id"], set()).add(sec)
+        verb = {"flagged": "flag", "held": "ask", "denied": "deny"}
+        named = re.compile(r"\b(flagged|held|denied)\s*\(((?:`TK-[A-Z0-9-]+`(?:,\s*|\s+and\s+|\s+or\s+)?)+)\)")
+        pages = [os.path.join(ROOT, "README.md")] + glob.glob(os.path.join(ROOT, "docs", "**", "*.md"), recursive=True)
+        wrong = [f"{os.path.relpath(p, ROOT)}: {said} ({rid}), but it is {sorted(sections[rid])}"
+                 for p in pages for said, ids in named.findall(read(p)) for rid in re.findall(r"TK-[A-Z0-9-]+", ids)
+                 if rid in sections and verb[said] not in sections[rid]]
+        self.assertEqual(wrong, [])
 
 
 class DocCommands(unittest.TestCase):
