@@ -5,6 +5,7 @@
 import base64
 import collections
 import contextlib
+import gc
 import hashlib
 import http.client
 import io
@@ -18,15 +19,16 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_signer_service as tsvc  # noqa: E402
-from factories import cc_assistant, cc_result, iso, v2rec, wait_for, write_jsonl  # noqa: E402
+from factories import TOO_DEEP_JSON, cc_assistant, cc_result, iso, v2rec, wait_for, write_jsonl  # noqa: E402
 from test_view import page_js  # noqa: E402
-from tracekit import cli, lessons, observe, tips, view  # noqa: E402
+from tracekit import cli, hook, lessons, observe, tips, view  # noqa: E402
 from tracekit.format import canon  # noqa: E402
 from tracekit.sdk.client import Client, RunHandle  # noqa: E402
 from tracekit.signer import service as svc  # noqa: E402
@@ -1730,7 +1732,7 @@ class Codex(unittest.TestCase):
                                                                         "cache_write_input_tokens": 3_300,
                                                                         "output_tokens": 50}}}])
         with open(os.path.join(d, "2026", "10", "10", "rollout-2026-10-10T11-00-00-3333.jsonl"), "w") as f:
-            f.write("[" * 100_000 + "\n")   # a line nested past what json.loads takes
+            f.write(TOO_DEEP_JSON + "\n")   # a line nested past what json.loads takes
         agents, files, bad = tips.read_codex_sessions(d, 0)
         self.assertEqual(files, 3)
         self.assertEqual(len(agents), 2)   # the root thread's id in the subagent's file merges nothing
@@ -1739,6 +1741,31 @@ class Codex(unittest.TestCase):
         sub = next(a for a in agents.values() if a["kind"] == "subagent")
         self.assertEqual(len(sub["steps"]), 1)   # the record whose payload isn't an object stops nothing
         self.assertEqual((sub["steps"][0]["in"], sub["steps"][0]["cr"], sub["steps"][0]["w"]), (0, 1_000, 3_300))
+
+    def test_a_line_nested_past_json_loads_runs_no_finaliser_at_the_depth_limit(self):
+        """json.loads of such a line recurses to the interpreter's limit; a collection started there ran other
+        objects' finalisers on that full stack, where their warnings raised (unraisable, flaky on 3.9)."""
+        ran_inside = []
+
+        class Garbage:
+            def __init__(self):
+                self.me = self   # only the cycle collector frees it
+
+            def __del__(self):
+                ran_inside.append(any(f.name == "transcript_entries" for f in traceback.extract_stack()))
+
+        def lines():
+            Garbage()
+            yield TOO_DEEP_JSON.encode() + b"\n"
+
+        gc.collect()
+        old = gc.get_threshold()
+        gc.set_threshold(1, 1, 1)
+        self.addCleanup(gc.set_threshold, *old)
+        entries = list(hook.transcript_entries(lines(), final=True))
+        gc.collect()
+        self.assertEqual(entries, [(len(TOO_DEEP_JSON) + 1, None)])
+        self.assertEqual(ran_inside, [False])
 
     def test_a_codex_model_with_no_price_shows_the_tips_no_price_note(self):
         body = tips.build([], codex=self.week(model="gpt-made-up"), now=NOW)
