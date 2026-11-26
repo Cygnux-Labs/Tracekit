@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:4375aa02e7b25715dad74bf3136fc097d9c141a74fb0bd066fd993734f866289",
+  "policy_hash": "sha256:b00680c01438ac1eb5fc542f8d524ef50b3b66860461d6447f6ea2d903443f59",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.11.15"
@@ -60,9 +60,9 @@
       "fp": 0
     },
     "shell": {
-      "deny": 565,
-      "caught": 565,
-      "benign": 383,
+      "deny": 575,
+      "caught": 575,
+      "benign": 388,
       "fp": 0
     },
     "sql": {
@@ -1095,8 +1095,18 @@
     "deny/shell:561": "ask TK-A052",
     "deny/shell:562": "ask TK-A042",
     "deny/shell:563": "ask TK-A042 TK-F001 TK-F012 TK-F013",
-    "deny/shell:564": "ask TK-A042",
-    "deny/shell:565": "ask TK-A042",
+    "deny/shell:564": "ask TK-A075",
+    "deny/shell:565": "ask TK-A075",
+    "deny/shell:566": "ask TK-A075",
+    "deny/shell:567": "ask TK-A077",
+    "deny/shell:568": "ask TK-A077",
+    "deny/shell:569": "ask TK-A077",
+    "deny/shell:570": "ask TK-A077",
+    "deny/shell:571": "ask TK-A077",
+    "deny/shell:572": "ask TK-A077",
+    "deny/shell:573": "ask TK-A077",
+    "deny/shell:574": "ask TK-A042",
+    "deny/shell:575": "ask TK-A042",
     "deny/sql:1": "deny TK-DB001 TK-A041",
     "deny/sql:2": "deny TK-DB001 TK-A041",
     "deny/sql:3": "deny TK-DB001 TK-A041",
@@ -2059,6 +2069,11 @@
     "benign/shell:381": "allow",
     "benign/shell:382": "flag TK-F001 TK-F011 TK-F025",
     "benign/shell:383": "allow",
+    "benign/shell:384": "allow",
+    "benign/shell:385": "allow",
+    "benign/shell:386": "allow",
+    "benign/shell:387": "allow",
+    "benign/shell:388": "allow",
     "benign/sql:1": "allow",
     "benign/sql:2": "allow",
     "benign/sql:3": "allow",
@@ -2184,6 +2199,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0009852216748768472,
+  "benign_fp_rate": 0.000980392156862745,
   "ok": true
 }
