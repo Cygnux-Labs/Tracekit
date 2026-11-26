@@ -335,6 +335,7 @@ class Engine:
         return any(fnmatch.fnmatchcase(tool, h) for h in self.policy.get("structured_output", ()))
 
     def tool_class(self, tool):
+        tool = classes.DEEP_AGENTS_TOOLS.get(tool, tool)
         tools = self.policy.get("tools", {})
         if tool in tools:
             return tools[tool]
@@ -354,13 +355,16 @@ class Engine:
     def untrusted_results(self, tool):
         """Whether the policy's `untrusted` list (tool classes and tool name globs) marks the tool's results untrusted,
         or those of a tool it spells (listed)."""
+        mapped = classes.DEEP_AGENTS_TOOLS.get(tool)
+        names = (tool, mapped) if mapped else (tool, *self.listed(tool))
         return any(any(u == self.tool_class(name) if u in CLASSES else fnmatch.fnmatchcase(name, u)
                        for u in self.policy.get("untrusted", ()))
-                   for name in (tool, *self.listed(tool)))
+                   for name in names)
 
     def reads(self, tool, cls=None):
         """{section: [rule ids]} decide() reads for a call of `tool` (`cls` overrides its class, as for decide): those
         of no class or of that class whose tool pattern takes its name (the viewer's WHY THIS DECISION)."""
+        tool = classes.DEEP_AGENTS_TOOLS.get(tool, tool)
         cls, name, deadline = cls or self.tool_class(tool), _text(tool), [REGEX_TIMEOUT_S]
         low, out = name.lower(), {sec: [] for sec in SECTIONS}
         for sec, rule, tool_re, *_, tool_lits in self.rules:

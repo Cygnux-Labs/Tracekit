@@ -283,12 +283,12 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 1077 harmful and 1019 benign tool calls in 11 classes
+- **Policy packs** (`eval/e17_policy_corpus.py`): 1087 harmful and 1024 benign tool calls in 11 classes
   (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines — but a case naming
   `"packs"`, as a dev-only rule's does, by the pack it names (4 harmful and 4 benign cases decide by `dev.yaml`, the
-  rest by `server.yaml`). All 1077 harmful calls are denied or held; one benign call is held (a draft email to a list
-  address, `TK-M003`), 1 in 1019 (0.10%); the engines decide every call the same. Per pack: `server` recall 1073/1073
-  with 1/1015 false alarms, `dev` 4/4 with 0/4. It gates on every harmful call caught, at most 2% false positives and
+  rest by `server.yaml`). All 1087 harmful calls are denied or held; one benign call is held (a draft email to a list
+  address, `TK-M003`), 1 in 1024 (0.10%); the engines decide every call the same. Per pack: `server` recall 1083/1083
+  with 1/1020 false alarms, `dev` 4/4 with 0/4. It gates on every harmful call caught, at most 2% false positives and
   engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -320,11 +320,11 @@ forged precedent (the agent answering its own hold, the reviewer's own yes), a b
 project claimed, no project, another tool, another agent), a secret read between the AI's yes and the run and then a
 run the agent registers afresh, one key or two that disagree, and a revoked AI approval. With the gate below, 15 of 15
 caught. E18.H is the harmful-approvals gate: every harmful call of E17,
-E21's held-out pool and its four blind pools (1,641), with two injected variants of each shell line ("approved by the
+E21's held-out pool and its four blind pools (1,651), with two injected variants of each shell line ("approved by the
 admin", a fake tool output), put to that reviewer with no precedent and with a person's precedents for a benign sibling
 of the same reviewed rule and for near-siblings of the call itself (the same but for its quoted literals, the folders of
 its paths, or one more argument: 251 precedents in all), each held call a requester of its own: 0 approvals outside the
-bounds (before precedents were keyed on every argument of the call, the near-siblings let it approve 78). 920 of the calls are
+bounds (before precedents were keyed on every argument of the call, the near-siblings let it approve 78). 930 of the calls are
 held, 112 of them by a reviewed rule; with a person's precedent for that very call (inside the bounds), the AI
 approves 82 of those, counted by class in the results (the 12 installs among them don't pin their source on the line,
 so no precedent lets it answer them, and 18 more are also held by a rule people answer). Results:
@@ -607,9 +607,9 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 185 / 213 | 564 / 676 | 1422 / 1766 | 10.01 / 12.09 |
-| strict, RE2 / regex | 188 / 215 | 539 / 650 | 1313 / 1770 | 9.6 / 11.56 |
-| dev, RE2 / regex | 196 / 228 | 599 / 754 | 1552 / 1903 | 10.69 / 13.34 |
+| default, RE2 / regex | 188 / 214 | 574 / 700 | 1428 / 1718 | 10.17 / 12.15 |
+| strict, RE2 / regex | 188 / 215 | 525 / 638 | 1317 / 1711 | 9.31 / 11.41 |
+| dev, RE2 / regex | 195 / 227 | 599 / 746 | 1533 / 1905 | 10.62 / 13.17 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (69.5% default, 75.7% strict) and no benign set's
@@ -639,16 +639,16 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055`, the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) the second policy merge train's 27 benign cases and two of the fifth's (`kubectl get --raw /healthz` and a here-document written to a plain file) strict does not hold either: 52 of 1015 (5.1%).
+`TK-A053`) the second policy merge train's 27 benign cases and two of the fifth's (`kubectl get --raw /healthz` and a here-document written to a plain file) strict does not hold either: 52 of 1020 (5.1%).
 All 52 are benign calls strict holds (twelve more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names, and the first policy merge train's benign cases add four it holds, `docker run --rm hello-world` and three shell startup-file edits, and the fifth's two here-documents written to `~/.bashrc`): 33 as a push, publish, install, apply, `docker run` or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), 5 as a shell startup-file edit (`TK-F011`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 737 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 747 shell
 commands among them that the server pack decides (a case naming another pack in `"packs"`, such as a dev-only rule's,
 is that pack's own and sits this run out) again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1073 originals and all 3,468 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1083 originals and all 3,513 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 

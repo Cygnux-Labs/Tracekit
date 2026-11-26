@@ -81,6 +81,12 @@ PAYEE_KEYS = ("payee", "to", "recipient", "destination", "account", "account_num
 FS_OPS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit", "Read": "read",
           "Grep": "read", "Glob": "read"}
 
+# The LangChain adapter uses these names for Deep Agents tools whose implementation it recognizes.
+# Keep the framework name in the record so the signer can reconcile it against the model's tool call.
+DEEP_AGENTS_TOOLS = {"deepagents:ls": "LS", "deepagents:read_file": "Read", "deepagents:write_file": "Write",
+                    "deepagents:edit_file": "Edit", "deepagents:glob": "Glob", "deepagents:grep": "Grep",
+                    "deepagents:execute": "Bash"}
+
 
 _CI_WORKFLOW = re.compile(r"(?:^|/)(?:\.github/(?:workflows/[^/].*|actions/(?:[^/]+/)+action\.ya?ml)|"
                           r"\.gitlab-ci\.yml|\.circleci/config\.yml|azure-pipelines\.ya?ml|jenkinsfile)$")

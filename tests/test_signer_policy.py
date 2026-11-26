@@ -312,7 +312,12 @@ class CodingPack(unittest.TestCase):
         held = [(c, "TK-A075") for c in (
             "gpasswd -a dev sudo", "gpasswd --add dev wheel", "gpasswd -M dev,ops admin", "usermod -o -u 0 dev",
             "usermod -ou 0 dev", "usermod --uid=0 --non-unique dev", "usermod -Gsudo dev", "usermod -a -G docker,sudo dev",
-            "usermod --gid sudo dev")] + [(c, "TK-A076") for c in (
+            "usermod --gid sudo dev",
+            # #996: macOS's account tools
+            "sysadminctl -addUser bob -admin", "sysadminctl -resetPasswordFor bob -newPassword x",
+            "sysadminctl -adminUser root -adminPassword x -deleteUser bob",
+            "dseditgroup -o edit -a bob -t user admin", "dseditgroup -o edit -a bob wheel")] + [
+            (c, "TK-A076") for c in (
             "echo 'sudo:x:27:dev' >> /etc/group", "echo 'sudo:!::dev' | tee -a /etc/gshadow",
             "cp group.new /etc/group")] + [(c, "TK-A077") for c in (
             "chmod 7755 x", "chmod 5755 x", "chmod 3755 x", "chmod 04755 x", "chmod u+sx x", "chmod +sx x",
@@ -336,7 +341,33 @@ class CodingPack(unittest.TestCase):
             "install -c -o root -g wheel -b -S .bak -p -v -m 4755 x y", "install -d -m 2775 /srv/shared",
             # a capability number in octal or hex, as libcap's strtoul(…, 0) reads it (#850's review)
             "setcap 0x7+ep ./x", "setcap 07+ep x", "setcap 006+ep x", "setcap 025+ep x", "setcap 0x15+ep x",
-            "setcap 0X15+ep x", "setcap 0x006=ep x", "setcap 0025+eip x", "setcap cap_net_raw,0x6+ep x")] + [
+            "setcap 0X15+ep x", "setcap 0x006=ep x", "setcap 0025+eip x", "setcap cap_net_raw,0x6+ep x",
+            # #996: the capabilities that are root's by another road, by name and number, and setcap - given them
+            "setcap cap_dac_override+ep ./x", "setcap cap_sys_ptrace+ep ./x", "setcap cap_dac_read_search+ep x",
+            "setcap CAP_SYS_MODULE+ep x", "setcap cap_chown=ep x", "setcap cap_net_raw,cap_fowner+ep x",
+            "setcap 0+ep x", "setcap 1+ep x", "setcap 02+ep x", "setcap 0x3+ep x", "setcap 16+ep x", "setcap 020+ep x",
+            "setcap 0x10+ep x", "setcap 19+ep x", "setcap 023+ep x", "setcap 0X13=eip x",
+            "echo cap_setuid+ep | setcap - ./x", "printf 'cap_dac_override+ep' | setcap -q - ./x",
+            "setcap - ./x <<< cap_sys_ptrace+ep",
+            # #996's review: input the line doesn't give exactly, or a pipe and a herestring or heredoc both, reads as
+            # every capability; printf's %s and %b, escapes and a heredoc cat copies are read
+            "echo cap_net_bind_service+ep | setcap - ./x <<< cap_setuid+ep",
+            "echo cap_net_bind_service+ep | setcap - ./x <<EOF\ncap_setuid+ep\nEOF",
+            "{ echo cap_setuid+ep; } | setcap - ./x", "(echo cap_setuid+ep) | setcap - ./x",
+            "printf 'cap_net_raw+ep\\ncap_setuid+ep' | setcap - ./x",
+            "echo -e 'cap_net_raw+ep\\ncap_setuid+ep' | setcap - ./x",
+            "printf '%b' 'cap_net_raw+ep\\ncap_setuid+ep' | setcap - ./x",
+            "printf '%s+ep' cap_setuid | setcap - ./x", "printf 'cap_%s+ep' setuid | setcap - ./x",
+            "cat <<EOF | setcap - ./x\ncap_setuid+ep\nEOF", "echo $CAPS | setcap - ./x",
+            # #1030: a heredoc or herestring holding a variable or a substitution reads as every capability, as a
+            # variable's input does (its raw body reached setcap as `$CAPS`, which the rule doesn't match)
+            "cat <<EOF | setcap - ./x\n$CAPS\nEOF", "C=cap_setuid; cat <<EOF | setcap - ./x\n${C}+ep\nEOF",
+            "cat <<EOF | setcap - ./x\n$(echo cap_setuid)+ep\nEOF", "cat <<EOF | setcap - ./x\n`echo cap_setuid`+ep\nEOF",
+            "setcap - ./x <<EOF\n$CAPS\nEOF", 'setcap - ./x <<< "$CAPS"', "setcap - ./x <<< $(echo cap_setuid)+ep",
+            'cat <<< "$CAPS" | setcap - ./x', "cat <<EOF | setcap - ./x\n${X:-cap_net_bind_service+ep}\nEOF",
+            # and a setcap - inside a stage that is itself piped (round 2)
+            "echo cap_setuid+ep | (setcap - ./x)", "echo cap_setuid+ep | bash -c 'setcap - ./x'",
+            "echo cap_setuid+ep | if true; then setcap - ./x; fi", "f() { setcap - ./x; }; echo cap_setuid+ep | f")] + [
             (c, "TK-A011") for c in (
             "cp evil /var/spool/cron/crontabs/dev", "echo '* * * * * x' > /etc/cron.daily/x",
             "cp evil.sh /etc/cron.hourly/")] + [(c, "TK-A078") for c in (
@@ -364,9 +395,22 @@ class CodingPack(unittest.TestCase):
                   "setcap -v cap_setuid+ep x", "setcap -q -v cap_setuid+ep x", "setcap =-ep x", "setcap -v all=ep x",
                   "setcap 10+ep x", "setcap 70+ep x", "setcap cap_setuidx+ep x", "setcap allx+ep x",
                   "echo setcap all=ep x", "install --mod=0755 x y", f"setcap {every_cap}-ep x",
-                  # 17, octal 021 (17) and hex 0x70 aren't cap_setuid, cap_setgid or cap_sys_admin; `-` reads stdin
-                  "setcap 17+ep x", "setcap 021+ep x", "setcap 0x70+ep x", "setcap 0x21+ep x", "setcap 0+ep x",
-                  "setcap 007-ep x", "setcap - ./x")
+                  # 17, octal 021 (17) and hex 0x70 aren't a capability the rule holds; `-` reads stdin
+                  "setcap 17+ep x", "setcap 021+ep x", "setcap 0x70+ep x", "setcap 0x21+ep x",
+                  "setcap 007-ep x", "setcap - ./x",
+                  # #996's twins: a status read, a group listing, a member removed or added to another group, a
+                  # capability verified, setcap - given an ordinary one
+                  "sysadminctl -secureTokenStatus bob", "dseditgroup -o read admin",
+                  "dseditgroup -o edit -d bob -t user admin", "dseditgroup -o edit -a admin -t user staff",
+                  "setcap -v cap_net_bind_service+ep ./x", "echo cap_net_bind_service+ep | setcap - ./x",
+                  "printf '%s+ep' cap_net_bind_service | setcap - ./x",
+                  "cat <<EOF | setcap - ./x\ncap_net_bind_service+ep\nEOF", "setcap - ./x <<< cap_net_bind_service+ep",
+                  "setcap cap_dac_override-ep x",
+                  # #1030's twins: a heredoc or herestring without an expansion, quoted delimiter or not, and a
+                  # herestring's variable the parser resolves
+                  "cat <<'EOF' | setcap - ./x\ncap_net_bind_service+ep\nEOF",
+                  "setcap - ./x <<'EOF'\ncap_net_bind_service+ep\nEOF", "setcap - ./x <<EOF\ncap_net_bind_service+ep\nEOF",
+                  "C=cap_net_bind_service+ep; setcap - ./x <<< $C", "cat <<< cap_net_bind_service+ep | setcap - ./x")
         new = {want for _, want in held}
         for pack, engine, e in self.every_pack():
             for command, want in held:
