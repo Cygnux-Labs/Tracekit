@@ -813,11 +813,24 @@ def _reasoning_checks(add, harnesses, vault, fix):
     for harness, path in sorted((harnesses or {}).items()):
         if harness == "codex":
             toml = os.path.join(os.path.dirname(path), "config.toml")
+            value, why = None, None
             try:
-                value = agent_hooks.codex_summary(install.agent_file(toml).decode("utf-8"))
-            except (OSError, ValueError):
-                value = None
+                text = install.agent_file(toml).decode("utf-8")
+                try:
+                    from . import tomlsafe   # Python 3.11 and newer
+                    tomlsafe.loads(text)
+                except ImportError:   # lean: no TOML parser before 3.11, the line scan alone decides there
+                    pass
+                value = agent_hooks.codex_summary(text)
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError) as e:   # unreadable, or not TOML: the line scan can't say what Codex reads
+                why = f"{toml}: {e}"
             on, key = value not in (None, "none"), agent_hooks.CODEX_SUMMARY
+            if why and vault:
+                add("D-CODEX-REASONING", False, f"can't check Codex's reasoning summaries ({why})",
+                    f'keep {key} = "auto" at the top of {toml}', bad=INFO)
+                continue
             add("D-CODEX-REASONING", on or not vault, f'Codex\'s reasoning summaries are on ({key} = "{value}" in {toml})'
                 if on else "the content vault is off: no reasoning is kept to check" if not vault else
                 f"the content vault keeps each Codex response, but its reasoning summaries are off ({key} is "

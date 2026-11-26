@@ -2571,6 +2571,15 @@ class CodingAgentReasoning(unittest.TestCase):
         self.assertEqual(self.check("codex", {"config.toml": 'model_reasoning_summary = "auto"\n'})["status"], "ok")
         self.assertEqual(self.check("codex", {}, vault=False)["status"], "ok")
 
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_codex_config_that_wont_parse_is_not_called_unset(self):
+        for text in ("a = [\n", "a = " + TOO_DEEP_JSON):
+            with self.subTest(text=text[:8]):
+                got = self.check("codex", {"config.toml": text})
+                self.assertEqual(got["status"], "info")
+                self.assertIn("can't check Codex's reasoning summaries", got["detail"])
+                self.assertNotIn("unset", got["detail"])
+
     def test_gemini_thoughts_turned_off_in_model_configs_warn(self):
         off = {"modelConfigs": {"overrides": [{"match": {"model": "gemini-3-pro"}, "modelConfig": {
             "generateContentConfig": {"thinkingConfig": {"includeThoughts": False}}}}]}}
