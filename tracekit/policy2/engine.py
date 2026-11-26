@@ -3908,6 +3908,11 @@ def _collect_effects(parsed, work, tags, learned):
         parsed = ([dict(c, argv=[c["argv"][0], *env, *c["argv"][1:]]) if _program(c["argv"]) == "git" else c
                    for c in parsed[0]], *parsed[1:])
     memo = {}
+    split = []   # each tag as (kind, ":", path), kept up to date as `tags` grows
+
+    def parted():
+        split.extend(t.partition(":") for t in tags[len(split):])
+        return split
     appended = collections.Counter(learned.get("appended", ()))
     for ref in parsed[3]:
         add = appended[ref] > 0 and bool(_KNOWN_HOSTS.search(_text(ref)))
@@ -3994,7 +3999,7 @@ def _collect_effects(parsed, work, tags, learned):
     # --show-paths | xargs -I{} cp x {}/bin/python`)
     if any(c["argv"][:3] in (["uv", "tool", "list"], ["uv", "tool", "dir"], ["uv", "python", "dir"], ["pipx", "environment"],
                              ["pipx", "list"]) for c in parsed[0]):
-        tags += ["ROOT_TARGET:" + path for k, _, path in (t.partition(":") for t in tags)
+        tags += ["ROOT_TARGET:" + path for k, _, path in parted()
                  if k in ("WRITE_TARGET", "INTO_TARGET", "TREE_TARGET", "WORKTREE_TARGET") and re.search(r"\{\}|\$", path)]
     # tracekit run by xargs takes its action (init, which records the hook's Python) from input the line makes
     if any(c.get("via", [])[-1:] == ["xargs"] and (_program(c["argv"]) == "tracekit" or (
@@ -4006,7 +4011,7 @@ def _collect_effects(parsed, work, tags, learned):
         tags += ["INSIDE_TARGET:" + r.partition("=")[2] for r in parsed[2] if _NAME_VALUE.match(r)]
     if any(_program(c["argv"]) == "mktemp" for c in parsed[0] if c["argv"]):   # it makes its file in TMPDIR
         tags += ["NAMED_TARGET:" + v for n in ("TMPDIR", "TMP", "TEMP") for v in _variable(parsed, n)]
-    written = [p for k, _, p in (x.partition(":") for x in tags) if k in ("WRITE_TARGET", "APPEND_TARGET")]
+    written = [p for k, _, p in parted() if k in ("WRITE_TARGET", "APPEND_TARGET")]
     if _persists_environment(parsed, written):
         tags.append("ROOT_TARGET:environment")
     # a CDPATH or OLDPWD set some way the parse doesn't read (printf -v, read, eval) puts a cd anywhere: held with the writes
@@ -4018,7 +4023,7 @@ def _collect_effects(parsed, work, tags, learned):
     # p/local/y`; a copy into the link, TREE_TARGET and INTO_TARGET, too), and what a delete or mode change there takes
     # of a trust root (_roots_below)
     links = _links(parsed[0])
-    through, seen = [], {(k, p) for k, _, p in (t.partition(":") for t in tags) if k != "MAY_WRITE"}
+    through, seen = [], {(k, p) for k, _, p in parted() if k != "MAY_WRITE"}
     todo = [(k, p, 0) for k, p in seen]
     links = {link: target for link, target in links.items() if link}
     while todo and links:   # (a link to a link: a path is read through links until none applies, at most as deep as there
@@ -4038,23 +4043,23 @@ def _collect_effects(parsed, work, tags, learned):
     # a target a substitution makes of where Tracekit's Python lives (`ln -sf x "$(command -v tracekit)"`), a variable the
     # line gives one, or an unresolved expansion followed by a root's own name (`$D/tracekit-ai/bin/python`) may be it
     where = "|".join(re.escape(n) for n, text in learned.get("assigned", ()) if _from_where(text))
-    tags += ["ROOT_TARGET:" + path for k, _, path in (t.partition(":") for t in tags)
+    tags += ["ROOT_TARGET:" + path for k, _, path in parted()
              if k in ("WRITE_TARGET", "DELETE_TARGET", "MODE_TARGET", "INTO_TARGET", "TREE_TARGET", "WORKTREE_TARGET")
              and ("$" in path or "`" in path) and (   # (each of the four reads an expansion or a substitution)
                  _from_where(path) or _root_named(path) or _root_glob(path) or where and re.search(
                      r"\$\{?(?:%s)\b" % where, path))]
-    tags += [k + ":" + n for k, _, path in (t.partition(":") for t in tags)
+    tags += [k + ":" + n for k, _, path in parted()
              if k != "MAY_WRITE" and _may_change(path) and (n := _normal(path)) != path]
     # a pattern under ~ is also each folder of an agent's it may match (`rm -rf ~/.cla*` deletes ~/.claude), and a
     # pattern anywhere each protected path it may make (`cp x ~/.cur?or/plugins/…`: _protected_forms)
-    forms = [kf for k, _, path in (t.partition(":") for t in tags) if k != "MAY_WRITE" and shell._GLOB.search(path)
+    forms = [kf for k, _, path in parted() if k != "MAY_WRITE" and shell._GLOB.search(path)
              for kf in forms_of(k, path)]
     tags += [k + ":" + f for k, f in forms] + [k + ":" + r for k, f in forms if k in ("DELETE_TARGET", "MODE_TARGET")
                                                 for r in _roots_below(f)]
     # once every path is read as it is where it lands: what a folder's contents may write there (TREE_TARGET) is held
     # where it may take a trust root's place, and a name copied into a folder is a write where the folder holds a
     # protected path
-    resolved = [(k, path) for k, _, path in (t.partition(":") for t in tags)]
+    resolved = [(k, path) for k, _, path in parted()]
     kinds = {k for k, _ in resolved}
     if "NAMED_TARGET" in kinds:
         tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _names_root(p)]
@@ -6397,9 +6402,11 @@ def _tracekit(parsed, finds, work):
                 any(map(shell._GLOB.search, names)) else ():
             if not n or "://" in n:
                 continue
-            more = [posixpath.normpath(posixpath.join(b, n)) for b in bases if n[0] not in "/~$-"]
-            more += [h + m[1:] for m in [n, *more] if m[:1] == "~" for h in homes]
-            more += [t + m[len(k):] for m in [n, *more] for k, t in links.items() if m.startswith(k + "/")]
+            more = [posixpath.normpath(posixpath.join(b, n)) for b in bases if n[0] not in "/~$-"] if bases else []
+            if homes:
+                more += [h + m[1:] for m in [n, *more] if m[:1] == "~" for h in homes]
+            if links:
+                more += [t + m[len(k):] for m in [n, *more] for k, t in links.items() if m.startswith(k + "/")]
             try:
                 more += [f for m in [n, *more] if shell._GLOB.search(m) for f in _pattern_forms(m, work)]
                 shell.charge(work, sum(map(len, more)))

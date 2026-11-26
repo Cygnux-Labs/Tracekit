@@ -115,7 +115,7 @@ def _place(text):
 
 def _literal(raw):
     """Whether a word written `raw` holds no expansion outside '...' (\\$ and '$' are text)."""
-    return not re.search(r"[$`]", re.sub(r"\\.|'[^']*'", "", raw))
+    return not ("$" in raw or "`" in raw) or not re.search(r"[$`]", re.sub(r"\\.|'[^']*'", "", raw))
 
 
 MAX_DEPTH = 32
