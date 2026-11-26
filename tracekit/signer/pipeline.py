@@ -844,7 +844,8 @@ class RecordLog:
                     del index[(*key, a["tool_call_id"], a["attempt"])]
                     if a.get("used_by"):
                         del index[(*key, *ran(a)[:2])]
-                    ended[aid] = dict(a, ended=epoch(e["ts"]))
+                    if epoch(e["ts"]) >= time.time() - ENDED_S:   # a log replayed whole keeps only the last day's
+                        ended[aid] = dict(a, ended=epoch(e["ts"]))
             elif e["type"] == "policy.decision":
                 d = e["data"]
                 call = {"tool_call_id": e["tool_call_id"], "attempt": e.get("attempt", 0), "decision": d["decision"],
