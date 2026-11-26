@@ -1057,7 +1057,7 @@ CALLS_JS = """
 # the TIMELINE BY CALL's rows: a run of 100 s to 180 s with a call in each state and a model turn (see Waterfall)
 WF_NAMES = ["esc", "plural", "lseq", "short", "j", "ANSWER", "lastAnswer", "ended", "used", "FILE_TOOLS", "category", "callState", "heldCall",
             "wfBars", "wfDur", "wfRel", "wfBytes", "wfTok", "wfTitleCase", "wfAgent", "wfHashed", "wfSize", "wfFailWord", "wfAnswer", "wfToolRow",
-            "wfLlmRow", "WFMAX", "wfOpen", "wfStop", "wfPill", "wfGrown", "wfRowKey", "wfIn", "wfRows", "WFCMP", "tickStep", "wfModel", "wfRangeKey", "wfPhases", "wfTimingHtml", "wfRule", "wfCode",
+            "wfLlmRow", "WFMAX", "wfPlaying", "wfOpen", "wfStop", "wfPill", "wfGrown", "wfRowKey", "wfIn", "wfRows", "WFCMP", "tickStep", "wfModel", "wfRangeKey", "wfPhases", "wfTimingHtml", "wfRule", "wfCode",
             "wfDecisionHtml", "WFI", "wfSvg", "wfIconOf", "WFMODELS", "wfModelMark", "wfIconBox", "wfEvidenceHtml", "wfRetriesHtml", "WFTABS", "wfDrawerHtml", "wfLive"]
 WF_RUN = """
     const V2 = true, R = null, mode = "replay", ENDED = false, STOPPED = "", SOURCE = "", BOOT = null, scope = "r1", RUNS = new Map([["r1", { state: "final", verdict: "verified" }]]);
@@ -1288,8 +1288,8 @@ class WaterfallHonesty(unittest.TestCase):
             self.assertEqual(row["phases"][-2:], ["Ran anyway", "Result recorded"])
         self.assertEqual(rejected["pill"][1], "Rejected · ran anyway")   # never "Approved"
         self.assertEqual(denied["pill"][1], "Blocked · ran anyway")
-        self.assertEqual(denied["bars"], [["deny", 120, 120], ["deny", 120, 130]])
-        self.assertEqual(rejected["bars"], [["wait", 120, 125], ["deny", 125, 125], ["deny", 125, 130]])
+        self.assertEqual(denied["bars"], [["deny", 120, 130]])   # no "it never ran" marker: it ran
+        self.assertEqual(rejected["bars"], [["wait", 120, 125], ["deny", 125, 130]])
 
     def test_a_hold_nobody_answered_ends_with_its_run_and_only_an_open_run_counts_it_up(self):
         """M1: a finished run's unanswered hold counted up to 'HELD 4319m' with a pulsing dot and a Total that grew with the clock."""
@@ -1337,10 +1337,10 @@ class WaterfallHonesty(unittest.TestCase):
               final: v2({ state: "final", verdict: "verified" }), closing: v2({ state: "closing", verdict: "verified" }), pending: v2({ state: "final", verdict: "pending" }),
               error: v2({ state: "final", verdict: "error" }), failed: v2({ state: "final", verdict: "failed", label: "x" }), open: v2({ state: "open", verdict: "verified" }),
               stopped: v2({ state: "final", verdict: "verified" }, { STOPPED: "stopped" }), ended: v2({ state: "final", verdict: "verified" }, { ENDED: "restarted" }), nostate: v2({ verdict: "verified" }),
-              replay: run({ mode: "replay", BOOT: { x: 1 }, chainState: ok }), ledger: run({ chainState: ok }), ledgerEnded: run({ ENDED: "restarted", chainState: ok }),
+              replay: run({ mode: "replay", BOOT: { x: 1 }, chainState: ok }), replayBroken: run({ mode: "replay", BOOT: { x: 1 }, chainState: { ok: false, n: 3 } }), ledgerBroken: run({ chainState: { ok: false, n: 3 } }), ledger: run({ chainState: ok }), ledgerEnded: run({ ENDED: "restarted", chainState: ok }),
               bundle: run({ SOURCE: "bundle", chainState: ok }), file: run({ url: "file:///x/report.html", chainState: ok }) }));"""))
         self.assertEqual(out, {"final": "ok: Verified", "closing": ": Closing", "pending": ": Checking…", "error": ": Not checked", "failed": "bad: Run failed its check", "open": "live: Live",
-                               "stopped": ": Verified earlier · checks stopped", "ended": "none:", "nostate": "none:", "replay": ": Chain ✓ (signatures not checked)", "ledger": "live: Live",
+                               "stopped": ": Verified earlier · checks stopped", "ended": "none:", "nostate": "none:", "replay": ": Chain ✓ (signatures not checked)", "replayBroken": "bad: Chain ✗", "ledgerBroken": "bad: Chain ✗", "ledger": "live: Live",
                                "ledgerEnded": "none:", "bundle": "ok: Verified", "file": ": Chain ✓ (signatures not checked)"})
 
     def test_a_crafted_window_cannot_hang_the_tab_or_leave_the_run_and_a_left_edge_drag_links_back(self):
@@ -1361,7 +1361,7 @@ class WaterfallHonesty(unittest.TestCase):
         self.assertEqual(list(out.values())[:4], [None, None, None, [3, 9]])
         self.assertEqual((out["head"], out["fast"]), (True, True))
         self.assertIn("range=0-12.5", out["leftEdge"])
-        self.assertEqual(out["dragEntries"], [0, 20])   # a drag replaces its entry: Back does not step through 20 windows
+        self.assertEqual(out["dragEntries"], [1, 19])   # one entry at the drag's start, then each frame replaces it: Back does not step through 20 windows
 
     def test_the_new_pill_counts_arrivals_not_what_a_filter_shows_and_points_where_they_are(self):
         """M5: clearing FIND or a window read as new rows; a closed run opened scrolled down; the arrow was down for a newest-first sort."""
@@ -1385,6 +1385,85 @@ class WaterfallHonesty(unittest.TestCase):
         self.assertEqual(out["arrived"], [False, "↓ 1 new"])
         self.assertEqual(out["newestFirst"], [False, "↑ 1 new"])
         self.assertEqual(out["closed"], [[True, "↓ 0 new"], 0])
+
+    def test_a_call_that_ran_anyway_or_left_no_result_draws_no_marker_and_no_empty_bar(self):
+        """H1 and M2 leftovers: the 'it never ran' marker was drawn on rows that ran, and a call with no end and no result drew a 'ran, 0ms' bar."""
+        needs_node(self)
+        out = json.loads(page_js(WF_NAMES + ["wfBarHtml", "wfRowHtml", "wfMark", "wfLabel"], WF_ENDED + """
+            const d = mk("d", { denied: true, flags: ["denied"], v2: { decision: "deny", rules: [] }, post, end: 130 }), q = mk("q", { denied: true, flags: ["denied"], v2: { decision: "deny", rules: [] } });
+            const r = mk("r", { v2: ask, flags: ["held_for_approval"], post, end: 130, approvals: [{ tk_seq: 4, ts: 120.1, v2: { approval: "requested" } }, { tk_seq: 5, ts: 125, v2: { approval: "reject" } }] });
+            const z = mk("z", { start: 150 }), same = mk("s", { denied: true, flags: ["denied"], v2: { decision: "deny", rules: [] }, post: { tk_seq: 9, ts: 120, tool_response: {} }, end: 120 });
+            process.stdout.write(JSON.stringify([d, q, r, z, same].map(a => wfBarHtml(rowOf(a), 100))));"""))
+        ran_denied, never_ran, rejected, noresult, instant = out
+        for bar in (ran_denied, rejected, instant):
+            self.assertNotIn("never ran", bar)
+            self.assertNotIn('class="mk"', bar)
+        self.assertIn("ran anyway", ran_denied)
+        self.assertIn("denied: it never ran", never_ran)   # one that did not run keeps its marker
+        self.assertEqual(noresult, "")                      # nothing ran that the records show
+
+    def test_a_drawer_with_focus_inside_is_redrawn_when_its_call_changes_and_focus_goes_back_to_the_same_control(self):
+        """N2: opening the drawer puts focus in it, and it was not redrawn while focus stayed: an approved call that ran still said 'Held' and 'No result yet'."""
+        needs_node(self)
+        out = json.loads(page_js(WF_RENDER, WF_DOM + """
+            const ask = { decision: "ask", rules: [{ id: "TK-A001", reason: "a push" }] }, out = {}, txt = h => h.replace(/<[^>]+>/g, " ").replace(/\\s+/g, " ");
+            const a = addCall(1, { tool: "git", v2: ask, flags: ["held_for_approval"], end: null, post: null, approvals: [{ tk_seq: 4, ts: 101.1, v2: { approval: "requested" } }] });
+            selected = a; WFTAB = "response"; NOW = 110; renderWaterfall();
+            out.before = [/class="pill \\w+">([^<]+)/.exec(html("tndrawer"))[1], txt(html("tndrawer")).includes("No result yet")];
+            const inner = { dataset: { wft: "response" } }, drawer = $("tndrawer"); document.activeElement = inner; drawer.contains = e => e === inner;
+            drawer.querySelector = sel => ({ focus() { focused.push(sel); } });
+            a.approvals.push({ tk_seq: 5, ts: 112, v2: { approval: "approve", approver: "uid:maya" } }, { tk_seq: 6, ts: 112.2, v2: { approval: "consumed" } });
+            a.post = { tk_seq: 7, ts: 115, tool_response: { output: "pushed" } }; a.end = 115; NOW = 116; focused.length = 0; renderWaterfall();
+            out.after = [/class="pill \\w+">([^<]+)/.exec(html("tndrawer"))[1], txt(html("tndrawer")).includes("No result yet"), focused.slice()];
+            process.stdout.write(JSON.stringify(out));"""))
+        self.assertEqual(out["before"], ["Held", True])
+        self.assertEqual(out["after"], ["Approved · ran", False, ['[data-wft="response"]']])
+
+    def test_a_replay_paused_before_its_last_record_has_its_calls_in_flight_not_left_without_a_result(self):
+        """N3: at the playhead of a replay a running call read 'NO RESULT · the run ended before one was signed' and a waiting hold 'NOT ANSWERED'."""
+        needs_node(self)
+        for setup, at_end in (('BOOT = new Array(40); let pos = 12;', 'pos = 40;'), ('R = new Array(40); let rpos = 12;', 'rpos = 40;')):
+            out = json.loads(page_js(WF_RENDER, WF_DOM.replace('mode = "live"', 'mode = "replay"') + setup + """
+                const ask = { decision: "ask", rules: [{ id: "TK-A001", reason: "a push" }] }, out = {}, txt = h => h.replace(/<[^>]+>/g, " ").replace(/\\s+/g, " ");
+                const busy = addCall(1, { tool: "Bash", end: null, post: null });
+                const held = addCall(2, { tool: "git", v2: ask, flags: ["held_for_approval"], end: null, post: null, approvals: [{ tk_seq: 4, ts: 102.1, v2: { approval: "requested" } }] });
+                S.lastTs = 104;
+                const look = tag => { out[tag] = [busy, held].map(a => { const r = wfToolRow(a, S.actList.indexOf(a)); return [r.words[1], wfPill(r)[0], wfPhases(r).map(p => p[0])]; }); };
+                look("playhead"); %s look("end");
+                process.stdout.write(JSON.stringify(out));""" % at_end))
+            self.assertEqual(out["playhead"], [["RUNNING", "Running", ["Decided by the policy", "Running"]],
+                                               ["TO ANSWER", "Held", ["Decided by the policy", "Held for a person"]]], setup)
+            self.assertEqual([r[0] for r in out["end"]], ["NO RESULT", "NOT ANSWERED"], setup)
+
+    def test_new_rows_a_filter_hides_are_not_new_and_clearing_the_filter_does_not_make_them_so(self):
+        """N4: arrivals the current filter hid still counted."""
+        needs_node(self)
+        out = json.loads(page_js(WF_RENDER, WF_DOM + """
+            const pill = () => [$("tnnew").hidden, $("tnnew").textContent], out = {};
+            for (let i = 0; i < 10; i++) addCall(i);
+            renderWaterfall(); $("tnrows").scrollTop = 0;
+            F.find = "read"; renderWaterfall(); addCall(11); renderWaterfall(); out.hidden = pill();   // a Bash arrives under a filter for Read
+            F.find = null; renderWaterfall(); out.cleared = pill();
+            addCall(12); renderWaterfall(); out.shown = pill();                                          // a Read arrives with no filter
+            WFCHIP = "deny"; renderWaterfall(); addCall(13); renderWaterfall(); out.chip = pill();       // and one under a chip that does not show it
+            process.stdout.write(JSON.stringify(out));"""))
+        self.assertEqual(out["hidden"][0], True)
+        self.assertEqual(out["cleared"][0], True)
+        self.assertEqual(out["shown"], [False, "↓ 1 new"])
+        self.assertEqual(out["chip"][1], "↓ 1 new")   # the one already counted stays; the new one under the chip is not added
+
+    def test_the_overview_and_the_header_label_a_run_of_days_to_its_end(self):
+        """N5: the 40-tick cap cut the labels of a long run short."""
+        needs_node(self)
+        out = json.loads(page_js(["esc", "WFI", "wfSvg", "tickStep", "wfRel", "wfSortWord", "wfHeadHtml", "wfStripHtml"], """
+            const V2 = true, WFSORT = { k: "start", dir: 1 }, $ = () => ({ clientWidth: 1600 }), at = h => [...h.matchAll(/--a:([\\d.]+)/g)].map(m => +m[1]);
+            const strip = at(wfStripHtml({ o0: -100, os: 3 * 86400 + 200 })), head = at(wfHeadHtml({ t0: 0, span: 3 * 86400 }));
+            process.stdout.write(JSON.stringify({ strip: [strip.length, strip.at(-1) / 3600], head: [head.length, head.at(-1) / 3600], rel: [7200, 2 * 86400 + 5 * 3600, 3600 * 30].map(s => wfRel(s, 3600)),
+              week: wfStripHtml({ o0: 0, os: 20 * 86400 }).length > 0 }));"""))
+        self.assertGreaterEqual(out["strip"][1], 60)   # to within a step of the run's 72 hours
+        self.assertGreater(out["head"][1], 40)
+        self.assertEqual(out["rel"], ["2h", "2d 5h", "1d 6h"])
+        self.assertTrue(out["week"])
 
     def test_one_row_is_tabbable_the_arrows_and_enter_work_and_focus_goes_into_the_drawer_and_back(self):
         """M6: every row was a tab stop, a tick redrew the chips under focus, the drawer took no focus, and a sort button was role=columnheader."""

@@ -779,11 +779,14 @@ class Translator(observe.Translator):
         out = super().feed(rec) if d.get("tool_uses") or d.get("usage") else []
         x = {"exchange_id": d.get("exchange_id"), "tool_ids": [u["id"] for u in d.get("tool_uses") or ()]}
         key = (e["run_id"], d.get("exchange_id"))
-        if d.get("phase") == "request" and d.get("exchange_id"):   # the gateway signs a request and its response: the turn's real start
+        # the LLM gateway signs a request and its response (source "gateway": the signer stamps it, no client's record has it) under one
+        # exchange id: the turn's real start. A record an agent signed under that id says nothing of when the model was asked
+        gateway = e.get("source") == "gateway"
+        if gateway and d.get("phase") == "request" and d.get("exchange_id"):
             self.requested[key] = observe._epoch(e.get("ts"))
         for r in out:
             r["v2"] = x
-            if r["event"] == "tk_model" and key in self.requested:
+            if gateway and r["event"] == "tk_model" and key in self.requested:
                 r["started"] = self.requested.pop(key)
         if d.get("phase") == "request":
             prompt = findings_v2._tailer(body) and findings_v2._prompt(body)
