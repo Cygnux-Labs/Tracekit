@@ -2407,6 +2407,24 @@ class WhyLive(WhyServer):
         self.assertEqual([r["tool_name"] for r in rows if r["event"] == "PreToolUse"],
                          [a["tool"] for a in run.of_type("action")])   # each event on the tape once
 
+    def test_a_run_written_once_watch_returns_is_announced_however_slow_the_first_scan(self):
+        """watch() indexes the runs there already are silently: a run written after it returns is announced, with its
+        alerts, even when that first scan was slow (a loaded CI runner)."""
+        store = Store(os.path.join(self.tmp, "late"))
+        scan = store.scan
+
+        def slow_first(announce=True, quiet=()):
+            if not store._stat:
+                time.sleep(0.5)
+            scan(announce, quiet)
+        with mock.patch.object(store, "scan", slow_first):
+            store.watch()
+            self.addCleanup(store.stop)
+            SYSTEM.run(seed=0, out_dir=store.root, run_id="late-0")
+            self.assertTrue(wait_for(lambda: any(r["why"].get("finished") for r in store.out.records)))
+        highs = [a for r in store.out.records for a in r["why"]["alerts"] if a["severity"] == "high"]
+        self.assertEqual(len(highs), 1)
+
     def test_stream_announces_ingested_runs(self):
         msgs, _, t = self.stream()
         SYSTEM.run(seed=0, run_id="remote-live", sink=HttpSink(self.base, TOKEN))

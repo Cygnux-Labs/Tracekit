@@ -2303,7 +2303,7 @@ class CodexSandbox(unittest.TestCase):
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_a_config_too_deep_to_parse_is_unreadable_not_a_crash(self):
-        got = self.check("a = " + "[" * 5000 + "]" * 5000)
+        got = self.check("a = " + TOO_DEEP_JSON)
         self.assertEqual(got["status"], "info")
         self.assertIn("can't check Codex's approval settings", got["detail"])
 
@@ -2650,6 +2650,15 @@ class CodingAgentReasoning(unittest.TestCase):
             self.assertIn("tracekit init --dev --v2 --agent codex", got["fix"])
         self.assertEqual(self.check("codex", {"config.toml": 'model_reasoning_summary = "auto"\n'})["status"], "ok")
         self.assertEqual(self.check("codex", {}, vault=False)["status"], "ok")
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_codex_config_that_wont_parse_is_not_called_unset(self):
+        for text in ("a = [\n", "a = " + TOO_DEEP_JSON):
+            with self.subTest(text=text[:8]):
+                got = self.check("codex", {"config.toml": text})
+                self.assertEqual(got["status"], "info")
+                self.assertIn("can't check Codex's reasoning summaries", got["detail"])
+                self.assertNotIn("unset", got["detail"])
 
     def test_gemini_thoughts_turned_off_in_model_configs_warn(self):
         off = {"modelConfigs": {"overrides": [{"match": {"model": "gemini-3-pro"}, "modelConfig": {
