@@ -81,8 +81,8 @@ class DeepLinks(unittest.TestCase):
         """The URL said nothing of what was open: a run could be linked (#run=) but not its view or record, and Back
         left the page."""
         needs_node(self)
-        out = json.loads(page_js(["PAGES", "RVIEWS", "show", "linkOf", "syncLink", "heldAt", "followLink"], """
-            let scope = null, PAGE = "desk", RV = "calls", CALLSLOG = false, selected = null, R = null, linked = false, following = false, wvKey = "x";
+        out = json.loads(page_js(["PAGES", "RVIEWS", "WFTABS", "show", "linkOf", "syncLink", "heldAt", "followLink"], """
+            let WFR = null, WFTAB = "request"; let scope = null, PAGE = "desk", RV = "calls", CALLSLOG = false, selected = null, R = null, linked = false, following = false, wvKey = "x";
             const V2 = true, RUNS = new Map([["r 1&x", {}]]), lseq = r => r.tk_seq, schedule = () => {}, seen = [], goLive = () => {};
             const location = { hash: "#seq=7&view=graph&run=r+1%26x", pathname: "/" };
             const write = how => (_, __, h) => { seen.push([how, h]); location.hash = h.startsWith("#") ? h : ""; };
@@ -115,8 +115,8 @@ class DeepLinks(unittest.TestCase):
         """#587: nothing linked a hold to the page, which had no link by approval id: #approval=apr-… opens the held
         call's run and its hold's record; an approval the page has no record of leaves it on DESK."""
         needs_node(self)
-        out = json.loads(page_js(["PAGES", "RVIEWS", "show", "linkOf", "syncLink", "heldAt", "followLink"], """
-            let scope = null, PAGE = "desk", RV = "calls", CALLSLOG = false, selected = null, R = null, linked = false, following = false, wvKey = "x";
+        out = json.loads(page_js(["PAGES", "RVIEWS", "WFTABS", "show", "linkOf", "syncLink", "heldAt", "followLink"], """
+            let WFR = null, WFTAB = "request"; let scope = null, PAGE = "desk", RV = "calls", CALLSLOG = false, selected = null, R = null, linked = false, following = false, wvKey = "x";
             const V2 = true, RUNS = new Map([["r1", {}]]), lseq = r => r.tk_seq, schedule = () => {}, seen = [], goLive = () => {};
             const ALL = [{ session_id: "r1", event: "PreToolUse", tool_use_id: "t1", tk_seq: 5, v2: { decision: "ask" } },
                          { session_id: "r1", event: "tk_alert", tk_seq: 6, v2: { approval: "requested", approval_id: "apr-1", tool_use_id: "t1" } }];
@@ -1053,6 +1053,37 @@ CALLS_JS = """
     };"""
 
 
+# the TIMELINE BY CALL's rows: a run of 100 s to 180 s with a call in each state and a model turn (see Waterfall)
+WF_NAMES = ["esc", "plural", "lseq", "short", "j", "ANSWER", "lastAnswer", "ended", "used", "FILE_TOOLS", "category", "callState", "heldCall",
+            "wfBars", "wfDur", "wfRel", "wfBytes", "wfTok", "wfTitleCase", "wfAgent", "wfHashed", "wfSize", "wfFailWord", "wfAnswer", "wfToolRow",
+            "wfLlmRow", "WFMAX", "wfIn", "wfRows", "WFCMP", "tickStep", "wfModel", "wfNew", "wfRangeKey", "wfPhases", "wfTimingHtml", "wfRule", "wfCode",
+            "wfDecisionHtml", "WFI", "wfSvg", "wfIconOf", "wfEvidenceHtml", "wfRetriesHtml", "WFTABS", "wfDrawerHtml", "wfLive"]
+WF_RUN = """
+    const V2 = true, R = null, mode = "replay", ENDED = false, STOPPED = "", scope = "r1", RUNS = new Map([["r1", { state: "final", verdict: "verified" }]]);
+    let WFCHIP = "all", WFSORT = { k: "start", dir: 1 }, WFR = null, WFTAB = "request", selected = null;
+    const F = {}, nowTs = () => 200, fmtT = ts => "t" + ts, agentMatch = () => true, actMatch = a => !a.hide && (!F.tool || a.tool === F.tool), chainState = { ok: true, n: 5 };
+    const main = { session: "r1", id: "main", sub: false, name: "Coder", type: "main" };
+    const S = { firstTs: 100, sessions: new Map([["r1", { end: 190 }]]), byId: new Map(), actList: [], llm: [] };
+    const rec = (seq, ts, more) => ({ tk_seq: seq, ts, hash: "sha256:" + String(seq).repeat(12), ...more });
+    const act = (id, tool, start, more) => {
+      const a = { id, tool, target: "", input: {}, agent: main, flags: [], approvals: [], post: null, end: null, reasons: [], error: false, denied: false, start,
+                  pre: rec(S.actList.length + 1, start, { v2: { tool_use_id: id } }), v2: { decision: "allow", rules: [] }, ...more };
+      S.actList.push(a); S.byId.set(id, [a]); return a;
+    };
+    const result = (ts, response) => rec(90 + ts, ts, { tool_response: response });
+    act("c1", "Read", 110, { end: 111, v2: { decision: "allow", rules: [], args_commitment: "sha256:abc" }, post: result(111, { output: "[hashed · 2048 bytes]" }) });
+    act("c2", "Bash", 120, { end: 125, error: true, flags: ["error"], post: result(125, { exit_code: 1, output: "FAIL" }) });
+    act("c3", "Read", 130, { denied: true, flags: ["denied"], reasons: ["TK-S004"], v2: { decision: "deny", rules: [{ id: "TK-S004", reason: "reading or touching a credentials file", remedy: "Leave credential files unread and use the access the deployment gives the tool" }] } });
+    const ask = { decision: "ask", rules: [{ id: "TK-A056", reason: "a deploy" }] };
+    const first = act("terraform", "terraform", 140, { end: 180, flags: ["held_for_approval"], v2: ask, post: result(180, { output: "ok" }), approvals: [
+      rec(12, 140.2, { v2: { approval: "requested" } }), rec(13, 178, { v2: { approval: "approve", approver: "uid:maya" } }), rec(14, 178.3, { v2: { approval: "consumed" } })] });
+    act("gh", "gh", 150, { flags: ["held_for_approval"], v2: ask, approvals: [rec(15, 150.2, { v2: { approval: "requested" } }), rec(16, 160, { v2: { approval: "reject", approver: "uid:maya" } })] });
+    act("terraform2", "terraform", 178.2, { end: 180, v2: ask, retryOf: first, post: result(180, { output: "ok" }) });
+    act("hidden", "Glob", 115, { end: 116, hide: true });
+    S.llm.push({ ts: 135, from: 128, agent: main, model: "claude-opus-5-5", tin: 30000, tout: 1500, cr: 12000, cw: 0, rec: rec(30, 135, { event: "tk_model", v2: { tool_ids: ["a"], exchange_id: "x1" } }) });
+"""
+
+
 class Waterfall(unittest.TestCase):
     """TIMELINE showed only one lane per agent: which call waited for a person, and how long, was not drawn."""
 
@@ -1067,52 +1098,132 @@ class Waterfall(unittest.TestCase):
             "waiting": [["wait", 8, None]],                      # still waiting: to the right edge
             "running": [["ok", 8.5, None]], "noresult": [["ok", 8.6, 8.6]]})
 
-    def test_by_call_draws_a_row_per_call_and_by_agent_the_lanes(self):
+    def test_by_agent_and_off_the_run_page_the_by_call_view_is_hidden(self):
         needs_node(self)
-        out = json.loads(page_js(["esc", "fmtDur", "tickStep", "tickText", "ANSWER", "lastAnswer", "ended", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "callState",
-                                  "WFMAX", "wfBars", "renderWaterfall"], CALLS_JS + """
-            const V2 = true, R = null, fmtT = ts => "t" + ts, label = a => a.name, actMatch = a => !a.hide;
-            const el = {}, $ = id => el[id] ??= { style: { setProperty() {} }, clientWidth: 900 }, put = (id, h) => { $(id).html = h; };
+        out = json.loads(page_js(["renderWaterfall"], """
+            const el = {}, $ = id => el[id] ??= { style: { setProperty() {} } };
             const btn = by => ({ dataset: { wfby: by }, classList: { toggle(c, on) { this.on = on; } } }), btns = [btn("call"), btn("agent")];
             const document = { querySelectorAll: () => btns };
-            let PAGE = "run", RV = "waterfall", WFBY = "call", selected = C.flagged, seen = [];
-            S.actList = [{ ...C.ok, hide: true }, ...Object.values(C)];
-            const look = () => seen.push([el.lanetitle.textContent, el.wfby.hidden, el.lanes.hidden, el.wf.hidden,
-              el.lanelegend.hidden, el.wflegend.hidden, btns.map(b => b.classList.on)]);
-            renderWaterfall(); look(); seen.push(el.wf.html, el.wflegend.html);
-            WFBY = "agent"; renderWaterfall(); look();
+            let PAGE = "run", RV = "waterfall", WFBY = "agent", seen = [];
+            const look = () => seen.push([el.lanetitle.textContent, el.wfby.hidden, el.lanes.hidden, el.wf.hidden, btns.map(b => b.classList.on)]);
+            renderWaterfall(); look();
             PAGE = "desk"; renderWaterfall(); look();
-            PAGE = "run"; WFBY = "call"; S.actList = Array.from({ length: 605 }, (_, i) => ({ ...C.ok, start: i, end: i + 1 }));
-            renderWaterfall(); seen.push(el.wf.html, el.wflegend.html);
-            S.actList = [{ ...C.ok, hide: true }]; renderWaterfall(); seen.push(el.wf.html);
             process.stdout.write(JSON.stringify(seen));"""))
-        by_call, html, legend, by_agent, desk, capped, capped_legend, none = out
-        self.assertEqual(by_call, ["TIMELINE · ONE ROW PER CALL", False, True, False, True, False, [True, False]])
-        self.assertEqual(by_agent, ["TIMELINE · ONE LANE PER AGENT", False, False, True, False, True, [False, True]])
-        self.assertEqual(desk[:6], ["TIMELINE · ONE LANE PER AGENT", True, False, True, False, True])
-        # one row per call the filters keep, each opening its call; the selected one marked
-        self.assertEqual(re.findall(r'data-wf="(\d+)"', html), [str(i) for i in range(1, 10)])
-        self.assertEqual(re.findall(r'class="wfr( on)?" data-wf="(\d+)"', html)[3], (" on", "4"))
-        bars = re.findall(r'<rect class="wk-(\w+)" x="([\d.]+)" y="4" width="([\d.]+)"', html)
-        self.assertEqual([b[0] for b in bars], ["ok", "deny", "deny", "flag", "wait", "ok", "wait", "deny", "wait", "ok", "ok"])
-        self.assertIn('<pattern id="wfhatch"', html)
-        _, x, w = bars[8]                                          # the hold still waiting runs to the right edge
-        self.assertAlmostEqual(float(x) + float(w), 900 - 340, places=0)
-        self.assertIn('title="coder · send_email · REJECTED"', html)
-        self.assertIn("<title>held for a person · 1s</title><", html)
-        self.assertIn("<title>failed · 500 ms</title>", html)
-        self.assertIn("<title>rejected</title>", html)
-        # the legend names only what the run shows
-        self.assertEqual(re.findall(r'class="wk-(\w+)">([^<]+)<', legend),
-                         [("ok", "allowed"), ("flag", "flagged"), ("deny", "blocked, refused or failed"),
-                          ("wait", "held for a person")])
-        self.assertEqual(re.findall(r'class="wk-(\w+)">([^<]+)<', capped_legend), [("ok", "allowed")])
-        # the newest 600 are drawn, and it says how many are not
-        self.assertEqual(len(re.findall(r'data-wf="', capped)), 600)
-        self.assertIn('data-wf="5"', capped)
-        self.assertNotIn('data-wf="4"', capped)
-        self.assertIn("5 earlier calls are not drawn: the newest 600 are.", capped)
-        self.assertIn("No call matches the filters.", none)
+        self.assertEqual(out, [["TIMELINE · ONE LANE PER AGENT", False, False, True, [False, True]],
+                               ["TIMELINE · ONE LANE PER AGENT", True, False, True, [False, True]]])
+
+    def test_the_chips_count_what_the_filters_keep_and_each_shows_its_calls(self):
+        needs_node(self)
+        out = json.loads(page_js(WF_NAMES, WF_RUN + """
+            const seen = {counts: wfModel().counts, rows: {}};
+            for (const [c] of WFCHIPS) { WFCHIP = c; seen.rows[c] = wfModel().rows.map(r => r.name + (r.kind === "llm" ? "*" : "")); }
+            WFCHIP = "all"; F.tool = "Read";   // AGT, TOOL, FILE and FLAG compose with the chips: a model turn is no Read
+            seen.read = wfModel().rows.map(r => r.name); seen.readCounts = wfModel().counts;
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out["counts"], {"all": 7, "llm": 1, "tool": 6, "held": 2, "deny": 1, "err": 1, "retry": 1})
+        rows = out["rows"]
+        self.assertEqual(rows["all"], ["Read", "Bash", "claude-opus-5-5*", "Read", "terraform", "gh", "terraform"])
+        self.assertEqual(rows["llm"], ["claude-opus-5-5*"])
+        self.assertEqual(len(rows["tool"]), 6)
+        self.assertEqual(rows["held"], ["terraform", "gh"])
+        self.assertEqual(rows["deny"], ["Read"])
+        self.assertEqual(rows["err"], ["Bash"])
+        self.assertEqual(rows["retry"], ["terraform"])
+        self.assertEqual(out["read"], ["Read", "Read"])
+        self.assertEqual(out["readCounts"]["all"], 2)
+
+    def test_a_selected_window_keeps_the_calls_that_touch_it_and_zooms_the_axis(self):
+        needs_node(self)
+        out = json.loads(page_js(WF_NAMES, WF_RUN + """
+            const whole = wfModel(); WFR = [25, 45];   // 125 s to 145 s of the run
+            const m = wfModel();
+            process.stdout.write(JSON.stringify({ whole: [whole.t0, whole.span, whole.rows.length], rows: m.rows.map(r => r.key), zoom: [m.t0, m.span], all: m.all.length,
+              keys: [wfRangeKey(null, [0, 100], "ArrowRight", false), wfRangeKey([40, 50], [0, 100], "ArrowLeft", false), wfRangeKey([40, 50], [0, 100], "ArrowRight", true),
+                     wfRangeKey([40, 50], [0, 100], "Escape", false), wfRangeKey(null, [0, 100], "x", false)] }));"""))
+        # the failed Bash ends at 125, the model turn and the denied read are inside, the held terraform starts at 140; the others are out
+        self.assertEqual(out["rows"], ["a1", "m0", "a2", "a3"])
+        self.assertEqual(out["zoom"], [25, 20])
+        self.assertEqual(out["all"], 7)   # the overview and the counts still hold the whole run
+        self.assertEqual(out["whole"][2], 7)
+        self.assertAlmostEqual(out["whole"][1], 72.8, places=1)
+        self.assertEqual(out["keys"], [[42.5, 67.5], [35, 45], [40, 55], None, None])
+
+    def test_the_timing_of_a_held_then_approved_call_has_only_the_phases_its_records_hold(self):
+        needs_node(self)
+        out = json.loads(page_js(WF_NAMES, WF_RUN + """
+            const held = wfToolRow(S.actList[3], 3), denied = wfToolRow(S.actList[2], 2), seen = {};
+            seen.held = wfPhases(held).map(p => [p[0], p[2], p[3]]); seen.deniedPhases = wfPhases(denied).map(p => p[0]);
+            seen.heldHtml = wfDrawerHtml(held, "timing", 100); seen.deniedHtml = wfDrawerHtml(denied, "timing", 100);
+            seen.heldBadges = held.badges.map(b => b[1]); seen.deniedBadges = denied.badges.map(b => b[1]);
+            seen.bars = [held.bars, denied.bars];
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out["held"], [["Decided by the policy", 140, None], ["Held for a person", 140, 178], ["Ran", 178, 180],
+                                       ["Result recorded", 180, None]])
+        self.assertIn("Started at +40s into the run", out["heldHtml"])
+        self.assertIn("approved by uid:maya at t178", out["heldHtml"])
+        self.assertIn("ASK · TK-A056", out["heldHtml"])
+        self.assertIn('<span class="pv">38s</span>', out["heldHtml"])   # waited 38 s for the answer
+        self.assertEqual(out["heldBadges"], ["HELD 38s", "approved"])
+        # a denied call never ran: no run, no result
+        self.assertEqual(out["deniedPhases"], ["Decided by the policy", "Did not run"])
+        self.assertNotIn("Result recorded", out["deniedHtml"])
+        self.assertIn("a denied call is not run", out["deniedHtml"])
+        self.assertEqual(out["deniedBadges"], ["DENIED"])
+
+    def test_the_decision_tab_lists_each_rule_with_its_reason_and_remedy(self):
+        needs_node(self)
+        out = page_js(WF_NAMES, WF_RUN + """
+            process.stdout.write(wfDrawerHtml(wfToolRow(S.actList[2], 2), "decision", 100));""")
+        self.assertIn("<b>TK-S004</b> reading or touching a credentials file", out)
+        self.assertIn("what to do: Leave credential files unread", out)
+        self.assertIn('<b class="deny">DENY</b>', out)
+
+    def test_a_request_with_only_a_commitment_says_so_and_names_the_vault(self):
+        needs_node(self)
+        out = page_js(WF_NAMES, WF_RUN + """
+            process.stdout.write(wfDrawerHtml(wfToolRow(S.actList[0], 0), "request", 100) + wfDrawerHtml(wfToolRow(S.actList[0], 0), "response", 100));""")
+        self.assertIn("only a salted commitment to the arguments", out)
+        self.assertIn("The content vault opens it", out)
+        self.assertIn("tracekit signer reveal --record 1", out)
+        self.assertIn("only a commitment to the result (2.0 KB)", out)
+
+    def test_a_model_turn_shows_its_tokens_and_does_not_claim_a_first_token_time(self):
+        needs_node(self)
+        out = json.loads(page_js(WF_NAMES, WF_RUN + """
+            const row = wfLlmRow(S.llm[0], 0);
+            process.stdout.write(JSON.stringify({ size: row.sizeText, name: row.name, arg: row.arg, start: row.start, dur: row.dur, bar: row.bars,
+              timing: wfDrawerHtml(row, "timing", 100), response: wfDrawerHtml(row, "response", 100), phases: wfPhases(row).map(p => p[0]) }));"""))
+        self.assertEqual((out["size"], out["name"], out["arg"]), ("31.5K tok", "claude-opus-5-5", "→ 1 tool call"))
+        self.assertEqual(out["bar"], [["llm", 128, 135]])   # from the agent's previous record to the turn
+        self.assertEqual(out["dur"], 7)
+        timing = html.unescape(out["timing"])
+        self.assertIn("since the agent's previous record", timing.lower())
+        self.assertIn("the model's time and the harness's", timing)
+        self.assertIn("no recorded start time", timing)
+        self.assertNotIn("first token", timing.lower())
+        self.assertIn("30,000 tokens", out["response"])
+        self.assertIn("1,500 tokens", out["response"])
+        self.assertIn("12,000 read from cache", out["response"])
+
+    def test_rows_that_arrive_below_the_scroll_are_counted_for_the_new_pill(self):
+        needs_node(self)
+        out = json.loads(page_js(["wfNew"], """
+            const seen = new Set(["a1", "a2"]), rows = [{ key: "a1" }, { key: "a2" }, { key: "a3" }, { key: "m0" }];
+            process.stdout.write(JSON.stringify([wfNew(seen, rows), wfNew(new Set(rows.map(r => r.key)), rows)]));"""))
+        self.assertEqual(out, [2, 0])
+        # the pill's words, its click (to the newest, clearing the count) and the scroll that clears it
+        self.assertIn("`↓ ${WF.unseen} new`", PAGE)
+        self.assertIn("if (t.dataset.wfnew !== undefined) { const el = $(\"tnrows\"); WF.unseen = 0; el.scrollTop = el.scrollHeight;", PAGE)
+        self.assertIn("else if (!first) WF.unseen += fresh;", PAGE)
+
+    def test_a_row_is_opened_by_click_and_enter_and_the_headers_say_how_they_sort(self):
+        self.assertIn("if (t.dataset.wf) return select(S.actList[+t.dataset.wf]);", PAGE)
+        self.assertIn("if (t.dataset.wfl) return select(S.llm[+t.dataset.wfl].rec);", PAGE)
+        self.assertIn("if (t.dataset.wfby) { WFBY = t.dataset.wfby; return schedule(); }", PAGE)
+        self.assertIn("[data-wf][tabindex],[data-wfl][tabindex]", PAGE)   # Enter opens a row reached with Tab
+        self.assertIn('aria-sort="${esc(WFSORT.k === k ?', PAGE)
+        self.assertIn('role="row" tabindex="0" data-k=', PAGE)
+        self.assertIn("aria-label=\"${esc(wfLabel(r, base))}\"", PAGE)   # the bars' facts, in words
 
     def test_a_render_of_the_lanes_reads_each_call_once_and_each_colour_once_and_only_when_they_changed(self):
         """Each lane read every call of the live view, and each call asked the page's style for its colour: DESK spent
@@ -1192,11 +1303,6 @@ class Waterfall(unittest.TestCase):
         self.assertEqual(set(out["scrolled"]), {61})                                        # the axis' words stay in view
         self.assertTrue(out["strip"])
         self.assertEqual(out["cueEnd"], [])
-
-    def test_a_row_and_the_toggle_are_opened_by_the_pages_click_handlers(self):
-        self.assertIn("if (t.dataset.wf) return select(S.actList[+t.dataset.wf]);", PAGE)
-        self.assertIn("if (t.dataset.wfby) { WFBY = t.dataset.wfby; return schedule(); }", PAGE)
-        self.assertIn("[data-wf][tabindex]", PAGE)   # Enter opens a row reached with Tab
 
 
 SIGNED ={"evidence": [{"seq": 4, "hash": "sha256:4", "type": "tool.result"}]}
@@ -3609,7 +3715,7 @@ class NothingLost(unittest.TestCase):
             "alerts with why": ['<span class="src">WHY</span>'],
             "tool mix": ["function renderMix()"], "lanes": ["TIMELINE · ONE LANE PER AGENT"],
             "timeline by call and by agent": ["function renderWaterfall()", "TIMELINE · ONE ROW PER CALL",
-                                              'data-wfby="call"', 'data-wfby="agent"', '<pattern id="wfhatch"',
+                                              'data-wfby="call"', 'data-wfby="agent"', 'class="tn-drawer"',
                                               '"held for a person"'],
             "reasoning": ["REASONING<small>self-reported, not proof</small>"],
             "files": ["<th>PATH</th>", "LAST AGENT"],

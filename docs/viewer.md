@@ -239,9 +239,21 @@ candidate cause links to its node and its record, and a run that names a program
 
 ### A run's TIMELINE, EVIDENCE and the inspector
 
-**TIMELINE** (key `3`) shows the run **BY CALL**, one row per call on one time axis (green ran, red blocked, refused or
-failed, cyan flagged, hatched amber while it waited for a person, to the right edge while it still waits; click a row
-for the call), or **BY AGENT**, one lane per agent. **EVIDENCE** (key `7`) walks the run's signed records in order,
+**TIMELINE** (key `3`) shows the run **BY CALL**, or **BY AGENT**, one lane per agent. BY CALL is a table of the run's calls and model
+turns on one time axis: chips (All, LLM, Tools, Held, Denied, Errors, Retries, each with its count) and a search box (the
+same as FIND) over an overview strip of the whole run. Drag across the strip to keep the calls in a window (its words and
+Clear sit in the strip; with the keyboard, focus the strip and use the arrows to move the window, Shift and the arrows
+to resize it, Escape to clear it); the waterfall's axis zooms to it. A row has the call's status dot, tool, arguments,
+badges (DENIED, HELD 2m 14s with who answered, exit codes, RETRY, flags), agent, size, time and a bar: teal ran, violet a
+model turn (from the agent's previous record to the turn, since a turn records no start), red failed, a red marker for a
+denied call that never ran, hatched amber while it waited for a person. Click a row, or reach it with Tab and press
+Enter, for the drawer: Request, Response, Timing (only the phases the records hold: decided, held for a person and
+who answered, ran, result recorded), Decision (each rule with its reason and remedy), Evidence (the records' seqs and
+hashes, and the run's check) and Retries. Escape closes it. A run that verified ends in a Verified seal in place of Live.
+The selected call, its tab and the window are in the URL (`seq=`, `tab=`, `range=` seconds from the run's first
+record), so a link shares them.
+
+**EVIDENCE** (key `7`) walks the run's signed records in order,
 each marked as covered when the viewer's check verified the run, lists the checks of its verifier report, stamps the
 result (VERIFIED, FAILED with the first failing check, PENDING or NOT CHECKED) and gives the export and verify
 commands: that check is the viewer's, operator-side, and the bundle checked with `tracekit verify` from the signed

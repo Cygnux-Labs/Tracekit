@@ -2641,7 +2641,7 @@ class Pages(unittest.TestCase):
         for row in ('data-run="" tabindex="0"', 'data-run="${esc(r.id)}" tabindex="0"',
                     'data-i="${esc(row.i)}" tabindex="0"', 'data-al="${esc(al.i)}" tabindex="0"'):
             self.assertIn(row, page)
-        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],'
+        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],[data-wfl][tabindex],'
                       '[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex],[data-ingrp][tabindex]")) e.target.click();', page)
 
 
