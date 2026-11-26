@@ -24,7 +24,7 @@ import pytest
 
 import adapter_contract as ac
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
-from tracekit import agent_hooks, cli, install, lessons, privacy, tips
+from tracekit import agent_hooks, cli, constraints, install, lessons, privacy, tips
 from tracekit.bundle_v2 import export
 from tracekit.client import client_home
 from tracekit.format.canon import event_hash
@@ -376,7 +376,7 @@ class HookV2(unittest.TestCase):
              mock.patch.object(claude_code, "_run", return_value=(None, False)):
             claude_code._handle(None, {"prompt": prompt}, "UserPromptSubmit", "s1", None)
         self.assertEqual(len(calls), 1)
-        self.assertLessEqual(len(calls[0]), claude_code.constraints.MAX_TEXT)
+        self.assertLessEqual(len(calls[0]), constraints.MAX_TEXT)
 
     def test_many_pastes_observe_once_per_source(self):
         prompt = "".join(f'<pasted_content id="p{i}">x</pasted_content id="p{i}">' for i in range(1_000))
@@ -2326,3 +2326,15 @@ class CodeModeRefusedCalls(unittest.TestCase):
             claude_code._refused_inner(None, "s1", resp)
         found.assert_not_called()
         run.assert_not_called()
+
+
+class HookImport(unittest.TestCase):
+    def test_the_hook_module_loads_neither_the_policy_parser_nor_asyncio_nor_tls(self):
+        """The hook starts as a new process for every PreToolUse and PostToolUse: what only a UserPromptSubmit, a Bash
+        result or an async or HTTPS client needs is imported where it is used."""
+        code = ("import sys, tracekit.integrations.claude_code; "
+                "print([m for m in ('tracekit.constraints', 'tracekit.policy2.engine', 'tracekit.policy2.shell', "
+                "'asyncio', 'ssl', 'http.client') if m in sys.modules])")
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                             env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}).stdout
+        self.assertEqual(out.strip(), "[]")

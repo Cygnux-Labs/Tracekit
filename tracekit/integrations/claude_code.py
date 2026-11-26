@@ -99,7 +99,7 @@ import uuid
 import warnings
 from collections import deque
 
-from tracekit import __version__, constraints, model_receipt, privacy
+from tracekit import __version__, model_receipt, privacy
 from tracekit.client import system_config
 from tracekit.core import subagent_id
 from tracekit.deploy import files
@@ -927,6 +927,7 @@ def _post(client, p, sid, tid):
 
 def _live(prompt):
     """The constraints `prompt` states that the signer holds calls for: all but a scope (only_change)."""
+    from tracekit import constraints   # only a UserPromptSubmit needs it, and it loads the policy engine
     return [(kind, obj and obj[:256]) for kind, obj in constraints.extract(prompt) if kind != "only_change"]
 
 
@@ -951,6 +952,7 @@ def _states(prompt, source, value, start):
     handoff (_handoff)."""
     if _handoff(prompt, source, start):
         return []
+    from tracekit import constraints
     return _live(re.sub(r"<[^<>]*>", "", value[:constraints.MAX_TEXT]))
 
 

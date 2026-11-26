@@ -88,6 +88,11 @@ at every ledger size, the signer appended about 145 events per second (8 concurr
 recorded, no gaps), and verification took 0.09 s, 0.34 s and 1.4 s for 500, 2,000 and 8,000 events. E1, E3 and E4
 give the same results as on Linux there. E5 was run on Linux only.
 
+The v2 Claude Code hook (`python -m tracekit.integrations.claude_code`, scratch dev signer, Apple-silicon Mac, Python
+3.11.15, 15 calls each) imports what only some calls need where they use it. A Read call took 86 ms median at
+PreToolUse and 99 ms at PostToolUse before, and 52 ms and 67 ms after; importing the hook module alone went from 84 ms
+to 49 ms. A Bash call is unchanged (85 ms, 100 ms), since both its events read the command with the policy parser.
+
 E2 found a real bug before release: with eight concurrent writers the signer's accept queue (Python's default of
 5) filled, and some clients got `EAGAIN` and, being fail-open, dropped events. The queue is now 256, the client
 retries a full-queue connect, and `BurstOfWriters` in the test suite fails without the fix.

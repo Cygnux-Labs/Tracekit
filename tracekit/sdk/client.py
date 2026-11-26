@@ -22,14 +22,12 @@ each once the one before it is answered, so they reach the signer in client_seq 
 event call the signer refuses with `quota_exceeded` (a rate or count limit: one with `retry_after_ms`) or `unavailable`
 is sent again as it was, within the call's timeout (_retry_wait); no other call is. The client writes nothing to disk.
 """
-import asyncio
 import base64
 import collections
 import concurrent.futures
 import contextlib
 import contextvars
 import hashlib
-import http.client
 import json
 import os
 import queue
@@ -37,7 +35,6 @@ import random
 import re
 import select
 import socket
-import ssl
 import threading
 import time
 import urllib.parse
@@ -220,6 +217,7 @@ class _Https:
     200 for a refusal and acts on none (no retry of a 503, no host ejected)."""
 
     def __init__(self, url, token_file=None):
+        import ssl
         u = urllib.parse.urlsplit(url)
         self.url, self.plain = f"{u.scheme}://{u.netloc}", u.scheme == "http"
         self.host, self.port = u.hostname, u.port or (80 if self.plain else 443)
@@ -243,6 +241,8 @@ class _Https:
     def post(self, body, timeout, host=None):
         """The answer frame to `body` from `host` (default the signer's); _ConnectionLost when the request may not have
         arrived, SignerUnavailable on a timeout (`recorded` False when it timed out connecting: nothing went out)."""
+        import http.client
+        import ssl
         headers, key = {"Content-Type": "application/json"}, os.environ.get("TRACEKIT_API_KEY", "").strip()
         if self.token_file:   # wins over an API key: it is re-read per call, so a rotated token is picked up
             try:
@@ -1141,6 +1141,7 @@ class _Async:
             return attr
 
         async def call(*args, **kwargs):
+            import asyncio
             return await asyncio.to_thread(attr, *args, **kwargs)
         return call
 
@@ -1152,6 +1153,7 @@ class AsyncClient(_Async):
         super().__init__(Client(signer, timeout))
 
     async def run(self, agent, **fields):
+        import asyncio
         return AsyncRunHandle(await asyncio.to_thread(self._sync.run, agent, **fields))
 
 
@@ -1162,6 +1164,7 @@ class AsyncRunHandle(_Async):
 
     async def __aexit__(self, *exc):
         current_run.reset(self._ctx)
+        import asyncio
         await asyncio.to_thread(_close_at_exit, self._sync, exc[0] is not None)
 
     @contextlib.contextmanager
