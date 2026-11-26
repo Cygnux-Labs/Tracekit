@@ -2371,7 +2371,9 @@ class HoldLine(unittest.TestCase):
         veto = "approved by an agent approver; people may still revoke it, so wait 42 s"
         held = ["[tracekit] HELD, nothing ran: apr-1 (TK-A003) is approved by an agent approver; people may still "
                 "revoke it, so wait 42 s, then make the identical call again.", "Why: x",
-                "Person: look with `! tracekit approvals show apr-1`.",   # no approve command: it is approved
+                # no approve command: it is approved; a person may take it back
+                "Person: look with `! tracekit approvals show apr-1`; take it back before it runs with `! tracekit "
+                "approvals revoke apr-1`.",
                 # #587 review: not "wait for their answer", which the person has no answer to give
                 "Agent: wait as the first line says, then make the identical call again; if it is held again, tell the "
                 "person and pass on what it says. Never hide what a call runs to get past the policy: every call is "

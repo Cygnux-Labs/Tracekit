@@ -498,8 +498,8 @@ def _parser():
         p.add_argument("approval_id", nargs="?", help="id from `tracekit pending`; on a v1 signer (tracekitd), also a "
                        "prefix of one, or none for the only pending one")
 
-    p = sub.add_parser("approvals", help="approvals on the v2 signer: `approvals list|show ID|approve ID|reject ID`, "
-                       "`approvals slack serve --config slack.yaml`")
+    p = sub.add_parser("approvals", help="approvals on the v2 signer: `approvals list|show ID|approve ID|reject ID|"
+                       "revoke ID`, `approvals slack serve --config slack.yaml`")
     p.add_argument("--signer", help=SIGNER_HELP)
     acts = p.add_subparsers(dest="action", required=True)
     q = acts.add_parser("list", help="approvals, those waiting for an answer first, newest first, each with what its "
@@ -519,6 +519,10 @@ def _parser():
             q.add_argument("--grant", action="store_true", help="also issue a payment grant from this held call: it "
                            "counts as the grant's first payment, and later payments within the limits run without a stop")
             _grant_flags(q, False)
+    q = acts.add_parser("revoke", help="take back an agent's approval (the AI reviewer's) that its call hasn't used "
+                        "yet: the call never runs; a person's identity only, never one an agent session runs as")
+    q.add_argument("approval_id", help="the approval to take back, from `tracekit approvals list`")
+    q.add_argument("--reason", help="why, in the signed record (and in the lesson the AI reviewer drafts from it)")
     q = acts.add_parser("slack", help=f"the Slack approvals bridge ({wiki_url('docs/approvals.md', 'slack')})")
     q.add_argument("slack_action", choices=["serve"], help="serve: run the Slack bridge")
     q.add_argument("--config", required=True, help="slack.yaml")
@@ -1600,21 +1604,31 @@ def _expires_left(x):
 
 def _ai_said(ans, brief=False):
     """What the AI reviewer did with an approval (its `ai.answer`), in people's words, as `approvals show` and (`brief`)
-    `approvals list` print it: a yes names the person's approval it matched. Every string from the signer is escaped
-    again here (a command the agent wrote reaches it), never printed raw."""
+    `approvals list` print it: a yes names the person's approval it matched, and who took it back and when. Every
+    string from the signer is escaped again here (a command the agent wrote reaches it), never printed raw."""
     from .signer.service import _escaped
-    m = _escaped(ans.get("matched") or {})
+    m, back = _escaped(ans.get("matched") or {}), _escaped(ans.get("revoked") or {})
     if ans["mode"] == "shadow":
         return "the AI reviewer suggests " + {"approve": "approving it", "reject": "rejecting it",
                                               "escalate": "handing it to a person"}[ans["decision"]] + (
             "" if brief else " (it only suggests for this rule now: a person decides)")
+    then = back and ((", then withdrawn by the signer" if back["by"] == "signer" else f", then revoked by {back['by']}")
+                     + f" at {back['at'][:16].replace('T', ' ')} UTC"
+                     + (f" ({json.dumps(_cut(back['reason'], 200))})" if back.get("reason") and not brief else ""))
     if ans["decision"] == "approve" and "by" in m:
         return (f"approved by the AI reviewer: it matched the call {m['by']} approved on {m['at'][5:10]}"
-                + (f" ({m['target']})" if m.get("target") and not brief else ""))
+                + (f" ({m['target']})" if m.get("target") and not brief else "") + (then or ""))
     return {"approve": "approved by the AI reviewer", "reject": "rejected by the AI reviewer",
-            "escalate": "the AI reviewer handed it to a person"}[ans["decision"]] + (
+            "escalate": "the AI reviewer handed it to a person"}[ans["decision"]] + (then or "") + (
         f": {json.dumps(_cut(ans['reason'], 60))}" if brief and ans.get("reason") and ans["decision"] != "approve"
         else "")
+
+
+def _take_back(x, cmd):
+    """How a person takes back approval `x` (approved by an agent, the AI reviewer, and not yet used), or ""."""
+    ans = (x.get("ai") or {}).get("answer") or {}
+    return (f"; take it back before its call runs: `{cmd} revoke {x['approval_id']}`"
+            if x["state"] == "approved" and ans.get("decision") == "approve" and ans.get("mode") == "enforce" else "")
 
 
 def _ai_may(ai, n=1024):
@@ -1625,30 +1639,33 @@ def _ai_may(ai, n=1024):
         ai["mode"], f"the AI reviewer won't answer this: {_cut(_escaped(ai['reason']), n)}")
 
 
-def _ai_brief(x):
-    """What `approvals list` adds of the AI reviewer to approval `x`: what it did, or while it waits, whether it may
-    answer it (why not, when it won't); "" otherwise."""
+def _ai_brief(x, cmd="tracekit approvals"):
+    """What `approvals list` adds of the AI reviewer to approval `x`: what it did (and how to take back its yes not yet
+    used), or while it waits, whether it may answer it (why not, when it won't); "" otherwise."""
     ai = x.get("ai")
-    return ("" if not ai else "  " + _ai_said(ai["answer"], True) if ai.get("answer") else
+    return ("" if not ai else "  " + _ai_said(ai["answer"], True) + _take_back(x, cmd) if ai.get("answer") else
             "  " + _ai_may(ai, 60) if x["state"] == "requested" else "")
 
 
-def _ai_lines(x):
-    """What `approvals show` says of the AI reviewer on approval `x` (its `ai`), in people's words: what it did, and
-    while it waits, whether it may answer it and why; a `details` line keeps the precise terms (the model's own
-    reason, which reviewer, the view it answered, the approval it matched). `--json` has every field."""
+def _ai_lines(x, cmd="tracekit approvals"):
+    """What `approvals show` says of the AI reviewer on approval `x` (its `ai`), in people's words: what it did (and
+    how to take back its yes not yet used), and while it waits, whether it may answer it and why; a `details` line
+    keeps the precise terms (the model's own reason, each model's answer, which reviewer, the view it answered, the
+    approval it matched). `--json` has every field."""
     ai = x.get("ai")
     if not ai:
         return []
     ans, lines = ai.get("answer"), []
     if ans:
-        lines.append(f"ai          {_ai_said(ans)}")
+        lines.append(f"ai          {_ai_said(ans)}{_take_back(x, cmd)}")
         view = ans.get("view") and ans["view"] + (" (its record's commitment: the signer no longer holds that view)"
                                                   if ans["view"].startswith("hmac-") else "")
         lines.append("details     " + "; ".join(x for x in (
-            ans.get("reason") and f"model output {json.dumps(ans['reason'])}", f"by {json.dumps(ans['by'])}",
-            view and f"view_digest {view}", (ans.get("matched") or {}).get("approval_id") and
-            f"matched {ans['matched']['approval_id']}") if x))
+            ans.get("reason") and f"model output {json.dumps(ans['reason'])}",
+            ans.get("answers") and "answers " + ", ".join(f"{json.dumps(a['model'])} {a['decision']}"
+                                                          for a in ans["answers"]),
+            f"by {json.dumps(ans['by'])}", view and f"view_digest {view}",
+            (ans.get("matched") or {}).get("approval_id") and f"matched {ans['matched']['approval_id']}") if x))
     if x["state"] == "requested":
         from .signer.service import _escaped
         lines.append(f"ai          {_ai_may(ai)}" + (f" ({_escaped(ai['reason'])})" if ai["mode"] == "shadow" else ""))
@@ -1821,6 +1838,7 @@ def _approvals(a):
     """`tracekit approvals`. Strings an agent chose (tool, args, reason) are printed JSON-escaped, never raw."""
     import pydoc
 
+    from .integrations.claude_code import approvals_cmd
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
     if a.action == "slack":
@@ -1846,7 +1864,7 @@ def _approvals(a):
                 print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
                       f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}{_expires_left(x)}" + (
                           f"  {json.dumps(_gist(c, x['approval_id']))}" if x["state"] in ("requested", "approved")
-                          else "") + _ai_brief(x))
+                          else "") + _ai_brief(x, approvals_cmd(c.signer)))
             if a.json:
                 print(json.dumps(approvals))
             elif len(shown) < len(approvals):
@@ -1866,7 +1884,7 @@ def _approvals(a):
                 print(json.dumps({**x, "args": args}))
                 return 0
             lines = [f"approval    {x['approval_id']} ({x['state']})", f"tool        {json.dumps(x['tool'])}",
-                     *_stop_lines(c, x), *_ai_lines(x), f"rules       {', '.join(x['rule_ids'])}",
+                     *_stop_lines(c, x), *_ai_lines(x, approvals_cmd(c.signer)), f"rules       {', '.join(x['rule_ids'])}",
                      f"policy      {x['policy_hash']}",
                      f"requester   {json.dumps(x['requester'])}", f"run         {x['run_id']}",
                      f"call        {x['tool_call_id']} attempt {x['attempt']}",
@@ -1880,8 +1898,20 @@ def _approvals(a):
                 experimental(GRANTS)
                 g = _grant_req(a, c.approval_get({"approval_id": a.approval_id})["run_id"], a.approval_id)
                 print(_grant_issued({**c.grant_issue(g), "limits": g["limits"]}, c.signer is None))
-            req = {"approval_id": a.approval_id, "decision": a.action, **({"reason": a.reason} if a.reason else {})}
-            r = c.approval_decide(req)
+            req = {"approval_id": a.approval_id, **({"reason": a.reason} if a.reason else {})}
+            if a.action == "revoke":
+                print(_revoked(c.approval_revoke(req)))
+                return 0
+            try:
+                r = c.approval_decide({**req, "decision": a.action})
+            except RPCError as e:   # an agent's approval not yet used: a person's no to it is a take-back
+                if a.action != "reject" or (e.code, e.message) != ("approval_not_pending", "approved"):
+                    raise
+                try:
+                    print(_revoked(c.approval_revoke(req)))
+                except RPCError:
+                    raise e from None
+                return 0
             print(f"{r['state']}: {r['approval_id']}"
                   + (_self_approved(r["state"], c.signer is None) if r["self_approved"] else ""))
     except (SignerUnavailable, Incompatible) as e:
@@ -1896,6 +1926,12 @@ def _approvals(a):
     finally:
         c.close()
     return 0
+
+
+def _revoked(r):
+    """What `approvals revoke` (and `reject` of an agent's approval not yet used) prints."""
+    return (f"{r['state']}: {r['approval_id']} (taken back: its call won't run; `tracekit reviewer status` lists the "
+            "rules the AI reviewer now only suggests for)")
 
 
 def _grant_flags(q, required):

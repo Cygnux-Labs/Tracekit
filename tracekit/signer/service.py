@@ -4602,7 +4602,9 @@ class SignerService:
                            for c in list(run.get("calls", {}).values())[-RECENT_CALLS:]]}}
 
     def _approval_revoke(self, identity, req):
-        """A person vetoes an agent's approval that is not consumed yet (`approval.revoked`): the call never runs."""
+        """A person vetoes an agent's approval that is not consumed yet (`approval.revoked`): the call never runs. Never
+        as the identity an agent session is open as (_agent_session): a take-back trips the AI approver's circuit
+        breaker and drafts a lesson, which are people's."""
         identity, aid = self._on_behalf(identity, req), req["approval_id"]
         a = self._visible(identity, aid)
         if self.approvals is not None and not (self._in(self._approvers, identity) or
@@ -4614,6 +4616,11 @@ class SignerService:
             a = self.log.approvals.get(aid, {})
             if a.get("kind") != "agent" or a["state"] != "approved":
                 raise RPCError("approval_not_pending", "only an agent's approval not consumed yet is revoked")
+            busy = self._agent_session(identity, run["tenant"])
+            if busy:
+                raise RPCError("forbidden", f"{subject(identity)[:256]} has an agent session open (run {busy}): take "
+                                            "back an agent's approval as a person's identity, or close the session "
+                                            "first")
             return self._revoke(tx, run, aid, subject(identity)[:256], req.get("reason"), req["request_id"],
                                 self._person_of(identity))
         out = self.log.submit(identity, "approval_revoke", req, fn, a["run_key"], late=True)
@@ -4621,6 +4628,16 @@ class SignerService:
         with self._cond:
             self._cond.notify_all()
         return out
+
+    def _agent_session(self, identity, tenant):
+        """(on the writer) The id of an open run of `tenant` that `identity` is a requester of: the identity an agent
+        session runs as, which is no person whatever approvers lists; None when there is none, or when self_approval
+        lets the run's own identity answer."""
+        if (self.approvals or {}).get("self_approval") == "allow":
+            return None
+        mine = owner(identity)
+        return next((r["run_id"] for r in self.log.runs.values()
+                     if r["tenant"] == tenant and not r["closed"] and mine in labels.requesters(r)), None)
 
     def _revoke(self, tx, run, aid, by, reason=None, request_id=None, who=None):
         """approval.revoked of approval `aid` by `by` (a person's: `who`, their name)."""
@@ -4674,10 +4691,7 @@ class SignerService:
 
         def fn(tx, _):
             ag, book, revoked = self.log.agent, self.log.agent["playbook"].get(tenant) or {"entries": {}}, []
-            mine = owner(identity)
-            busy = None if self.approvals.get("self_approval") == "allow" else next((
-                r["run_id"] for r in self.log.runs.values()
-                if r["tenant"] == tenant and not r["closed"] and mine in labels.requesters(r)), None)
+            busy = self._agent_session(identity, tenant)
             if busy:   # the identity an agent runs as is no person here, whatever approvers lists
                 raise RPCError("forbidden", f"{by} has an agent session open (run {busy}): change the AI reviewer as a "
                                             "person's identity, or close the session first")

@@ -592,7 +592,9 @@ class TestVetoAndRevoke(Case):
         self.assertEqual(head, f"[tracekit] HELD, nothing ran: {aid} ({', '.join(d['rule_ids'])}) is approved by an "
                                "agent approver; people may still revoke it, so wait 60 s, then make the identical call "
                                "again.")
-        self.assertEqual((why, person), (f"Why: {d['reason']}", f"Person: look with `! tracekit approvals show {aid}`."))
+        self.assertEqual((why, person), (f"Why: {d['reason']}", f"Person: look with `! tracekit approvals show {aid}`; "
+                                                                f"take it back before it runs with `! tracekit approvals "
+                                                                f"revoke {aid}`."))
         self.assertTrue(agent.startswith("Agent: wait as the first line says, then make the identical call again"),
                         agent)
 

@@ -856,7 +856,8 @@ def _pre(client, p, sid, tid, end=None):
             expires, look = _utc(asked.get("expires_at")), f"look with `{bang}{cmd} show {aid}`"
             if waited.get("reason"):   # an agent approver's approval in its veto delay: approved, it may run after it
                 return block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])} is {waited['reason']}, then "
-                                      "make the identical call again.", reason, look + ".",
+                                      "make the identical call again.", reason,
+                                      f"{look}; take it back before it runs with `{bang}{cmd} revoke {aid}`.",
                                       "wait as the first line says, then make the identical call again; if it is "
                                       "held again, tell the person and pass on what it says."))
             return block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])}"

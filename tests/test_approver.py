@@ -2477,15 +2477,16 @@ class TestWhatPeopleSee(Case):
         served = self.s.log.approvals[aid]["viewed"][f"uid:{REVIEWER.subject}"][0]
         at = self.s.log.agent["precedents"][p]["at"]
         self.assertEqual(self.get(aid)["ai"]["answer"], {
-            "decision": "approve", "mode": "enforce", "by": f"uid:{REVIEWER.subject}",
+            "decision": "approve", "mode": "enforce", "by": f"uid:{REVIEWER.subject}", "answers": TWO["answers"],
             "reason": "the mirror alice approved \x1b[2K", "view": served, "matched": {
                 "approval_id": p, "by": "alice", "at": svc._iso(at),
                 "target": "pip --index-url https://pypi.internal/\u2026"}})
         show = self.tk("show", aid)
         self.assertIn(f"ai          approved by the AI reviewer: it matched the call alice approved on "
-                      f"{svc._iso(at)[5:10]} (pip --index-url https://pypi.internal/\u2026)\n"
-                      'details     model output "the mirror alice approved \\u001b[2K"; '
-                      f'by "uid:{REVIEWER.subject}"; view_digest {served}; matched {p}\n', show)
+                      f"{svc._iso(at)[5:10]} (pip --index-url https://pypi.internal/\u2026); take it back before its "
+                      f"call runs: `tracekit approvals --signer signer.sock revoke {aid}`\n"
+                      'details     model output "the mirror alice approved \\u001b[2K"; answers "m-a" approve, "m-b" '
+                      f'approve; by "uid:{REVIEWER.subject}"; view_digest {served}; matched {p}\n', show)
         self.assertNotIn("may answer this", show)   # answered: nothing waits for it
         self.assertIn("approved by the AI reviewer: it matched the call alice approved on", self.line(aid))
         self.assertNotIn("\x1b", self.tk("list"))
@@ -2502,6 +2503,48 @@ class TestWhatPeopleSee(Case):
                  and e["event"]["data"]["approval_id"] == aid and e["event"]["data"]["approver_kind"] == "agent"]
         self.assertEqual(self.get(aid)["ai"]["answer"]["view"], yes["event"]["data"]["relied_on"]["view"])
         self.assertIn("(its record's commitment: the signer no longer holds that view)", self.tk("show", aid))
+
+    def test_a_person_takes_back_an_ai_yes_from_the_cli(self):
+        """The acceptance test's veto window: `approvals reject` answered approval_not_pending and `reviewer revoke`
+        said no precedent. `approvals revoke` takes the AI's yes back, `reject` of it does the same, and show and list
+        name the command while it is not yet used; then show says who took it back and when, and both model answers.
+        Only a person: never the identity an agent session runs as, nor the reviewer."""
+        self.precedent()
+        aid, _ = self.ask()
+        self.ai(aid)
+        show = self.tk("show", aid)
+        self.assertIn(f"; take it back before its call runs: `tracekit approvals --signer signer.sock revoke {aid}`\n",
+                      show)
+        self.assertIn('details     answers "m-a" approve, "m-b" approve; by ', show)
+        self.assertIn(f"take it back before its call runs: `tracekit approvals --signer signer.sock revoke {aid}`",
+                      self.line(aid))
+        self.assertEqual(self.get(aid)["ai"]["answer"]["answers"], TWO["answers"])
+        self.refused("forbidden", REVIEWER, "approval_revoke", {"request_id": rid(), "approval_id": aid})
+        out = self.tk("reject", aid, "--reason", "not on staging")
+        self.assertEqual(out, f"rejected: {aid} (taken back: its call won't run; `tracekit reviewer status` lists the "
+                              "rules the AI reviewer now only suggests for)\n")
+        show = self.tk("show", aid)
+        self.assertRegex(show, r"ai          approved by the AI reviewer: it matched the call alice approved on "
+                               r"\d\d-\d\d \(pip --index-url https://pypi.internal/…\), then revoked by alice at "
+                               r"\d{4}-\d\d-\d\d \d\d:\d\d UTC \(\"not on staging\"\)\n")
+        self.assertNotIn("take it back", show)
+        self.assertEqual(self.get(aid)["ai"]["answer"]["revoked"]["by"], "alice")
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]})
+        aid2, _ = self.ask()
+        self.ai(aid2)
+        self.assertEqual(self.tk("revoke", aid2).split(" (")[0], f"rejected: {aid2}")
+        self.assertEqual(self.s.log.approvals[aid2]["state"], "rejected")
+        self.s.close()   # an approver that is also the identity an agent session runs as
+        self.approvals = {**Case.approvals, "approvers": [f"uid:{ALICE.subject}", f"uid:{AGENT.subject}"],
+                          "persons": {f"uid:{ALICE.subject}": "alice", f"uid:{AGENT.subject}": "me"}}
+        self.s = self.open()
+        self.run, self.seq = self.register()
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]})
+        aid3, _ = self.ask()
+        self.ai(aid3)
+        msg = self.refused("forbidden", AGENT, "approval_revoke", {"request_id": rid(), "approval_id": aid3})
+        self.assertIn("has an agent session open", msg)
+        self.assertEqual(self.s.log.approvals[aid3]["state"], "approved")
 
     def test_what_the_agent_wrote_reaches_no_terminal_raw(self):
         """A command the agent wrote reaches `approvals show` and `list` (the call the AI matched, the tool, the

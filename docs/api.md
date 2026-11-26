@@ -966,6 +966,14 @@ lists `approval_get`. A box's agent channel may call it too.
 | `ai.answer.matched.by` | text | no | up to 256 characters |
 | `ai.answer.matched.at` | text | no | up to 40 characters |
 | `ai.answer.matched.target` | text | no | up to 1024 characters |
+| `ai.answer.answers` | list of objects | no | 1 to 2 items |
+| `ai.answer.answers[].model` | text | yes | 1 to 128 characters |
+| `ai.answer.answers[].decision` | one of `approve`, `reject`, `escalate` | yes |  |
+| `ai.answer.answers[].identity` | text | no | 1 to 256 characters |
+| `ai.answer.revoked` | object | no |  |
+| `ai.answer.revoked.by` | text | yes | up to 256 characters |
+| `ai.answer.revoked.at` | text | yes | up to 40 characters |
+| `ai.answer.revoked.reason` | text | no | up to 1024 characters |
 | `args_source` | one of `raw`, `parsed`, `coerced` | yes |  |
 | `args` | any value | yes |  |
 | `binding_digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
@@ -1044,6 +1052,14 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 | `approvals[] (variant 1).ai.answer.matched.by` | text | no | up to 256 characters |
 | `approvals[] (variant 1).ai.answer.matched.at` | text | no | up to 40 characters |
 | `approvals[] (variant 1).ai.answer.matched.target` | text | no | up to 1024 characters |
+| `approvals[] (variant 1).ai.answer.answers` | list of objects | no | 1 to 2 items |
+| `approvals[] (variant 1).ai.answer.answers[].model` | text | yes | 1 to 128 characters |
+| `approvals[] (variant 1).ai.answer.answers[].decision` | one of `approve`, `reject`, `escalate` | yes |  |
+| `approvals[] (variant 1).ai.answer.answers[].identity` | text | no | 1 to 256 characters |
+| `approvals[] (variant 1).ai.answer.revoked` | object | no |  |
+| `approvals[] (variant 1).ai.answer.revoked.by` | text | yes | up to 256 characters |
+| `approvals[] (variant 1).ai.answer.revoked.at` | text | yes | up to 40 characters |
+| `approvals[] (variant 1).ai.answer.revoked.reason` | text | no | up to 1024 characters |
 | `approvals[] (variant 2)` | object | no |  |
 | `approvals[] (variant 2).approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `approvals[] (variant 2).state` | one of `requested`, `approved`, `rejected`, `expired`, `consumed` | yes |  |

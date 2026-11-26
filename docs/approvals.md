@@ -366,7 +366,7 @@ ask:
             payee: {type: string, enum: [acct-1, acct-2]}
             memo: {type: string, pattern: "[A-Za-z0-9 ]{0,64}"}
         budget: {count: 20, sum: {field: amount, max: 50000}, window: 86400, scope: tenant}   # or scope: requester
-        veto_s: 60                        # optional: people may revoke for this long before it runs
+        veto_s: 60                        # optional: people may revoke for this long before it runs (`tracekit approvals revoke`)
 ```
 
 The bounds are a closed world, checked by the signer on the arguments it decided: every argument must be named, and
@@ -411,7 +411,8 @@ after `agent_timeout_s` and when a budget is used up. In **shadow** mode an agen
 record and changes nothing: compare suggestions with what people decide before you enforce.
 
 **Revocation and the kill switch.** A person revokes an agent's approval that is not consumed yet with
-`approval_revoke` (`approval.revoked`; the call never runs). `approval_agents {enabled: false}` (an `authorize` grant,
+`approval_revoke` (`approval.revoked`; the call never runs): `tracekit approvals revoke apr-… --reason …` (or `reject`
+of it), never as the identity an agent session is open as. `approval_agents {enabled: false}` (an `authorize` grant,
 never a default) writes a signed `approval.agents`, revokes every agent approval not consumed yet, escalates every
 pending one agents could answer (`approval.escalated` by the signer, so it stays with people after agents are switched
 on again) and sends every new approval to people until then.
@@ -544,9 +545,16 @@ identity an agent session is open as: the signer refuses that, and the policy de
 reviewer` changes (TK-D012). `tracekit reviewer status` says whether it is on, who switched it and when, what it may
 answer, what it never answers, and how often people agreed with it per rule.
 
-**Taking one back.** You can take back an AI approval before the agent's retry runs it (the viewer's approvals desk).
-The AI reviewer then only suggests for that rule, and a person decides, until you run `tracekit reviewer enable
-TK-A025`. `tracekit reviewer status` lists those rules and why.
+**Taking one back.** You can take back an AI approval before the agent's retry runs it: `tracekit approvals revoke
+apr-… --reason …` (`reject` of it does the same, and so does the viewer's approvals desk). `approvals show` and `list`,
+and the hook's Person line during `veto_s`, name the command while the approval is not yet used. Only a person takes one
+back: the signer refuses the identity an agent session is open as. The AI reviewer then only suggests for that rule,
+and a person decides, until you run `tracekit reviewer enable TK-A025`. `tracekit reviewer status` lists those rules and
+why, and `approvals show` says who took it back and when:
+
+```
+ai          approved by the AI reviewer: it matched the call alice approved on 11-22 (pip --index-url https://pypi.internal/…), then revoked by alice at 2026-11-23 09:14 UTC ("not this package")
+```
 
 **It learns from you, and you decide what it learns.** Each time a person goes against it (rejects a call it would
 have approved, takes back one it approved, or approves one it wouldn't), the signer drafts a lesson in plain words,
@@ -583,7 +591,7 @@ approval_agent:
   mode: shadow                     # or enforce
   rules: [TK-SHELL-PARSE, TK-A062, TK-A025]
   run: {clean: [untrusted_content, secrets_access]}
-  veto_s: 60                       # optional: people may revoke an AI approval for this long before it runs
+  veto_s: 60                       # optional: people may take back an AI approval (`tracekit approvals revoke`) for this long before it runs
 ```
 
 Only these three may be listed: a line the policy can't read, an unmapped tool given a command line, and a package
@@ -684,8 +692,8 @@ snapshot it names (which must be its request's policy), and fails when the bundl
 keeps the precise terms:
 
 ```
-ai          approved by the AI reviewer: it matched the call alice approved on 11-22 (pip --index-url https://pypi.internal/…)
-details     model output "same internal index"; by "uid:990299"; view_digest sha256:5838c1aa…; matched apr-59d3…
+ai          approved by the AI reviewer: it matched the call alice approved on 11-22 (pip --index-url https://pypi.internal/…); take it back before its call runs: `tracekit approvals revoke apr-7c1e…`
+details     model output "same internal index"; answers "claude-opus-5-5" approve, "gpt-5" approve; by "uid:990299"; view_digest sha256:5838c1aa…; matched apr-59d3…
 ```
 
 The model's reason is printed JSON-escaped. The view is the `view_digest` of the view it answered; after a restart
@@ -700,8 +708,9 @@ ai          the AI reviewer won't answer this: the session read a secret, and TK
 
 A rule that joins a call on the signer (a run condition, such as TK-Q001 after a secret read) makes it a person's,
 and its `agent.reason` says which. `approval_get` and `approval_list` carry the same as `ai`: `mode` (enforce, shadow,
-or null when only people answer it), `reason`, and `answer` (decision, mode, by, reason, view, and `matched`: the
-person's approval a yes matched, who gave it, when and what it was of), to people who answer
+or null when only people answer it), `reason`, and `answer` (decision, mode, by, reason, view, `matched`: the
+person's approval a yes matched, who gave it, when and what it was of, `answers`: each model's answer, and `revoked`:
+who took a yes back, when and why), to people who answer
 approvals only (`approvals.approvers`, `break_glass`, a bridge acting for them). The requesting agent and agent
 approvers see none of it: the agent's own summary has no `agent` flag (it would say a person approved a call like it)
 and an escalation without its reason, and its run's records, read with its run token (`read`), come without an
