@@ -1591,6 +1591,21 @@ def _tailer_checks(add, client_json, agent):
         f"{user} can search {agent.pw_dir} and {dot} and read {os.path.join(dot, 'projects')}", REINIT, bad=WARN)
 
 
+def _answers(signer):
+    """(whether the signer at `signer` answers a status call within a few seconds, what doctor says of it)."""
+    from .sdk.client import Client, Incompatible, SignerUnavailable
+    from .signer.rpc_schema import RPCError
+    try:
+        c = Client(signer, timeout=5)
+        try:
+            version = c.status({})["signer"]["version"]
+        finally:
+            c.close()
+    except (SignerUnavailable, Incompatible, RPCError, OSError) as e:
+        return False, f"the signer at {signer} doesn't answer: {e}"
+    return True, f"the signer at {signer} answers (Tracekit {version})"
+
+
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
               client_json=None, now=None, issuer_key=None, plugin=None, sandbox_settings=(), gemini_settings=(),
               harnesses=None, no_hooks=False, gemini_project=None):
@@ -2019,10 +2034,22 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         )
         add("D-POLICY-ENGINE", using_re2, detail, fix,
             bad=WARN if wheel_expected else INFO)
+        wants = service.wants_agents(loaded)
+        if wants or agents:   # without one, the signer refuses to start (SignerService)
+            add("D-AGENT-APPROVERS", not wants or bool(agents), f"approvals.agents names {len(agents)}; " + (
+                f"{policy} lets agent approvers answer" if wants else "the policy lets none answer yet")
+                if agents else f"{policy} lets agent approvers answer (approval_agent or a rule's approval.agent), "
+                "but signer.yaml's approvals.agents names none: the signer refuses to start",
+                "add the reviewer's identity to approvals.agents in signer.yaml, merged into init's approvals section "
+                "(docs/approvals.md#the-ai-approver), or take approval_agent out of the policy; then restart the signer")
     except ImportError as e:
         add("D-POLICY-ENGINE", False, f"no regex engine: {e}", "pip install tracekit-ai (a --no-deps install leaves the engine out)")
     except (OSError, ValueError) as e:
         add("D-POLICY-ENGINE", False, f"{policy} does not load: {e}", f"fix the policy: tracekit policy lint {policy}")
+    if prod and signer:   # system mode: every hook and approval goes to it
+        add("D-SIGNER-UP", *_answers(signer), "start it (Linux: sudo systemctl start "
+            f"{install.V2_UNIT}; macOS: sudo launchctl kickstart -k system/{install.V2_LABEL}); its log says why it "
+            f"stopped (journalctl -u {install.V2_UNIT}; macOS: {install.V2_DATA}/signer.log), often a row above")
 
     mode = cfg.get("durability", ACK_ON_WRITE)
     add("D-DURABILITY", not prod or mode == ACK_ON_FSYNC, f"durability {mode}" + (

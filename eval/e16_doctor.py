@@ -68,6 +68,7 @@ class Layout:
         self.hooks()
         self.kw = dict(agent=AGENT, settings=self.settings, signer=self.sock, opt=p("opt"),
                        unit=p("unit/tracekit-signer.service"), client_json=p("etc/client.json"))
+        self.up = True   # whether the signer at self.sock answers (doctor._answers): no signer runs in the temp root
 
     def write(self, rel, data, mode=0o644):
         path = self.path(rel)
@@ -191,6 +192,15 @@ def _mounts(kind):
     return lambda L: L.patches.append(mock.patch.object(doctor, "_mounts", return_value=[(L.top, kind)]))
 
 
+def _approver_without_agents(L):
+    """A policy with the AI approver (the laptop default extended, as docs/approvals.md shows) and no approvals.agents:
+    the signer refuses to start (as re-running an init that dropped signer.yaml's sub-keys left it)."""
+    os.symlink(os.path.join(ROOT, "tracekit", "policy2", "packs"), L.path("etc/packs"))
+    L.write("etc/policy.yaml", b"extends: packs/dev.yaml\napproval_agent:\n  mode: enforce\n  rules: [TK-A062]\n"
+                               b"  run: {clean: [untrusted_content, secrets_access]}\n")
+    L.signer_yaml(policy=L.path("etc/policy.yaml"), approvals={})
+
+
 CASES = [
     ("signer.yaml does not load", "D-CONFIG", lambda L: L.signer_yaml(bogus=1)),
     ("signer.yaml world-writable", "D-CONFIG", _chmod("etc/signer.yaml", 0o666)),
@@ -240,6 +250,8 @@ CASES = [
     ("the AI reviewer runs as the signer's user", "D-REVIEWER-USER",
      lambda L: L.signer_yaml(approvals={"agents": [f"uid:{os.stat(L.path('data')).st_uid}"]})),
     ("a key every user may read, with an AI reviewer", "D-REVIEWER-USER", _chmod("data/keys/log.key", 0o604)),
+    ("the signer doesn't answer", "D-SIGNER-UP", lambda L: setattr(L, "up", False)),
+    ("an AI approver in the policy, none in approvals.agents", "D-AGENT-APPROVERS", _approver_without_agents),
 ]
 ROOT_ONLY = {"data dir owned by the agent"}
 
@@ -262,7 +274,9 @@ def run_case(mutate):
         L.patches = []
         me = os.geteuid()
         L.patches += [mock.patch.object(doctor, "trusted_file", trusted_under(top, me)),
-                      mock.patch.object(install, "_root_only", root_only_under(me))]
+                      mock.patch.object(install, "_root_only", root_only_under(me)),
+                      mock.patch.object(doctor, "_answers", lambda s: (L.up, f"the signer at {s} " + (
+                          "answers (Tracekit e16)" if L.up else "doesn't answer: [Errno 2] No such file or directory")))]
         if not IS_ROOT:
             L.patches.append(mock.patch.object(doctor, "agent_access", other_access(top)))
         if mutate:

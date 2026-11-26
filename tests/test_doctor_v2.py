@@ -54,6 +54,25 @@ class E16(unittest.TestCase):
                 got = {r["id"]: r["status"] for r in e16.run_case(mutate)}
                 self.assertIn(got.get(want), ("warn", "fail"), name)
 
+    def test_whether_the_system_signer_answers(self):
+        """The acceptance test: after a re-init left the policy's AI approver without approvals.agents, the signer
+        refused to start and doctor said every row was ok. D-SIGNER-UP asks the signer itself (E16 stands in for it)."""
+        from tracekit.signer import service as svc
+        d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # a socket path short enough for macOS
+        self.addCleanup(shutil.rmtree, d, True)
+        sock = os.path.join(d, "s.sock")
+        ok, said = doctor._answers(sock)
+        self.assertFalse(ok)
+        self.assertTrue(said.startswith(f"the signer at {sock} doesn't answer: "), said)
+        cfg = {"data_dir": os.path.join(d, "data"), "socket": sock}
+        signer = svc.open_service(cfg)
+        servers = svc.serve(cfg, signer)
+        self.addCleanup(signer.close)
+        for srv in servers:
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        self.assertEqual(doctor._answers(sock), (True, f"the signer at {sock} answers (Tracekit {__version__})"))
+
     def test_malformed_agent_settings_are_results_not_crashes(self):
         def bad(shape):
             def mutate(L):
@@ -1683,7 +1702,7 @@ class FirstDay(unittest.TestCase):
             with self.subTest(engine=engine_name, wheel_expected=wheel_expected), \
                     mock.patch.object(
                         service, "load_policy",
-                        return_value=types.SimpleNamespace(engine=engine_name)
+                        return_value=types.SimpleNamespace(engine=engine_name, policy={}, rules=[])
                     ), \
                     mock.patch.object(
                         doctor, "_google_re2_wheel_expected", return_value=wheel_expected

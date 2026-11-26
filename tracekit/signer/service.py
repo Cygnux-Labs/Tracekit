@@ -1016,6 +1016,13 @@ def precedent_key(tool, target, project):
     return key, "sha256:" + hashlib.sha256(canonical(key)).hexdigest()
 
 
+def wants_agents(policy):
+    """Whether loaded policy `policy` (an Engine) lets agent approvers answer (approval_agent, or a rule's
+    approval.agent): the signer refuses to start then unless signer.yaml's approvals.agents names one."""
+    return bool(policy.policy.get("approval_agent")) or any("agent" in (r.get("approval") or {})
+                                                             for _, r, *_ in policy.rules)
+
+
 def binds(entry):
     """Whether playbook entry `entry` binds the AI reviewer (SignerService._bound_by_lesson): people said no to calls
     like it, so the signer holds them for a person. Else it is advice the reviewer reads."""
@@ -1209,8 +1216,7 @@ class SignerService:
         self._people = any(_person_like(p, (approvals or {}).get("persons", {}))
                            for p in (approvals or {}).get("approvers", ()))
         self._fail_closed = any(r["mode"] == "enforce" and r["action"] in ("hold", "quarantine") for r in respond)
-        if not self._agents and (policy.policy.get("approval_agent") or any(
-                "agent" in (r.get("approval") or {}) for _, r, *_ in policy.rules)):
+        if not self._agents and wants_agents(policy):
             raise ValueError("the policy lets agent approvers answer (approval.agent or approval_agent) but "
                              "approvals.agents names none: add the reviewer's identity there, or take them out of the "
                              "policy")
