@@ -1552,15 +1552,18 @@ class Failures(ac.OnReal, unittest.TestCase):
         self.assertEqual(ac.RAN, ["terminal"])
 
     def test_an_outage_reads_the_default_policy_once(self):
-        """The fail mode's class comes from the shipped default policy, compiled once, not on every refused call."""
+        """The fail mode's class comes from the shipped default policy, read once, not on every refused call."""
         from tracekit.integrations.claude_code import _tool_class
-        from tracekit.signer import service
+        from tracekit.policy2 import compile as policy_compile
         _tool_class.cache_clear()
-        with mock.patch.object(service, "load_policy", wraps=service.load_policy) as load:
+        with mock.patch.object(policy_compile, "_read", wraps=policy_compile._read) as read:
             agent = self.agent(Down(), fail_modes={"default": "closed"})
-            for _ in range(3):
+            self.assertIn("signer unavailable", tool_message(agent.invoke(prompt("echo", text="hi"))).content)
+            first = read.call_count   # the pack and the packs it extends
+            for _ in range(2):
                 self.assertIn("signer unavailable", tool_message(agent.invoke(prompt("echo", text="hi"))).content)
-        self.assertEqual(load.call_count, 1)
+        self.assertGreater(first, 0)
+        self.assertEqual(read.call_count, first)
 
     def test_closed_run_refuses_the_call(self):
         self.client.close_run(dict(self.run))
