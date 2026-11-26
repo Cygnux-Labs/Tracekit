@@ -19,7 +19,6 @@ import sys
 import tempfile
 import threading
 import time
-import traceback
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -1742,30 +1741,26 @@ class Codex(unittest.TestCase):
         self.assertEqual(len(sub["steps"]), 1)   # the record whose payload isn't an object stops nothing
         self.assertEqual((sub["steps"][0]["in"], sub["steps"][0]["cr"], sub["steps"][0]["w"]), (0, 1_000, 3_300))
 
-    def test_a_line_nested_past_json_loads_runs_no_finaliser_at_the_depth_limit(self):
+    def test_no_collection_starts_inside_json_loads_of_a_line_nested_past_its_limit(self):
         """json.loads of such a line recurses to the interpreter's limit; a collection started there ran other
         objects' finalisers on that full stack, where their warnings raised (unraisable, flaky on 3.9)."""
-        ran_inside = []
+        in_parser = []
 
-        class Garbage:
-            def __init__(self):
-                self.me = self   # only the cycle collector frees it
+        def started(phase, info):   # json.loads's C scanner runs under JSONDecoder.raw_decode
+            f = sys._getframe()
+            while phase == "start" and not in_parser and f is not None:
+                if f.f_code.co_name == "raw_decode":
+                    in_parser.append(True)
+                f = f.f_back
 
-            def __del__(self):
-                ran_inside.append(any(f.name == "transcript_entries" for f in traceback.extract_stack()))
-
-        def lines():
-            Garbage()
-            yield TOO_DEEP_JSON.encode() + b"\n"
-
-        gc.collect()
         old = gc.get_threshold()
         gc.set_threshold(1, 1, 1)
         self.addCleanup(gc.set_threshold, *old)
-        entries = list(hook.transcript_entries(lines(), final=True))
-        gc.collect()
+        gc.callbacks.append(started)
+        self.addCleanup(gc.callbacks.remove, started)
+        entries = list(hook.transcript_entries([TOO_DEEP_JSON.encode() + b"\n"], final=True))
         self.assertEqual(entries, [(len(TOO_DEEP_JSON) + 1, None)])
-        self.assertEqual(ran_inside, [False])
+        self.assertEqual(in_parser, [])
 
     def test_a_codex_model_with_no_price_shows_the_tips_no_price_note(self):
         body = tips.build([], codex=self.week(model="gpt-made-up"), now=NOW)
