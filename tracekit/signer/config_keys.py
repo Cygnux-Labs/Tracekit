@@ -19,3 +19,9 @@ OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run
 NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase", "approval_review",
                            "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open",
                            "export_run"}) | OPERATOR
+DEFAULT_GRANTS = frozenset({
+    "register_run", "decide", "complete", "observe", "state_write", "model_event", "approval_request",
+    "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
+    "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
+    "passkey_register", "why_finding", "review_finding", "constraint_add", "pcm_sign", "pcm_grant", "pcm_delegate",
+    "pcm_evidence", "grant_issue", "grant_list", "grant_revoke", "call_state", "call_claim"})

@@ -91,7 +91,7 @@ approvals: {self_approval: allow}  # you answer your own agent's holds; the run'
 tracekit signer serve --config signer.yaml        # leave it running
 export TRACEKIT_SIGNER=$PWD/signer.sock           # in the shell that runs your agent: the SDK uses this signer
 tracekit approvals show ID --config signer.yaml   # why a call was held, from your policy (asks that signer)
-tracekit approvals approve ID
+tracekit approvals --signer $PWD/signer.sock approve ID   # (or with TRACEKIT_SIGNER exported, without --signer)
 tracekit last --config signer.yaml                # export and verify the most recent finished run
 ```
 

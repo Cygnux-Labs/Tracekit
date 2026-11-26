@@ -182,6 +182,61 @@ class SignerConfig(unittest.TestCase):
                 service.check_identities(approvals, {}, (), ["uid:501"])
         service.check_identities({"approvers": ["uid:9"]}, {}, (), ["uid:501"])
 
+    def test_an_authorize_entry_for_the_agent_outside_the_default_grants_is_refused(self):
+        """content_read and otlp_import aren't in NEVER_DEFAULT (that names content_get), yet an agent doesn't get
+        them by default: content_read reads the tenant's vault, the approver's content included."""
+        run = "register_run, decide, complete, status"
+        for extra in ("content_read", "otlp_import", "approval_decide_on_behalf", "export_run"):
+            old = self.earlier(authorize=f'  "uid:64101": [{run}, {extra}]\n')
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, f"grants {extra}"):
+                self.merge(old)
+
+    def test_init_and_the_signer_run_the_same_static_authorize_checks(self):
+        """The replaced approver had export_run, which needs a tenant; her tenant entry is dropped, so the merged file
+        passed init's check and the signer then refused to start."""
+        old = self.earlier(authorize='  "uid:501": [export_run, status, read, approval_get, approval_list]\n')
+        text, _, _ = self.merge(old, approver=self.BOB)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        r = subprocess.run([sys.executable, "-c", install.CHECK_CONFIG], input=text, capture_output=True, text=True, cwd=root)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("authorize grants export_run to uid:501", r.stderr)
+        with self.assertRaisesRegex(ValueError, "authorize grants export_run to uid:501"):
+            service.check_identities({}, {"uid:501": ["export_run", "status"]}, tenants={})
+        service.check_identities({}, {"uid:501": ["export_run", "status"]}, tenants={"uid:501": "t"})
+
+    def test_an_identity_whose_entries_add_up_to_running_agents_and_deciding_on_behalf_is_refused_at_decision_time(self):
+        """An OIDC identity's grants combine its oidc, person and group entries; the startup check sees each entry
+        alone, so the signer checks the combined grants when it is asked to decide on someone's behalf."""
+        from tracekit.identity.base import CallerIdentity
+        from tracekit.signer.rpc_schema import RPCError
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        run = ["register_run", "decide", "complete", "approval_request", "approval_decide", "status"]
+        s = service.open_service(
+            {"data_dir": os.path.join(d, "data"), "approvals": {"approvers": ["group:corp/approvers"]},
+             "authorize": {"person:alice": run, "group:corp/bridge": ["approval_decide", "approval_decide_on_behalf"]}},
+            policy=Engine({"ask": [{"id": "PAY", "tool": "^pay$", "pattern": "^"}]}))
+        self.addCleanup(s.close)
+        who = CallerIdentity("oidc", "alice-sub", True, {"person": "alice", "groups": ["corp/bridge"]})
+        reg = s.call(who, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
+        r = {"run_id": reg["run_id"], "run_token": reg["run_token"]}
+        s.call(who, "decide", {"request_id": "r2", **r, "stream": "s", "client_seq": 0, "tool_call_id": "tc",
+                               "tool": "pay", "args_source": "parsed", "args": {"to": "x"}})
+        aid = s.call(who, "approval_request", {"request_id": "r3", **r, "tool_call_id": "tc"})["approval_id"]
+        with self.assertRaisesRegex(RPCError, "also granted register_run"):
+            s.call(who, "approval_decide", {"request_id": "r4", "approval_id": aid, "decision": "approve",
+                                            "on_behalf": {"subject": "x", "person": "bob", "groups": ["corp/approvers"]}})
+        with self.assertRaisesRegex(RPCError, "also granted register_run"):
+            s.call(who, "approval_decide_on_behalf", {"request_id": "r5", "approval_id": aid, "decision": "approve",
+                                                      "approver": "slack:T1/U1", "groups": ["slack:T1/G1"]})
+        self.assertEqual(s.log.approvals[aid]["state"], "requested")
+
+    def test_a_signer_loader_that_cannot_run_or_stalls_is_reported_plainly(self):
+        for error, want in ((FileNotFoundError(2, "No such file or directory"), "could not run: No such file"),
+                            (subprocess.TimeoutExpired("x", 60), "did not finish reading it in 60 s")):
+            with self.subTest(error=type(error).__name__), mock.patch.object(install.subprocess, "run", side_effect=error):
+                self.assertIn(want, install._signer_refuses("x"))
+
     def test_the_signer_loader_check_init_runs_reads_the_file_as_the_signer_does(self):
         """init pipes the merged text to the signer's own loader in the venv it built (CHECK_CONFIG)."""
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -408,6 +463,12 @@ class InstallAndUninstall(unittest.TestCase):
             self.init_v2()
         self.assertIn(f"approvals.break_glass: uid:{AGENT.pw_uid} names uid:{AGENT.pw_uid}, the agent's uid", str(e.exception))
         self.assertNotIn(install.V2_CONFIG, self.written)
+
+    def test_a_rerun_the_merge_refuses_fails_before_any_user_or_venv_is_made(self):
+        self.earlier_config(approvals=f'  break_glass: ["uid:{AGENT.pw_uid}"]\n')
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            self.init_v2()
+        self.users.assert_not_called()
 
     def test_a_rerun_writes_nothing_when_the_signer_would_refuse_the_result(self):
         self.earlier_config(approvals='  persons: {"uid:777": "ana"}\n')

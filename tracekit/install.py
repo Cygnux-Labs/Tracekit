@@ -30,7 +30,7 @@ from .core import read_json, read_text
 from . import client, harness_helper
 from .deploy import files
 from . import yamlmini
-from .signer.config_keys import NEVER_DEFAULT
+from .signer.config_keys import DEFAULT_GRANTS
 from .wiki import wiki_url
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1731,10 +1731,10 @@ def merge_shared_keys(config, old, agent_uid, approver_uid):
             notes.append(f"authorize.{k}: dropped: init writes none for the approver")
             continue
         if _covers([k], me):
-            never = sorted(set(grants) & NEVER_DEFAULT)
-            if never:
-                raise ValueError(f"authorize.{k} covers {me}, the agent's uid, and grants {', '.join(never)}, which "
-                                 "are never a default: remove those methods")
+            extra = sorted(set(grants) - DEFAULT_GRANTS)
+            if extra:
+                raise ValueError(f"authorize.{k} covers {me}, the agent's uid, and grants {', '.join(extra)}, which "
+                                 "an agent's identity doesn't get by default: remove those methods")
         authorize[k] = v
         names.append(f"authorize.{k}")
     for r in replaced:
@@ -1762,13 +1762,19 @@ CHECK_CONFIG = (
     "open(p, 'w').write(sys.stdin.read())\n"
     "cfg = service.load_config(p)\n"
     "service.check_identities(cfg.get('approvals'), cfg.get('authorize'), cfg.get('multi_tenant_apps') or (),\n"
-    "                         (cfg.get('harness_binding') or {}).get('required') or ())\n")
+    "                         (cfg.get('harness_binding') or {}).get('required') or (), cfg.get('tenants'))\n")
 
 
 def _signer_refuses(text):
     """Why the signer would refuse signer.yaml `text`, read by its own loader from the venv init built; None if it
     loads."""
-    r = subprocess.run([OPT_PYTHON, "-I", "-c", CHECK_CONFIG], input=text, capture_output=True, text=True, timeout=60)
+    try:
+        r = subprocess.run([OPT_PYTHON, "-I", "-c", CHECK_CONFIG], input=text, capture_output=True, text=True,
+                           timeout=60)
+    except subprocess.TimeoutExpired:
+        return f"{OPT_PYTHON} did not finish reading it in 60 s"
+    except OSError as e:
+        return f"{OPT_PYTHON} could not run: {e.strerror or e}"
     if r.returncode:
         return (r.stderr.strip().splitlines() or ["it does not load"])[-1]
     return None
@@ -1925,6 +1931,11 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     if recorded in MANAGED_SETTINGS.values() and os.path.exists(recorded):
         install_managed(None, True, recorded, uninstall=True, dry_run=True)
     hand, kept, old_text = _old_hand_keys()   # before any change: a file it can't keep stops init here
+    try:   # the refusals of the merge need no venv or user: dry-run it with a placeholder tailer, before any change
+        merge_shared_keys(v2_signer_yaml(owner, approver.pw_uid, "policy.yaml", "signer.sock", 0), old_text,
+                          owner.pw_uid, approver.pw_uid)
+    except ValueError as e:
+        raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
     requirement = _install_source("init --v2 --user <agent-user>" + (" --experimental-macos" if darwin else ""))
     sig = _system_user(V2_USER_DARWIN if darwin else V2_USER, V2_DATA, darwin)
     run_dir = V2_RUN["darwin" if darwin else "linux"]   # on Linux systemd creates it (RuntimeDirectory=)
