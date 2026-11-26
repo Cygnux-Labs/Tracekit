@@ -13,9 +13,10 @@ from unittest import mock
 
 import yaml
 
-from tracekit import cli, install
+from tracekit import agent_hooks, cli, install, privacy, report
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
+from tracekit.policy2 import compile as pc
 from tracekit.signer import service
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -140,6 +141,22 @@ class LimitsIndex(unittest.TestCase):
         self.assertIn("`kilo_memory_save` is decided as a `Write`", kilo)
         self.assertNotIn("is decided as a path, not by the fetch rules", text)
 
+    def test_a_rule_the_docs_call_flagged_held_or_denied_decides_so_in_a_shipped_pack(self):
+        # limits.md once called TK-F009 and TK-F015 "flagged" after they had become holds in every pack
+        sections = {}
+        for pack in ("coding", "dev", "server", "strict"):
+            policy = pc.build(os.path.join(ROOT, "tracekit", "policy2", "packs", pack + ".yaml"))[0]
+            for sec in ("deny", "ask", "flag"):
+                for r in policy.get(sec, []):
+                    sections.setdefault(r["id"], set()).add(sec)
+        verb = {"flagged": "flag", "held": "ask", "denied": "deny"}
+        named = re.compile(r"\b(flagged|held|denied)\s*\(((?:`TK-[A-Z0-9-]+`(?:,\s*|\s+and\s+|\s+or\s+)?)+)\)")
+        pages = [os.path.join(ROOT, "README.md")] + glob.glob(os.path.join(ROOT, "docs", "**", "*.md"), recursive=True)
+        wrong = [f"{os.path.relpath(p, ROOT)}: {said} ({rid}), but it is {sorted(sections[rid])}"
+                 for p in pages for said, ids in named.findall(read(p)) for rid in re.findall(r"TK-[A-Z0-9-]+", ids)
+                 if rid in sections and verb[said] not in sections[rid]]
+        self.assertEqual(wrong, [])
+
 
 class DocCommands(unittest.TestCase):
     def test_system_mode_upgrade_docs_include_macos_signer_label(self):
@@ -155,6 +172,30 @@ class DocCommands(unittest.TestCase):
         unknown = [f"{os.path.relpath(p, ROOT)}: tracekit {m}" for p in pages for _, block in FENCE.findall(read(p))
                    for m in COMMAND.findall(block) if m not in known]
         self.assertEqual(unknown, [])
+
+    def test_the_agent_lists_name_every_coding_agent(self):
+        # the README's `--agent` list, deploy.md's (once 8 of them) and coding-agents.md's v1 one (once without kiro and
+        # interpreter)
+        readme = re.search(r"add `--agent codex`, (.*?) for the others", read(os.path.join(ROOT, "README.md")), re.S)
+        deploy = re.search(r"own hook with `--agent` \((.*?); \[coding agents\]", read(os.path.join(ROOT, "docs", "deploy.md")),
+                           re.S)
+        v1 = re.search(r"tracekit init --dev --agent codex +# v1; or (.*)", read(os.path.join(ROOT, "docs", "coding-agents.md")))
+        self.assertEqual({"codex", *re.findall(r"`([a-z]+)`", readme.group(1))}, set(agent_hooks.HARNESSES))
+        self.assertEqual(set(re.findall(r"`([a-z]+)`", deploy.group(1))), set(agent_hooks.HARNESSES))
+        self.assertEqual({"codex", *re.findall(r"[a-z]+", v1.group(1))}, set(agent_hooks.HARNESSES))
+
+    def test_field_reports_md_names_every_agent_a_shared_report_prints(self):
+        # what `audit --share` reveals: the page once listed 12 of the 22 names report.AGENTS prints
+        text = read(os.path.join(ROOT, "docs", "field-reports.md"))
+        listed = re.search(r"An agent name is printed only when it is one Tracekit's own hooks and tools give a run \((.*?)\)",
+                           text, re.S)
+        self.assertEqual(set(re.findall(r"`([a-z-]+)`", listed.group(1))), report.AGENTS)
+
+    def test_privacy_md_names_every_tool_call_field_kept_in_clear(self):
+        # it once left out `commands`, `paths` and `urls`
+        row = next(r for r in read(os.path.join(ROOT, "docs", "privacy.md")).splitlines()
+                   if r.startswith("| `tool.call` | `command`"))
+        self.assertEqual(set(re.findall(r"`([a-z_]+)`", row.split("|")[2])), privacy.ALWAYS_CLEAR)
 
     def test_no_command_needs_tracekit_on_roots_path(self):
         """System-mode init installs Tracekit only into /opt/tracekit (install._install_venv) and puts no `tracekit`

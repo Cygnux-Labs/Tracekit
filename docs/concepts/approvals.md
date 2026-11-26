@@ -67,7 +67,8 @@ the report says `approvals: self`, and the run's assurance stays `dev`.
 |---|---|
 | OpenAI Agents SDK | Interrupts the run; resume with the decisions applied |
 | LangGraph / LangChain | `interrupt()`, resumed with `Command(resume=...)`; denied at once without a checkpointer |
-| Claude Agent SDK and coding-agent hooks | Waits up to 9 minutes, under the hook's 10-minute timeout |
+| Claude Agent SDK | Waits up to 9 minutes, under the hook's 10-minute timeout |
+| Coding-agent hooks | Return at once with the command that approves the call; the retry runs once approved (with `TRACEKIT_APPROVAL_WAIT` set, waits up to 9 minutes) |
 | MCP client, CrewAI | Waits up to 5 minutes |
 | Pydantic AI, Google ADK, Strands Agents, LlamaIndex, Haystack, Microsoft Agent Framework | Waits up to 5 minutes in the framework's tool hook; an approval left unanswered, or whose run is cancelled while it waits, is withdrawn |
 | Browser Use | Waits up to 150 seconds |

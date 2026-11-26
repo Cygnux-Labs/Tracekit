@@ -8,8 +8,9 @@ so anyone can recompute every decision later. This page explains the model; exac
 ## The model
 
 1. **Classify the tool.** The policy's `tools` map assigns each tool name (or glob) a class: `shell`, `fs`, `http`,
-   `sql`, `payment`, `email`, `mcp`, `browser`, or `app` for an application's own tools. A tool the map doesn't cover is
-   `unknown`, and `unknown_tools` decides what happens to it.
+   `sql`, `payment`, `email`, `mcp`, `browser`, `a2a` (an agent-to-agent message), `harness` (a coding agent's message
+   to its own agents), or `app` for an application's own tools. A tool the map doesn't cover is `unknown`, and
+   `unknown_tools` decides what happens to it.
 2. **Read its fields.** Each class exposes fields parsed from the arguments, for example `shell.command`, `sql.verb`,
    `http.host` or `payment.payee`.
 3. **Match rules.** A rule names a class and field (or a tool name pattern) and a regular expression. Rules sit in
@@ -40,6 +41,9 @@ ask:
 aren't allowed: see determinism below.)
 
 ## Tool classes and fields
+
+The common classes and their main fields; every class and field, `a2a` and `harness` included, is in the
+[policy reference](../policy-v2.md#classes-and-fields).
 
 | Class | Fields | Typical tools |
 |---|---|---|
