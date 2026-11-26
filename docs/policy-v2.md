@@ -799,7 +799,9 @@ Server rules (ask rules hold the call for a person):
 SQL keywords match `code`, outside comments, literals and quoted identifiers in every dialect, so
 `SELECT 'DROP TABLE x'` is allowed. `eval/e17_policy_corpus.py`
 runs `server.yaml` over the deny and benign corpora in `tests/data/policy/` with both engines and reports per-class deny
-recall and the benign false-positive rate.
+recall and the benign false-positive rate. A case for a rule only another pack defines (a dev-only rule, which the
+server pack cannot hold) names its pack in the case as `"packs": ["dev"]` and is decided on it instead; the run reports
+per-pack recall and false positives beside the totals.
 
 Rules match raw strings: they are tripwires that make attempts visible, not the protection itself. The protection is
 the signer's isolation, its storage and the witnesses ([server threat model](threat-model-server.md)).

@@ -6074,6 +6074,45 @@ class ServerCorpora(unittest.TestCase):
         self.assertGreaterEqual(sum(r["benign"] for r in out["classes"].values()), 600)
         self.assertTrue(out["ok"], {k: out[k] for k in ("missed", "false_positives", "engine_mismatches", "unmapped")})
 
+    def test_a_dev_only_case_is_decided_on_dev_and_fails_when_its_rule_is_loosened(self):
+        # #1139: a case naming `"packs": ["dev"]` is decided on dev.yaml, which alone holds it; the server pack
+        # allows the same lines, so without the field the corpus could only report them as missed. Loosening the
+        # dev rule the case names (here dropping TK-A056) flips the verdict off its expect, which the corpus
+        # records as a miss.
+        tagged = [(kind, cls, i, c) for kind in ("deny", "benign") for cls, cases in e17.load(kind).items()
+                  for i, c in enumerate(cases) if "packs" in c]
+        self.assertTrue(tagged)
+        dev = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+        server = pc.build(os.path.join(PACKS, "server.yaml"))[0]
+        loosened = {**dev, "ask": [r for r in dev["ask"] if r["id"] != "TK-A056"]}
+        recorded = e17.run()["decisions"]
+        for engine_name in (("re2", "regex") if HAVE_RE2 else ("regex",)):
+            dev_e, server_e, loose_e = (Engine(pol, engine_name) for pol in (dev, server, loosened))
+            for kind, cls, i, case in tagged:
+                with self.subTest(engine=engine_name, case=case["args"].get("command", "")[:40]):
+                    key = f"{kind}/{cls}@dev:{i + 1}"
+                    self.assertIn(key, recorded)
+                    d_dev, d_srv = dev_e.decide(case["tool"], case["args"]), server_e.decide(case["tool"], case["args"])
+                    if kind == "deny":
+                        self.assertEqual(d_dev["verdict"], case["expect"], d_dev)
+                        self.assertEqual(d_srv["verdict"], "allow", d_srv)
+                        self.assertEqual(loose_e.decide(case["tool"], case["args"])["verdict"], "allow")
+                    else:
+                        self.assertNotIn(d_dev["verdict"], ("deny", "ask"), d_dev)
+
+    def test_a_two_pack_benign_case_counts_its_false_positive_once(self):
+        # the review of #1139: a benign case naming two packs is one case in its class row, so its false alarm is
+        # one however many of the packs hold it; each pack's own row counts it against that pack's decisions
+        benign = {"tool": "Bash", "args": {"command": "aws configure get aws_secret_access_key"},
+                  "expect": "allow", "note": "synthetic", "packs": ["server", "dev"]}
+        deny = {"tool": "Bash", "args": {"command": "sudo id"}, "expect": "deny", "note": "synthetic"}
+        out = e17.run({"deny": {"shell": [deny]}, "benign": {"shell": [benign]}})
+        self.assertEqual(len(out["false_positives"]), 1, out["false_positives"])
+        self.assertEqual(out["classes"]["shell"]["fp"], 1)
+        self.assertEqual(out["packs"]["server"]["fp"], 1)
+        self.assertEqual(out["packs"]["dev"]["fp"], 1)
+        self.assertEqual(out["false_positives"][0]["packs"], ["server", "dev"])
+
     def test_e17_decisions_are_the_recorded_ones(self):
         """Every case gets the verdict and rule ids eval/results/e17_policy_corpus.json records, from both engines (E17
         holds them equal): the prefilter, the shared subjects and the linear rewrites of patterns change no decision.

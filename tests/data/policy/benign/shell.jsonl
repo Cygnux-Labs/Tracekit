@@ -386,3 +386,7 @@
 {"tool": "Bash", "args": {"command": "setcap -v cap_net_bind_service+ep ./x"}, "expect": "allow", "note": "verifying a file's capabilities (#996)"}
 {"tool": "Bash", "args": {"command": "cat <<'EOF' | setcap - ./x\ncap_net_bind_service+ep\nEOF"}, "expect": "allow", "note": "a quoted-delimiter heredoc giving setcap - an ordinary capability (#1030)"}
 {"tool": "Bash", "args": {"command": "setcap - ./x <<EOF\ncap_net_bind_service+ep\nEOF"}, "expect": "allow", "note": "setcap's own heredoc giving it an ordinary capability (#1030)"}
+{"tool": "Bash", "args": {"command": "lerna run build"}, "expect": "allow", "note": "dev-only benign twin: building the packages releases nothing", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "lerna version"}, "expect": "allow", "note": "dev-only benign twin: versioning publishes nothing", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "npx changeset status"}, "expect": "allow", "note": "dev-only benign twin: reading the changeset status publishes nothing", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "bun pm pack"}, "expect": "allow", "note": "dev-only benign twin: packing a tarball publishes nothing", "packs": ["dev"]}
