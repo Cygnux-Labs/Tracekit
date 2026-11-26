@@ -505,7 +505,8 @@ def _parser():
     q = acts.add_parser("list", help="approvals, those waiting for an answer first, newest first, each with what its "
                         "call runs")
     q.add_argument("--json", action="store_true", help="print one JSON array: every approval, in the signer's order")
-    q.add_argument("--all", action="store_true", help="the expired ones too")
+    q.add_argument("--all", action="store_true", help="the expired ones too, and those of runs that ended in the last "
+                   "day")
     q = acts.add_parser("show", help="one approval: why its call was held, what to do instead, the commands that "
                         "answer it, and the signer's copy of the arguments in full")
     q.add_argument("approval_id", help="the approval to show, from `tracekit approvals list`")
@@ -1710,7 +1711,7 @@ def _stop_lines(c, x):
     left = _expires_left(x)
     program, named = person_cmd(c.signer)
     cmd = f"{program} approvals{named}"
-    why = why or ("not on this machine: `tracekit policy compile <file>` prints the reasons of the signer's policy, "
+    why = why or (f"not on this machine: `{program} policy compile <file>` prints the reasons of the signer's policy, "
                   + x["policy_hash"])
     # Claude Code runs a `!` line in the session as its OS user: the person's, with the dev signer (as the hook says)
     bang = not c.signer and _claude_code_run(x["run_id"])
@@ -1869,7 +1870,9 @@ def _approvals(a):
         if a.action == "list":
             page, approvals = {"next_cursor": None}, []
             while True:
-                page = c.approval_list({"cursor": page["next_cursor"]} if page["next_cursor"] else {})
+                # --all: also those of runs that ended in the last day
+                page = c.approval_list({**({"cursor": page["next_cursor"]} if page["next_cursor"] else {}),
+                                        **({"ended": True} if a.all else {})})
                 approvals.extend(page["approvals"])
                 if page["next_cursor"] is None:
                     break

@@ -7,8 +7,9 @@ approver): approval_request's `project` (the folder the agent works in, as its c
 held by the policy's approval_agent rules), approval_review's `ai` (the precedent key, run labels, precedents,
 playbook and recent calls of such an approval), `approver` (people: the circuit breaker's state and the playbook,
 each entry with whether it binds, accept or retire a playbook entry, revoke a precedent, enable rules the breaker
-dropped) and an approval's `ai` (what people see of agent approvers on it: whether one may answer it now and why, and
-the latest agent answer, with the models' answers and who took a yes back). Version 28 adds
+dropped), an approval's `ai` (what people see of agent approvers on it: whether one may answer it now and why, and
+the latest agent answer, with the models' answers and who took a yes back) and approval_list's `ended` (the approvals
+of runs that ended in the last day, after the live ones). Version 28 adds
 `run_label_clear`, an operator call: a person ends one of a run's labels (docs/policy-v2.md#run-conditions), which
 the signer records as theirs; a run's own owner, principal or requester can't (a dev signer's own, self_cleared), and
 decide's `recorded` (the rules in shadow that would hold the call). Version 27 adds decide's `agent_id` (the harness's
@@ -418,6 +419,9 @@ REQUESTS = {
     # a page of the approvals the caller may see, oldest first; `cursor` is the previous page's next_cursor
     "approval_list": _obj([], run_id=ID, cursor=ID, limit={"type": "integer", "minimum": 1, "maximum": 1000},
                           on_behalf=PERSON, state=APPROVAL_STATE, escalated={"type": "boolean"},
+                          # after the live ones, those of runs that ended in the last day (version 29; never to an
+                          # agent approver)
+                          ended={"type": "boolean"},
                           # agent: approvals an agent approver may answer now; person: every other one
                           **{"for": {"enum": ["agent", "person"]}}),
     # an agent approver's view of an approval it may answer (an `authorize` grant, never a default)
@@ -637,9 +641,11 @@ RESPONSES = {
     # the AI reviewer, how often people agreed with it per rule (all of the circuit breaker's last pairs, and the most
     # recent ones), the rules the breaker dropped, the playbook and the proposals (each entry with `binds`: people said
     # no to calls like it, so the signer holds them for a person; else it is advice the reviewer reads), the run labels
-    # that send a session's calls to people (`clean`); a change: its record, what an `off` or an accept that binds
-    # withdrew, and whether an accepted entry binds
-    "approver": {"oneOf": [_obj(["switch", "rules", "mode", "agreement", "demoted", "playbook", "proposals", "clean"],
+    # that send a session's calls to people (`clean`), and whether the operator's kill switch (approval_agents) has
+    # agent approvals off (`agents_off`); a change: its record, what an `off` or an accept that binds withdrew, and
+    # whether an accepted entry binds
+    "approver": {"oneOf": [_obj(["switch", "rules", "mode", "agreement", "demoted", "playbook", "proposals", "clean",
+                                 "agents_off"],
                                 switch={"oneOf": [{"type": "null"}, _obj(
                                     ["on", "by", "at"], on={"type": "boolean"}, by=_str(256), at=_str(40),
                                     person=_str(256),
@@ -647,6 +653,7 @@ RESPONSES = {
                                 rules={"type": "array", "maxItems": 32, "items": _str(64)},
                                 mode={"enum": ["shadow", "enforce"]},
                                 clean={"type": "array", "maxItems": 8, "items": _str(64)},
+                                agents_off={"type": "boolean"},
                                 agreement={"type": "array", "maxItems": 32, "items": _obj(
                                     ["rule", "agreed", "of", "recent"], rule=_str(64), agreed=SEQ, of=SEQ,
                                     recent=_obj(["agreed", "of"], agreed=SEQ, of=SEQ))},

@@ -36,6 +36,7 @@ DEV_POLICY, _errors = pc.build(DEV)
 assert not _errors, _errors
 AGENT = ts.ME   # the agent's own user: it owns the project the reviewer reads
 REVIEWER, ALICE = CallerIdentity("uid", "990299", True), CallerIdentity("uid", "990001", True)
+OTHER = CallerIdentity("uid", "990555", True)   # another agent's user
 OPS = CallerIdentity("token", "ops", True)
 INDEX = "PIP_CONFIG_FILE=/dev/null pip install --isolated --index-url https://pypi.internal/simple {}"
 # a hold of a reviewed rule alone that sends nothing: after a secret read, an install (a send) is also TK-Q001's
@@ -1152,8 +1153,8 @@ class TestLessons(Case):
         [lesson] = self.lessons()
         when = self.s.log.approvals[aid]["requested_at"][5:10]
         self.assertEqual(lesson["text"], "don't approve pip --index-url https://pypi.internal/… (TK-A025) without a "
-                                         f"person: alice rejected one on {when} that the AI would have approved (that "
-                                         "package is new to us)")
+                                         f"person, in any project: alice rejected one on {when} that the AI would have "
+                                         "approved (that package is new to us)")
         recs = self.records()
         said = next(e["id"] for e in recs if e["type"] == "approval.suggested" and e["data"]["approval_id"] == aid)
         no = next(e["id"] for e in recs if e["type"] == "approval" and e["data"]["approval_id"] == aid)
@@ -1189,7 +1190,7 @@ class TestLessons(Case):
         self.ai(unused)   # an AI yes not yet used
         out = self.s.call(ALICE, "approver", {"request_id": rid(), "action": "accept", "id": lesson["id"]})
         self.assertEqual((out["binds"], out["revoked"]), (True, [unused]))
-        why = f"an accepted lesson {lesson['id']} says a person decides calls like this"
+        why = f"an accepted lesson {lesson['id']} says a person decides calls like this, in any project"
         self.assertEqual((self.s.log.approvals[unused]["state"], self.s.log.approvals[waiting]["escalation"]),
                          ("rejected", {"by": "signer", "reason": why}))
         aid, a = self.ask()
@@ -1206,8 +1207,9 @@ class TestLessons(Case):
         with cli, contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(reviewer.main(["lessons"]), 0)
         self.assertIn(f"  {lesson['id']}  don't approve pip --index-url https://pypi.internal/… (TK-A025) without a "
-                      "person: alice took back one on ", out.getvalue())
-        self.assertIn("\n      binds: the signer holds calls like it for a person and asks no model\n", out.getvalue())
+                      "person, in any project: alice took back one on ", out.getvalue())
+        self.assertIn("\n      binds: the signer holds calls like it, in any project and however a package index is "
+                      "spelled, for a person and asks no model\n", out.getvalue())
         self.restart()   # from the records
         self.run, self.seq = self.register()
         _, a = self.ask()
@@ -1219,6 +1221,41 @@ class TestLessons(Case):
         es = self.events()
         [esc] = [e["data"] for e in es if e["type"] == "approval.escalated" and e["data"]["approval_id"] == waiting]
         self.assertEqual(esc["reason"], why)
+
+    def test_an_accepted_no_holds_in_every_project_and_spelling(self):
+        """Review: the binding key held the project, the agent's own word, and the index URL as written. With a
+        person's earlier yes in a sibling project (or none named), the agent claimed that project and the AI answered;
+        `/simple/` and `:443` stepped around it too. A no binds by a key in any project, its sources however spelled;
+        precedents still match exactly."""
+        url = "https://pypi.internal/simple"
+        spelled = "PIP_CONFIG_FILE=/dev/null pip install --isolated --index-url {} {}"
+        for project in ("/Users/me/web", None):
+            self.precedent(project=project)   # a person's yes there, and the AI may answer there
+        self.precedent()
+        took, _ = self.ask()
+        self.ai(took)
+        self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": took})
+        [lesson] = self.lessons()
+        self.assertIn("without a person, in any project", lesson["text"])
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]})
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "accept", "id": lesson["id"]})
+        why = f"an accepted lesson {lesson['id']} says a person decides calls like this, in any project"
+        for project, line in (("/Users/me/web", None), (None, None), ("/Users/me/api", url + "/"),
+                              ("/Users/me/api", "https://pypi.internal:443/simple"),
+                              ("/Users/me/web", "HTTPS://pypi.internal:443/simple//")):
+            with self.subTest(project=project, line=line):
+                tcid = rid()
+                args = {"command": spelled.format(line, tcid)} if line else None
+                aid, a = self.ask(tcid=tcid, project=project, run=self.register(), args=args)
+                self.assertEqual((a["agent"]["eligible"], a["agent"]["reason"]), (False, why))
+        aid, a = self.ask(args={"command": spelled.format("https://pypi.internal/other", "x")})
+        self.assertNotEqual(a["agent"].get("reason"), why)   # another index is another call
+        self.assertEqual(svc.wide_key("Bash", {"TK-A025": ["pip --index-url https://h:8443/a/"]}),
+                         svc.wide_key("Bash", {"TK-A025": ["pip --index-url https://h:8443/a"]}))
+        self.assertNotEqual(svc.wide_key("Bash", {"TK-A025": ["pip --index-url https://h:8443/a"]}),
+                            svc.wide_key("Bash", {"TK-A025": ["pip --index-url https://h/a"]}))
+        [entry] = [e["data"] for e in self.events() if e["type"] == "playbook.entry"]
+        self.assertTrue(entry["wide_digest"].startswith("hmac-sha256:"))
 
     def test_an_accepted_yes_is_advice(self):
         for _ in range(svc.PLAYBOOK_MIN):
@@ -1243,7 +1280,7 @@ class TestLessons(Case):
         self.ai(aid)
         self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": aid, "reason": "wrong project"})
         [lesson] = self.lessons()
-        self.assertIn("without a person: alice took back one on ", lesson["text"])
+        self.assertIn("without a person, in any project: alice took back one on ", lesson["text"])
         self.assertIn("that the AI approved (wrong project)", lesson["text"])
         self.s.call(ALICE, "approver", {"request_id": rid(), "action": "drop", "id": lesson["id"]})
         self.assertEqual(self.lessons(), [])
@@ -2255,11 +2292,15 @@ class TestReviewerOnTheSigner(Case):
         code, text, _ = friction("--json")
         self.assertEqual((code, json.loads(text)), (0, out))
         denied = PermissionError(13, "Permission denied", os.path.join(self.dir, "store"))
-        with mock.patch.object(reviewer, "records", side_effect=denied):
+        # review: the root hint named this process's Python, which may be a venv the agent's user writes (its
+        # site-packages and .pth files would run as root); it names the root-owned venv's, as the docs do
+        with mock.patch.object(reviewer, "records", side_effect=denied), \
+                mock.patch.object(sys, "executable", "/home/agent/venv/bin/python"):
             code, _, err = friction()
         self.assertEqual(code, 2)
         self.assertIn(f"Permission denied: '{self.dir}/store': the signer's data dir is its user's alone; run it as "
-                      f"root: `sudo {sys.executable} -I -m tracekit reviewer friction --store {self.dir}`", err)
+                      f"root: `sudo /opt/tracekit/bin/python -I -m tracekit reviewer friction --store {self.dir}`", err)
+        self.assertNotIn("/home/agent", err)
 
     def test_a_change_to_the_approver_needs_a_request_id(self):
         schema = svc.REQUESTS["approver"]
@@ -2321,7 +2362,7 @@ class TestReviewerOnTheSigner(Case):
         self.s = self.open()
         self.run, self.seq = self.register()
         msg = self.refused("forbidden", AGENT, "approver", {"request_id": rid(), "action": "on"})
-        self.assertIn("has an agent session open", msg)
+        self.assertIn("is an identity an agent session runs or ran as", msg)
         self.s.close()   # unless self_approval lets the run's own identity answer, as it lets it approve
         self.approvals = {**self.approvals, "self_approval": "allow"}
         self.s = self.open()
@@ -2353,6 +2394,33 @@ class TestReviewerOnTheSigner(Case):
             for line in allowed:
                 with self.subTest(backend=backend, line=line):
                     self.assertNotIn("TK-D012", e.decide("Bash", {"command": line})["rule_ids"])
+
+    def test_the_agent_can_t_take_back_an_approval_from_its_session(self):
+        """Review: TK-D012 denied the agent's own `approvals reject` but not `approvals revoke`, which takes back an AI
+        yes (tripping the circuit breaker, drafting a lesson). Every pack that has TK-D012, both engines."""
+        import glob
+        import importlib.util
+        denied = ["tracekit approvals revoke apr-1", "tracekit approvals revoke apr-1 --reason x",
+                  "tracekit approvals --signer /x.sock revoke apr-1", "python3 -m tracekit approvals revoke apr-1",
+                  "/opt/tracekit/bin/python -I -m tracekit approvals revoke apr-1", "uvx tracekit approvals revoke apr-1"]
+        allowed = ["tracekit approvals list", "tracekit approvals show apr-1", "tracekit approvals list --all"]
+        packs = 0
+        for path in sorted(glob.glob(os.path.join(ts.ROOT, "tracekit", "policy2", "packs", "*.yaml"))):
+            pol, errors = pc.build(path)
+            if not any(r["id"] == "TK-D012" for s in pc.SECTIONS for r in pol.get(s, [])):
+                continue
+            packs += 1
+            for backend in ("re2", "regex") if importlib.util.find_spec("re2") else ("regex",):
+                e = Engine(pol, backend)
+                for line in denied + allowed:
+                    with self.subTest(pack=os.path.basename(path), backend=backend, line=line):
+                        d = e.decide("Bash", {"command": line})
+                        if line in denied:
+                            self.assertEqual(d["verdict"], "deny", d)
+                            self.assertIn("TK-D012", d["rule_ids"])
+                        else:
+                            self.assertNotIn("TK-D012", d["rule_ids"])
+        self.assertGreaterEqual(packs, 5)   # coding, dev, server-core, server, strict
 
     def test_people_switch_it_from_the_cli_and_status_says_it_plainly(self):
         cli = mock.patch("tracekit.sdk.client.Client", lambda signer=None: As(self, ALICE))
@@ -2407,6 +2475,13 @@ class TestReviewerOnTheSigner(Case):
         self.assertEqual(may, "  TK-A062: an unmapped tool given a command line")
         self.assertIn("a person decides these rules of the policy, which the switch leaves out:\n  TK-SHELL-PARSE: a "
                       "line the policy can't read\n  TK-A025: ", text)
+        # review: the operator's kill switch (approval_agents) stops every agent approver whatever a person switched
+        self.s.call(OPS, "approval_agents", {"request_id": rid(), "enabled": False})
+        text, may = status()
+        self.assertIsNone(may)
+        self.assertIn("the operator switched agent approvals off (approval_agents), whatever this switch says", text)
+        self.assertIn("it answers nothing while it is off; a person decides these rules of the policy, agent approvals "
+                      "being off:\n  TK-SHELL-PARSE: ", text)
 
     def test_people_run_the_approver_from_the_cli(self):
         for _ in range(svc.PLAYBOOK_MIN):
@@ -2425,6 +2500,63 @@ class TestReviewerOnTheSigner(Case):
         with cli, contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(reviewer.main(["enable", "TK-A025"]), 1)
         self.assertIn("has not dropped it", err.getvalue())
+
+
+class TestAnAgentThatClosedItsRuns(Case):
+    """Review: where approvals.approvers lists the identity an agent session runs as, the signer refused its changes to
+    the AI reviewer only while one of its runs was open. It holds its run tokens: it closed them, then retired a
+    binding lesson, switched the reviewer on, enabled a dropped rule or took back another session's AI yes. An identity
+    any run of the tenant had as a requester, ended or not, is an agent's."""
+    approvals = {**Case.approvals, "approvers": [f"uid:{ALICE.subject}", f"uid:{AGENT.subject}"],
+                 "persons": {f"uid:{ALICE.subject}": "alice", f"uid:{AGENT.subject}": "me"}}
+
+    def register(self, **kw):
+        out = super().register(**kw)
+        self.__dict__.setdefault("tokens", []).append(out[0])
+        return out
+
+    def other(self, cmd):
+        """Another agent's call, its own session, held: the approval id."""
+        r = self.s.call(OTHER, "register_run", {"request_id": rid(), "agent": {"name": "claude-code"}})
+        run = {"run_id": r["run_id"], "run_token": r["run_token"]}
+        self.s.call(OTHER, "decide", {"request_id": rid(), **run, "stream": "s", "client_seq": 0, "tool_call_id": "t1",
+                                      "tool": "Bash", "args_source": "parsed", "args": {"command": cmd}})
+        return self.s.call(OTHER, "approval_request", {"request_id": rid(), **run, "tool_call_id": "t1",
+                                                       "project": "/Users/me/api"})["approval_id"]
+
+    def test_every_change_a_person_makes_is_refused_to_it(self):
+        self.precedent()
+        took, _ = self.ask()
+        self.ai(took)
+        self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": took})   # a lesson; TK-A025 dropped
+        [lesson] = [x for x in self.s.call(ALICE, "approver", {"action": "status"})["proposals"]
+                    if x["id"].startswith("L-")]
+        for _ in range(svc.PLAYBOOK_MIN):
+            p = self.precedent("$X run")
+        [prop] = [x for x in self.s.call(ALICE, "approver", {"action": "status"})["proposals"]
+                  if x["id"].startswith("P-")]
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "accept", "id": lesson["id"]})
+        self.person(self.other("$X run"))   # another agent's precedent, then its call the AI approves
+        theirs = self.other("$X run")
+        self.assertEqual(self.ai(theirs)["state"], "approved")
+        for run in self.tokens:   # the agent closes every run it has: it holds their tokens
+            if not self.s.log.runs[("default", run["run_id"])]["closed"]:
+                self.s.call(AGENT, "close_run", {"request_id": rid(), **run})
+        self.assertFalse([r for r in self.s.log.runs.values() if not r["closed"]
+                          and r["owner"] == f"uid:{AGENT.subject}"])
+        for action, more in (("retire", {"id": lesson["id"]}), ("on", {}), ("off", {}),
+                             ("enable", {"rules": ["TK-A025"]}), ("accept", {"id": prop["id"]}),
+                             ("drop", {"id": prop["id"]}), ("revoke", {"id": p})):
+            with self.subTest(action):
+                msg = self.refused("forbidden", AGENT, "approver", {"request_id": rid(), "action": action, **more})
+                self.assertIn("is an identity an agent session runs or ran as in this tenant", msg)
+        msg = self.refused("forbidden", AGENT, "approval_revoke", {"request_id": rid(), "approval_id": theirs})
+        self.assertIn("is an identity an agent session runs or ran as in this tenant", msg)
+        self.assertEqual(self.s.log.approvals[theirs]["state"], "approved")
+        self.s.sweep(time.monotonic() + svc.GRACE_S + 1)   # and once its runs are final
+        self.refused("forbidden", AGENT, "approver", {"request_id": rid(), "action": "retire", "id": lesson["id"]})
+        self.assertEqual(self.s.call(ALICE, "approver", {"request_id": rid(), "action": "retire",
+                                                         "id": lesson["id"]})["action"], "retire")   # a person may
 
 
 class TestTheRunBoundsLabels(Case):
@@ -2567,6 +2699,43 @@ class TestWhatPeopleSee(Case):
                       "answer it, until a day after its run ended; an older one is in its run's records: `tracekit "
                       f"view --approval {aid}`", err.getvalue())
 
+    def test_a_finished_runs_approvals_keep_no_waiting_call_off_page_one(self):
+        """Review of the above: the ended approvals were listed first, so 100 of the last day's (which an agent makes
+        by asking for held calls) pushed a call waiting for a person off the one page the viewer's desk reads, and a
+        full list built a view of every ended one. The live ones come first, the ended ones only when asked for
+        (`ended`, which `approvals list --all` sends), and only the page's ended ones get a view."""
+        for _ in range(svc.LIST_PAGE):
+            self.ask("pip", project=None)   # no precedent: each waits, and expires with its run
+        self.s.call(AGENT, "close_run", {"request_id": rid(), **self.run})
+        self.s.sweep(time.monotonic() + svc.GRACE_S + 1)
+        self.assertEqual(len(self.s.log.ended), svc.LIST_PAGE)
+        self.run, self.seq = self.register()
+        waiting, _ = self.ask("pip", project=None)
+        for req in ({}, {"ended": True}, {"for": "person"}, {"for": "person", "ended": True}):
+            with self.subTest(req):
+                page = self.s.call(ALICE, "approval_list", req)
+                self.assertEqual(page["approvals"][0]["approval_id"], waiting)
+        self.assertEqual(len(self.s.call(ALICE, "approval_list", {})["approvals"]), 1)   # the ended only when asked
+        views = mock.patch.object(svc.SignerService, "_ended_views", autospec=True,
+                                  side_effect=svc.SignerService._ended_views)
+        with views as built:
+            got, cursor = [], None
+            while True:
+                page = self.s.call(ALICE, "approval_list", {"ended": True, "limit": 7,
+                                                            **({"cursor": cursor} if cursor else {})})
+                got += [x["approval_id"] for x in page["approvals"]]
+                cursor = page["next_cursor"]
+                if cursor is None:
+                    break
+        self.assertEqual((len(got), len(set(got)), built.call_count), (svc.LIST_PAGE + 1, svc.LIST_PAGE + 1,
+                                                                        svc.LIST_PAGE))
+        with views as built:
+            self.s.call(ALICE, "approval_list", {"ended": True, "limit": 3})
+            self.s.call(REVIEWER, "approval_list", {"ended": True})   # never to an agent approver
+        self.assertEqual(built.call_count, 2)
+        self.assertFalse(set(self.s.log.ended) & {x["approval_id"] for x in self.s.call(
+            REVIEWER, "approval_list", {"ended": True})["approvals"]})
+
     def test_a_person_takes_back_an_ai_yes_from_the_cli(self):
         """The acceptance test's veto window: `approvals reject` answered approval_not_pending and `reviewer revoke`
         said no precedent. `approvals revoke` takes the AI's yes back, `reject` of it does the same, and show and list
@@ -2606,7 +2775,7 @@ class TestWhatPeopleSee(Case):
         aid3, _ = self.ask()
         self.ai(aid3)
         msg = self.refused("forbidden", AGENT, "approval_revoke", {"request_id": rid(), "approval_id": aid3})
-        self.assertIn("has an agent session open", msg)
+        self.assertIn("is an identity an agent session runs or ran as", msg)
         self.assertEqual(self.s.log.approvals[aid3]["state"], "approved")
 
     def test_what_the_agent_wrote_reaches_no_terminal_raw(self):

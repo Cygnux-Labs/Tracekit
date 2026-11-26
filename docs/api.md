@@ -100,7 +100,7 @@ A call or field that this page does not list below was already in version 15. Th
 | 26 (Tracekit 1.7) | `register_run`'s `continues`: a later run of an agent session, whose provenance index starts `partial` |
 | 27 | `decide`'s `agent_id`: the sub-agent that made the call, as the harness reported it |
 | 28 (Tracekit 1.8) | `run_label_clear`, an operator call (on a dev signer, the run's own user's too): a person ends one of a run's labels ([run conditions](policy-v2.md#run-conditions)); `decide`'s `recorded`: the rules in shadow that would hold the call |
-| 29 (Tracekit 1.8) | the [AI approver](approvals.md#the-ai-approver): `approval_request`'s `project`; `approval_decide`'s `ai` and `view_digest`; `approval_review`'s `ai`; `approver`, for people; an approval's `ai` on `approval_get` and `approval_list` |
+| 29 (Tracekit 1.8) | the [AI approver](approvals.md#the-ai-approver): `approval_request`'s `project`; `approval_decide`'s `ai` and `view_digest`; `approval_review`'s `ai`; `approver`, for people; an approval's `ai` on `approval_get` and `approval_list`; `approval_list`'s `ended` |
 
 ## Errors
 
@@ -987,7 +987,9 @@ lists `approval_get`. A box's agent channel may call it too.
 Lists the approvals the caller may see, a page at a time, oldest first. Send the previous answer's `next_cursor` as
 `cursor` to get the next page. `state`, `escalated` and `for` narrow the list: `for: agent` gives the approvals an agent
 approver may answer now, and `for: person` gives all the others, including the approvals an agent reviews in shadow mode. An agent approver lists without `run_id`, and the
-signer refuses the request if it sends one.
+signer refuses the request if it sends one. The live approvals come first; with `ended: true` (version 29), the
+approvals of runs that ended in the last day follow them, in the order their runs ended (never to an agent approver).
+`approval_get` answers such an approval by its id either way.
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `approval_list`. An agent approver may call it too, with an `authorize` entry that lists it.
@@ -1010,6 +1012,7 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 | `on_behalf.tenant` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `state` | one of `requested`, `approved`, `rejected`, `expired`, `consumed` | no |  |
 | `escalated` | true or false | no |  |
+| `ended` | true or false | no |  |
 | `for` | one of `agent`, `person` | no |  |
 
 **Answer**
@@ -1268,7 +1271,8 @@ call never runs. Only an approval that an agent approved and nothing has consume
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `approval_revoke`. When the signer has an `approvals` configuration, the caller must also be one of its approvers
-or a break-glass identity.
+or a break-glass identity, and not an identity any run of the tenant had as its client or a writer, open or ended
+(unless `self_approval: allow`): that is an agent session's.
 
 <!-- api-doc:begin approval_revoke -->
 <details>
@@ -1364,18 +1368,22 @@ approvals it revoked.
 ### `approver`
 
 The [AI approver](approvals.md#the-ai-approver), for people. `status` says whether a person switched it on or off
-(`switch`), the rules and mode the policy gives it, how often people agreed with it per rule (`agreement`), the rules
-its circuit breaker dropped to shadow, the playbook in force and the entries people's answers propose. `on` (for
-`rules` only, when given) and `off` switch it; `off` withdraws its approvals not yet used and hands its waiting calls to
-people (`revoked` lists the approvals withdrawn). `accept` puts a proposal in force (`id`: `L-…`, a lesson drafted
-from a disagreement with a person, or `P-…`, from people's answers all one way), `drop` drops one, `retire` ends one in
+(`switch`), the rules and mode the policy gives it, the run labels that send a session's calls to people (`clean`),
+whether the operator's kill switch has agent approvals off (`agents_off`), how often people agreed with it per rule
+(`agreement`), the rules its circuit breaker dropped to shadow, the playbook in force and the entries people's answers
+propose, each with `binds` (people said no to calls like it: the signer holds them for a person, in any project, and
+asks no model; else it is advice the reviewer reads). `on` (for `rules` only, when given) and `off` switch it; `off`
+withdraws its approvals not yet used and hands its waiting calls to people (`revoked` lists the approvals withdrawn).
+`accept` puts a proposal in force (`id`: `L-…`, a lesson drafted from a disagreement with a person, or `P-…`, from
+people's answers all one way) and answers whether it `binds`; one that binds also hands calls like it that wait to
+people and withdraws the AI's approvals of them not yet used (`revoked`). `drop` drops a proposal, `retire` ends one in
 force, `revoke` takes back a precedent (`id`: the approval id of a person's answer), and `enable` turns rules the
 breaker dropped back on. Each change is a signed record in the tenant's signer run, and needs `request_id` (and, from a
 break-glass identity, a `reason`). A signer without an AI approver (no `approvals.agents`, or no `approval_agent` in its policy) answers `invalid_request`.
 
 **Who may call:** an approver of the caller's tenant (`approvals.approvers` or `break_glass`), with the default grants or
-an `authorize` entry that lists `approver`, and for a change, no agent session open as that identity (unless
-`self_approval: allow`). An agent approver can't.
+an `authorize` entry that lists `approver`, and for a change, not an identity any run of the tenant had as its client
+or a writer, open or ended (unless `self_approval: allow`): that is an agent session's. An agent approver can't.
 
 <!-- api-doc:begin approver -->
 <details>

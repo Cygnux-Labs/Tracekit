@@ -1592,18 +1592,31 @@ def _tailer_checks(add, client_json, agent):
 
 
 def _answers(signer):
-    """(whether the signer at `signer` answers a status call within a few seconds, what doctor says of it)."""
+    """(whether the signer at `signer` answers this doctor's status call within a few seconds, what doctor says of
+    it, what to do): it doesn't answer (start it); it answers another protocol (an older signer still runs after an
+    upgrade: restart it; a newer one: upgrade this venv); or it refuses this identity's call."""
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
+    start = (f"start it (Linux: sudo systemctl start {install.V2_UNIT}; macOS: sudo launchctl kickstart -k "
+             f"system/{install.V2_LABEL}); its log says why it stopped (journalctl -u {install.V2_UNIT}; macOS: "
+             f"{install.V2_DATA}/signer.log), often a row above")
+    restart = start.replace("start it (Linux: sudo systemctl start", "restart it (Linux: sudo systemctl restart", 1)
     try:
         c = Client(signer, timeout=5)
         try:
             version = c.status({})["signer"]["version"]
         finally:
             c.close()
-    except (SignerUnavailable, Incompatible, RPCError, OSError) as e:
-        return False, f"the signer at {signer} doesn't answer: {e}"
-    return True, f"the signer at {signer} answers (Tracekit {version})"
+    except Incompatible as e:
+        return False, (f"an older signer still runs at {signer}, from before the upgrade ({e})" if e.older else
+                       f"the signer at {signer} runs a newer Tracekit than this doctor ({e})"), (
+            restart if e.older else f"upgrade {install.OPT} to the signer's release: {REINIT}")
+    except RPCError as e:
+        return False, f"the signer at {signer} answers, but refused this identity's status call ({e})", (
+            "run doctor as root, or as a user signer.yaml's tenants or authorize let call status")
+    except (SignerUnavailable, OSError) as e:
+        return False, f"the signer at {signer} doesn't answer: {e}", start
+    return True, f"the signer at {signer} answers (Tracekit {version})", ""
 
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
@@ -1660,6 +1673,15 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "runs" if listed else f"{agent.pw_name} is not in analyzers",
             "remove the agent's uid from analyzers in signer.yaml; run tracekit analyze --v2 as an operator identity",
             bad=WARN)
+    if prod and agent:   # the uid whose sessions register the runs, answering approvals as a person
+        a = cfg.get("approvals") or {}
+        listed = [k for k in ("approvers", "break_glass") if f"uid:{agent.pw_uid}" in (a.get(k) or ())]
+        add("D-APPROVER-AGENT", not listed, f"approvals.{' and approvals.'.join(listed)} list uid:{agent.pw_uid}, the "
+            f"agent's user {agent.pw_name}, whose sessions register the runs: it answers approvals as a person (the "
+            "signer refuses its changes to the AI reviewer and its take-backs, as an identity an agent session ran as)"
+            if listed else f"no approver is {agent.pw_name}, the agent's user",
+            "list a person's own user in approvals.approvers, another than the agent's (init's --approver), and take the "
+            "agent's uid out")
     try:
         owner = os.stat(data).st_uid
     except OSError as e:
@@ -2047,9 +2069,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     except (OSError, ValueError) as e:
         add("D-POLICY-ENGINE", False, f"{policy} does not load: {e}", f"fix the policy: tracekit policy lint {policy}")
     if prod and signer:   # system mode: every hook and approval goes to it
-        add("D-SIGNER-UP", *_answers(signer), "start it (Linux: sudo systemctl start "
-            f"{install.V2_UNIT}; macOS: sudo launchctl kickstart -k system/{install.V2_LABEL}); its log says why it "
-            f"stopped (journalctl -u {install.V2_UNIT}; macOS: {install.V2_DATA}/signer.log), often a row above")
+        add("D-SIGNER-UP", *_answers(signer))
 
     mode = cfg.get("durability", ACK_ON_WRITE)
     add("D-DURABILITY", not prod or mode == ACK_ON_FSYNC, f"durability {mode}" + (

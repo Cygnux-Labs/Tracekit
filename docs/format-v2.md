@@ -627,7 +627,9 @@ read of the call: a `TK-A025` source, the arguments as JSON for `TK-A062` and `T
 no target when the run isn't clean; and the project), the key's digest over
 what was read in full as a commitment under the tenant's own salt (equal keys match; what redaction or the cut left
 out can't be confirmed by a guess), the run's labels, whether the run met the run bound (`clean`), the precedents
-(approval ids of people's answers) that counted, and `asserted: [project]` when the agent's client named the project.
+(approval ids of people's answers) that counted, `asserted: [project]` when the agent's client named the project, and
+`wide_digest`: the same key's digest in any project, each source however spelled (no default port, no trailing slash),
+committed the same way, which an accepted lesson that says no binds too.
 Its run's labels and `clean` count, for the run bound alone, a read of a secret the policy denied or held (no
 `run.label` record says so: it is the decision's). A person's `approval` of one carries `run_clean`: whether the run
 still met the run bound when they answered. Each AI
@@ -635,7 +637,8 @@ answer to one carries `relied_on`: the precedents and the playbook's version and
 it answered, the policy hash, the run's labels, `view` (a commitment to the `view_digest` of the review it answered),
 `mode` (enforce: it decided; shadow: a suggestion, with `demoted` when the circuit breaker made it so), and the
 reviewer's own word (each model's answer). `playbook.entry` (`accept`, `retire` or `drop` of an entry `P-…` or a
-lesson `L-…`, with a lesson's `decision`, `digest` and `evidence`: the ids of the records it was drafted from),
+lesson `L-…`, with a lesson's `decision`, `digest`, `wide_digest` and `evidence`: the ids of the records it was
+drafted from),
 `precedent.revoked`, `approver.enabled` and `approver.switched` (`{on, rules?, by, reason?}`: a person switched the AI
 approver on, for those rules only, or off) are a person's answers through the signer, in the tenant's signer run. A
 verifier from 1.8.0 prints `AI approvals` for a bundle with any of them: an AI yes that decided must carry two answers

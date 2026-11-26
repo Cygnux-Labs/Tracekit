@@ -206,6 +206,8 @@ CASES = [
     ("signer.yaml world-writable", "D-CONFIG", _chmod("etc/signer.yaml", 0o666)),
     ("agent is root", "D-AGENT-PRIV", lambda L: L.kw.update(agent=types.SimpleNamespace(**dict(vars(AGENT), pw_uid=0)))),
     ("agent may sign findings", "D-ANALYZER-AGENT", lambda L: L.signer_yaml(analyzers=[f"uid:{AGENT.pw_uid}"])),
+    ("the agent's user is an approver", "D-APPROVER-AGENT",
+     lambda L: L.signer_yaml(approvals={**L.yaml["approvals"], "approvers": [f"uid:{AGENT.pw_uid}"]})),
     ("keys readable by the agent", "D-AGENT-PROBE", _probe_keys),
     ("client.json writable by the agent", "D-AGENT-PROBE", _chmod("etc/client.json", 0o666)),
     ("policy writable by others", "D-POLICY-TRUST", _chmod("etc/policy.json", 0o666)),
@@ -275,8 +277,9 @@ def run_case(mutate):
         me = os.geteuid()
         L.patches += [mock.patch.object(doctor, "trusted_file", trusted_under(top, me)),
                       mock.patch.object(install, "_root_only", root_only_under(me)),
-                      mock.patch.object(doctor, "_answers", lambda s: (L.up, f"the signer at {s} " + (
-                          "answers (Tracekit e16)" if L.up else "doesn't answer: [Errno 2] No such file or directory")))]
+                      # a signer that answers stands in for one; else doctor asks the socket, where none listens
+                      mock.patch.object(doctor, "_answers", lambda s, asks=doctor._answers: (
+                          True, f"the signer at {s} answers (Tracekit e16)", "") if L.up else asks(s))]
         if not IS_ROOT:
             L.patches.append(mock.patch.object(doctor, "agent_access", other_access(top)))
         if mutate:

@@ -354,8 +354,8 @@ from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, labels, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
-from tracekit.signer.pipeline import (AGREEMENT_MIN, CHANGED, EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, RecordLog,
-                                      approval, constraint_state, cooldown_key, degrade, epoch, final_run, owner,
+from tracekit.signer.pipeline import (AGREEMENT_MIN, CHANGED, EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, SIGNER_RUN,
+                                      RecordLog, approval, constraint_state, cooldown_key, degrade, epoch, final_run, owner,
                                       person_only_keys, pinned, prune_ended, ran, repinned, salt_label, skipped,
                                       subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
@@ -1014,6 +1014,21 @@ def precedent_key(tool, target, project):
     match: two calls whose keys match with their projects match without them (tests/test_approver.py)."""
     key = {"rules": sorted(target), "tool": tool, "target": target, "project": _project(project)}
     return key, "sha256:" + hashlib.sha256(canonical(key)).hexdigest()
+
+
+def wide_key(tool, target):
+    """The digest of precedent_key's key of a call of `tool` with `target` in any project, each TK-A025 source as the
+    same source however it is spelled (engine._source has the scheme and host in lower case already; here a default
+    port and a path's trailing slashes go too): an accepted no binds a call of this key (SignerService._bound_by_lesson),
+    as the project is the agent's word and a source's spelling its choice. Precedents never match by it."""
+    def same(rule, kind):
+        how, _, url = kind.rpartition(" ")
+        m = re.fullmatch(r"(https?)://(\[[^\]/]*\]|[^/:]*)(?::([0-9]+))?(/.*)?", url) if rule == "TK-A025" else None
+        if not m:
+            return kind
+        port = "" if m[3] is None or int(m[3]) == {"https": 443, "http": 80}[m[1]] else f":{int(m[3])}"
+        return f"{how} {m[1]}://{m[2]}{port}{(m[4] or '').rstrip('/')}"
+    return precedent_key(tool, {r: sorted({same(r, k) for k in v}) for r, v in target.items()}, None)[1]
 
 
 def wants_agents(policy):
@@ -2425,7 +2440,7 @@ class SignerService:
     def _agent_refusal(self, a):
         """Why an agent's answer to approval `a` is refused now (people answer it), or None."""
         return ("agent approvals are switched off: people answer it" if self.log.agent["off"] else
-                lesson if (lesson := a.get("ai") and self._bound_by_lesson(a["run_key"][0], a["ai"]["digest"])) else
+                lesson if (lesson := a.get("ai") and self._bound_by_lesson(a["run_key"][0], a["ai"])) else
                 "it was escalated: people answer it now" if a["escalated"] else
                 "the policy changed since it was requested: people answer it"
                 if a["policy_hash"] != self.policy.policy_hash else
@@ -2436,14 +2451,19 @@ class SignerService:
                                                                               a["requester"])) else
                 self._switched_off(a))
 
-    def _bound_by_lesson(self, tenant, digest):
-        """Why an accepted lesson keeps the AI reviewer from a call of `tenant` with precedent key `digest`, or None: a
-        playbook entry in force with that key that says people said no to calls like it (a lesson "don't approve …
-        without a person", or an entry "rejected N of N") binds, so the signer holds the call for a person and no model
-        is asked. An entry that says people approved is advice the reviewer reads: it never widens a bound."""
+    def _bound_by_lesson(self, tenant, key):
+        """Why an accepted lesson keeps the AI reviewer from a call of `tenant` whose precedent key's digests are `key`'s
+        (an approval request's `ai`, or a playbook entry: `digest`, and `wide_digest`, wide_key's: any project, an index
+        URL however spelled), or None: a playbook entry in force that says people said no to calls like it (a lesson
+        "don't approve … without a person", or an entry "rejected N of N") binds a call with either digest of its own,
+        so the signer holds it for a person and no model is asked; the project is the agent's word, and a source's
+        spelling its choice, so neither steps around it. An entry that says people approved is advice the reviewer
+        reads: it never widens a bound."""
         entries = (self.log.agent["playbook"].get(tenant) or {"entries": {}})["entries"]
-        lid = next((k for k, v in sorted(entries.items()) if binds(v) and v.get("digest") == digest), None)
-        return lid and f"an accepted lesson {lid} says a person decides calls like this"
+        lid = next((k for k, v in sorted(entries.items()) if binds(v) and (
+            v.get("digest") == key["digest"] or v.get("wide_digest") and v["wide_digest"] == key.get("wide_digest"))),
+            None)
+        return lid and f"an accepted lesson {lid} says a person decides calls like this, in any project"
 
     def _switched_off(self, a):
         """Why a person's switch (approver.switched in its tenant) keeps the AI reviewer from approval `a`, or None:
@@ -2714,19 +2734,21 @@ class SignerService:
         None): its precedent key as shown (_shown_target; no target at all when the run isn't clean) and its digest's
         commitment (precedent_key), the run's labels, `clean` (the run carried no label of the run bound, and no
         argument a value only untrusted content brought: a person's answer to it is a precedent only then), the
-        precedents that count now, and `asserted: [project]` when the agent's client named the project."""
+        precedents that count now, `asserted: [project]` when the agent's client named the project, and `wide_digest`
+        (wide_key's commitment: any project, each source however spelled), which an accepted no binds too."""
         key, plain = precedent_key(tool, target, project)
         # a commitment under the tenant's own salt: equal keys match, and what redaction or the cut left out of the
         # shown key can't be confirmed by guessing it
         digest = self._commit(f"precedent:{run['tenant']}", plain)
+        wide = self._commit(f"precedent:{run['tenant']}", wide_key(tool, target))
         unclean, prec = self._unclean(run, requester), self._precedents(run["tenant"], requester, digest)
         clean = not (unclean or untrusted)
         ext = {"key": {**key, "tool": tool[:256], "target": _shown_target(target, dotenv, tool) if clean else {}},
-               "digest": digest, "labels": self._run_labels(run, requester), "clean": clean, "precedents": prec,
-               **({"asserted": ["project"]} if project else {})}
+               "digest": digest, "wide_digest": wide, "labels": self._run_labels(run, requester), "clean": clean,
+               "precedents": prec, **({"asserted": ["project"]} if project else {})}
         why = (f"{self._unclean_words(run, requester, unclean)}: a person decides" if unclean else
                "an argument came from untrusted content (a web page, an email or a download): a person decides"
-               if untrusted else lesson if (lesson := self._bound_by_lesson(run["tenant"], digest)) else
+               if untrusted else lesson if (lesson := self._bound_by_lesson(run["tenant"], ext)) else
                "no person has approved a call like this one yet (the same rules, tool, target and project, in a "
                "clean session): a person decides" if not (prec["approve"] or prec["reject"]) else
                "people have answered calls like this one both ways: a person decides" if prec["approve"] and prec["reject"]
@@ -4642,9 +4664,9 @@ class SignerService:
                 raise RPCError("approval_not_pending", "only an agent's approval not consumed yet is revoked")
             busy = self._agent_session(identity, run["tenant"])
             if busy:
-                raise RPCError("forbidden", f"{subject(identity)[:256]} has an agent session open (run {busy}): take "
-                                            "back an agent's approval as a person's identity, or close the session "
-                                            "first")
+                raise RPCError("forbidden", f"{subject(identity)[:256]} is an identity an agent session runs or ran as "
+                                            f"in this tenant (run {busy}): take back an agent's approval as a person's "
+                                            "identity")
             return self._revoke(tx, run, aid, subject(identity)[:256], req.get("reason"), req["request_id"],
                                 self._person_of(identity))
         out = self.log.submit(identity, "approval_revoke", req, fn, a["run_key"], late=True)
@@ -4654,14 +4676,18 @@ class SignerService:
         return out
 
     def _agent_session(self, identity, tenant):
-        """(on the writer) The id of an open run of `tenant` that `identity` is a requester of: the identity an agent
-        session runs as, which is no person whatever approvers lists; None when there is none, or when self_approval
-        lets the run's own identity answer."""
+        """(on the writer) The id of a run of `tenant`, open or ended, that `identity` is a requester of (its client, a
+        writer it was delegated to, a gateway's caller: a final run keeps them), but the signer's own and findings or
+        replay runs: the identity an agent session runs or ran as, which is no person whatever approvers lists, and an
+        agent that closes its runs first is still that; None when there is none, or when self_approval lets the run's
+        own identity answer."""
         if (self.approvals or {}).get("self_approval") == "allow":
             return None
         mine = owner(identity)
-        return next((r["run_id"] for r in self.log.runs.values()
-                     if r["tenant"] == tenant and not r["closed"] and mine in labels.requesters(r)), None)
+        # lean: visits every run the signer holds, final ones too, on each person's change; index requesters by
+        # identity if a signer holds millions of runs
+        return next((r["run_id"] for k, r in self.log.runs.items() if r["tenant"] == tenant and k[1] != SIGNER_RUN[1]
+                     and not r.get("replay") and mine in labels.requesters(r)), None)
 
     def _revoke(self, tx, run, aid, by, reason=None, request_id=None, who=None):
         """approval.revoked of approval `aid` by `by` (a person's: `who`, their name)."""
@@ -4697,7 +4723,7 @@ class SignerService:
                 sw = ag.get("switch", {}).get(tenant)
                 pairs = {k.split("\0", 1)[1]: v for k, v in ag["pairs"].items() if k.startswith(tenant + "\0")}
                 return {"switch": sw and {**sw, "at": _iso(sw["at"])}, "rules": aa["rules"], "mode": aa["mode"],
-                        "clean": aa["run"]["clean"],
+                        "clean": aa["run"]["clean"], "agents_off": ag["off"],
                         "agreement": [{"rule": r, "agreed": sum(v), "of": len(v), "recent": {
                             "agreed": sum(v[-AGREEMENT_MIN:]), "of": len(v[-AGREEMENT_MIN:])}}
                             for r, v in sorted(pairs.items())],
@@ -4717,8 +4743,8 @@ class SignerService:
             ag, book, revoked = self.log.agent, self.log.agent["playbook"].get(tenant) or {"entries": {}}, []
             busy = self._agent_session(identity, tenant)
             if busy:   # the identity an agent runs as is no person here, whatever approvers lists
-                raise RPCError("forbidden", f"{by} has an agent session open (run {busy}): change the AI reviewer as a "
-                                            "person's identity, or close the session first")
+                raise RPCError("forbidden", f"{by} is an identity an agent session runs or ran as in this tenant (run "
+                                            f"{busy}): change the AI reviewer as a person's identity")
             if action in ("on", "off"):
                 listed = self.policy.policy["approval_agent"]["rules"]
                 rules = list(dict.fromkeys(req.get("rules") or ()))
@@ -4763,8 +4789,10 @@ class SignerService:
                           request_id=req["request_id"])
             if action == "accept" and binds(data):   # calls like it go to people from now: those waiting, and the
                 # AI's approvals of them not yet used
-                revoked = self._agents_off(tx, self._bound_by_lesson(tenant, data["digest"]), lambda a: bool(
-                    a.get("ai")) and a["run_key"][0] == tenant and a["ai"]["digest"] == data["digest"])
+                why = self._bound_by_lesson(tenant, data)
+                revoked = self._agents_off(tx, why, lambda a: bool(a.get("ai")) and a["run_key"][0] == tenant and (
+                    a["ai"]["digest"] == data["digest"] or "wide_digest" in data
+                    and a["ai"].get("wide_digest") == data["wide_digest"]))
             return {"action": action, "run_seq": seq, **({"revoked": revoked} if revoked else {}),
                     **({"binds": binds(data)} if action == "accept" else {})}
         out = self.log.submit(identity, "approver", req, fn)
@@ -4786,7 +4814,7 @@ class SignerService:
                 groups.setdefault(p["digest"], []).append(p)
         held = (self.log.agent["playbook"].get(tenant) or {"entries": {}})["entries"]
         dropped = set(self.log.agent.get("dropped", {}).get(tenant, ()))
-        out = {k: {x: v[x] for x in ("text", "key", "digest", "decision", "evidence")}
+        out = {k: {x: v[x] for x in ("text", "key", "digest", "decision", "evidence", "wide_digest") if x in v}
                for k, v in sorted(self.log.agent.get("lessons", {}).items(), key=lambda kv: kv[1]["at"])
                if v["tenant"] == tenant and k not in held}
         for ps in groups.values():
@@ -4797,10 +4825,12 @@ class SignerService:
             text = (f"{', '.join(k['rules'])} by {k['tool'][:64]}, " + "; ".join(
                 f"{r} {' '.join(v)[:120]}" for r, v in sorted(k["target"].items())) +
                 (f", in {k['project']}" if k["project"] else "") + f": {said} {len(ps)} of {len(ps)}" +
-                (f" (latest reason: {last['reason'][:200]})" if last.get("reason") else ""))
+                (f" (latest reason: {last['reason'][:200]})" if last.get("reason") else "") +
+                ("; a person decides calls like it in any project" if said == "rejected" else ""))
             pid = "P-" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:32]
             if pid not in held:
-                out[pid] = {"text": text, "key": k, "digest": ps[0]["digest"], "decision": ps[0]["decision"]}
+                out[pid] = {"text": text, "key": k, "digest": ps[0]["digest"], "decision": ps[0]["decision"],
+                            **({"wide_digest": ps[0]["wide_digest"]} if ps[0].get("wide_digest") else {})}
         return {k: v for k, v in out.items() if k not in dropped}
 
     def _agents_off(self, tx, why, which=lambda a: True):
@@ -4940,7 +4970,7 @@ class SignerService:
                     f"{self._unclean_words(run, a['requester'], u)} since it was approved"
                     if (u := self._unclean(run, a["requester"])) else
                     "the policy has no AI approver now" if "approval_agent" not in self.policy.policy else
-                    None) or self._switched_off(a) or self._bound_by_lesson(run["tenant"], a["ai"]["digest"]) or (
+                    None) or self._switched_off(a) or self._bound_by_lesson(run["tenant"], a["ai"]) or (
                     "a person rejected a call like this one" if (p := self._precedents(
                         run["tenant"], a["requester"], a["ai"]["digest"]))["reject"] else
                     "the person's approval it matched no longer counts" if not p["approve"] else None)):
@@ -5012,32 +5042,48 @@ class SignerService:
         agent_view, people = self._is_agent(identity), self._a_person(identity)
         if agent_view and "run_id" in req:   # an agent never learns which run an approval belongs to
             raise RPCError("forbidden", "an agent approver lists approvals without a run_id")
-        # copied on the writer, so only committed states are listed: the approvals of runs gone final (ENDED_S) first,
-        # in the order their runs ended, then the live ones
-        items = iter(self.log.write(lambda tx: [
-            (aid, {**a, "run_closing": False, **self._ended_views(aid, a)}) for aid, a in self.log.ended.items()
-            if self._may_read_ended(identity, a)] + [
+        # copied on the writer, so only committed states are listed: the live approvals, then with `ended` those of runs
+        # gone final (ENDED_S), in the order their runs ended, each one's view built only for the page it is on
+        live = self.log.write(lambda tx: [
             (aid, {**a, "run_closing": a["state"] == "requested" and self.log.runs[a["run_key"]]["closed"],
                    **self._agent_views(aid, a)})
-            for aid, a in self.log.approvals.items()]))
-        page, cursor = [], req.get("cursor")
+            for aid, a in self.log.approvals.items()])
+        page, cursor, limit, at = [], req.get("cursor"), req.get("limit", LIST_PAGE), [req.get("cursor") is None]
+
+        def asked(aid, a):   # past the cursor, and what the request's filters name
+            if not at[0]:
+                at[0] = aid == cursor
+                return False
+            return req.get("run_id") in (None, a["run_key"][1]) and req.get("state") in (None, a["state"]) and \
+                req.get("escalated") in (None, bool(a.get("escalated")))
+
+        def add(aid, a):   # an agent approver keeps whether its answer counts (`agent`); its allow-list drops the rest
+            s = {**self._summary(aid, a, people or agent_view), **({"run_closing": True} if a["run_closing"] else {})}
+            page.append({k: v for k, v in s.items() if k in rpc_schema.AGENT_SUMMARY["properties"]}
+                        if agent_view else s)
         # lean: every page scans the approvals from the first; index them by tenant once a signer holds ~100k
-        if cursor is not None:
-            for aid, _ in items:
-                if aid == cursor:
-                    break
-        for aid, a in items:   # for: agent, those an agent may still answer (shadow too); person, those it can't decide
-            if req.get("run_id") in (None, a["run_key"][1]) and req.get("state") in (None, a["state"]) and \
-                    req.get("escalated") in (None, bool(a.get("escalated"))) and self._may_see(identity, a) and (
+        for aid, a in live:   # for: agent, those an agent may still answer (shadow too); person, those it can't decide
+            if asked(aid, a) and self._may_see(identity, a) and (
                     "for" not in req or req["for"] == "agent" and a["agent_mode"] is not None
                     or req["for"] == "person" and a["agent_mode"] != "enforce"):
-                if len(page) == req.get("limit", LIST_PAGE):
+                if len(page) == limit:
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
-                # an agent approver keeps whether its answer counts (`agent`); its allow-list drops the rest
-                s = {**self._summary(aid, a, people or agent_view), **({"run_closing": True} if a["run_closing"] else {})}
-                page.append({k: v for k, v in s.items() if k in rpc_schema.AGENT_SUMMARY["properties"]}
-                            if agent_view else s)
-        return {"approvals": page, "next_cursor": None}
+                add(aid, a)
+        if not req.get("ended") or agent_view or req.get("for") == "agent":
+            return {"approvals": page, "next_cursor": None}
+
+        def ended(tx):   # (no agent's answer counts on them: never for an agent)
+            out = []
+            for aid, a in self.log.ended.items():
+                if asked(aid, a) and self._may_read_ended(identity, a):
+                    if len(page) + len(out) == limit:
+                        return out, True
+                    out.append((aid, {**a, "run_closing": False, **self._ended_views(aid, a)}))
+            return out, False
+        more, full = self.log.write(ended)
+        for aid, a in more:
+            add(aid, a)
+        return {"approvals": page, "next_cursor": page[-1]["approval_id"] if full else None}
 
     def _approval_abandon(self, identity, req):
         key, aid = self._authorize(identity, req), req["approval_id"]

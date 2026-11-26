@@ -1099,6 +1099,10 @@ class TestFirstDayCli(unittest.TestCase):
              "args": {"command": "git push --force"}, "expires_at": "2026-11-26T06:43:59.878264Z"}
         self.assertTrue(cli._stop_lines(mock.Mock(signer=sock), x)[0].startswith("why         not on this machine"))
         with mock.patch.object(claude_code, "system_config", lambda: {"signer": sock}), \
+                mock.patch("tracekit.install.V2_CONFIG", os.path.join(d, "none.yaml")):   # unreadable: the command
+            self.assertTrue(cli._stop_lines(mock.Mock(signer=sock), x)[0].startswith(   # as the person runs it there
+                f"why         not on this machine: `{OPT_PYTHON} -I -m tracekit policy compile <file>` prints"))
+        with mock.patch.object(claude_code, "system_config", lambda: {"signer": sock}), \
                 mock.patch("tracekit.install.V2_CONFIG", os.path.join(d, "signer.yaml")):
             lines = cli._stop_lines(mock.Mock(signer=sock), x)
         self.assertRegex(lines[0], r"^why         .+ \(TK-A032\)$")

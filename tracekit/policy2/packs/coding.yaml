@@ -302,7 +302,8 @@ deny:
     class: shell
     # each command's argv (wrappers and runners such as uvx, uv tool run, pipx run, hatch run and conda run, `sh -c`,
     # `eval` and a path to the binary resolved): `tracekit approve|reject`, `tracekit approvals [OPTIONS]
-    # approve|reject` (with --grant too), a person's answer to a lesson (`tracekit tips approve|retire|restore|add`, its
+    # approve|reject|revoke` (with --grant too; revoke takes back an agent's approval, which trips the AI reviewer's
+    # circuit breaker and drafts a lesson), a person's answer to a lesson (`tracekit tips approve|retire|restore|add`, its
     # first word: `tracekit tips` reads the action nowhere else; a lesson changes what every later session reads), a
     # person's change to the AI reviewer (`tracekit reviewer on|off|enable|accept|retire|revoke|drop`, its first word:
     # its subcommands take their options after it; switching it on, or accepting a lesson it reads, changes what it may
@@ -343,7 +344,7 @@ deny:
     # "${S:-/tmp/s}" list`) is denied, and so is a variable as the action where the line also uses it unknown (`for c
     # in a b; do tracekit $c; done; echo $c`: the parser's unresolved names are the line's); use a literal path, or a
     # person runs it
-    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? ((approve|reject|approvals( --[\w\W]*?)? (approve|reject)|grant|tips (approve|retire|restore|add)|reviewer (on|off|enable|accept|retire|revoke|drop))( |$)|(approvals( --[\w\W]*?)? |tips |reviewer )?([^ -][^ ]*)?(\$\{?[0-9@*]|\$\{!|\$\(|`|[*?\[]|\$\{[\w@*#?$!-]+(\[[^] ]*\])?:?[-=+/])|(approvals |tips |reviewer )?\$\x7f( |$))'
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? ((approve|reject|approvals( --[\w\W]*?)? (approve|reject|revoke)|grant|tips (approve|retire|restore|add)|reviewer (on|off|enable|accept|retire|revoke|drop))( |$)|(approvals( --[\w\W]*?)? |tips |reviewer )?([^ -][^ ]*)?(\$\{?[0-9@*]|\$\{!|\$\(|`|[*?\[]|\$\{[\w@*#?$!-]+(\[[^] ]*\])?:?[-=+/])|(approvals |tips |reviewer )?\$\x7f( |$))'
     reason: answering an approval, a lesson or a grant, or changing the AI reviewer, from the agent's session
     remedy: Leave answers, lessons, grants and the AI reviewer to a person at their own terminal; listing, showing and `tracekit reviewer status` stay allowed.
     rationale: An approval is a person's decision; an agent that answers its own held calls turns every ask into an allow.

@@ -5233,6 +5233,10 @@
             ]
           },
           "description": "the parts of the key the agent's own process supplied, not the signer: they only narrow a precedent match"
+        },
+        "wide_digest": {
+          "$ref": "#/$defs/commitment",
+          "description": "the same key's digest in any project, each package source however it is spelled (no default port, no trailing slash), committed as digest is: an accepted lesson that says no binds a call of either"
         }
       }
     },
@@ -5406,6 +5410,12 @@
           "maxLength": 77,
           "pattern": "^hmac-sha256:[0-9a-f]{64}$",
           "description": "the precedent key's digest of the calls it is about"
+        },
+        "wide_digest": {
+          "type": "string",
+          "maxLength": 77,
+          "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+          "description": "its request's wide_digest: an entry that says no binds calls of it too (any project)"
         },
         "evidence": {
           "type": "array",

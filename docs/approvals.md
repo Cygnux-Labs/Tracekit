@@ -412,7 +412,7 @@ record and changes nothing: compare suggestions with what people decide before y
 
 **Revocation and the kill switch.** A person revokes an agent's approval that is not consumed yet with
 `approval_revoke` (`approval.revoked`; the call never runs): `tracekit approvals revoke apr-… --reason …` (or `reject`
-of it), never as the identity an agent session is open as. `approval_agents {enabled: false}` (an `authorize` grant,
+of it), never as an identity an agent session of the tenant runs or ran as. `approval_agents {enabled: false}` (an `authorize` grant,
 never a default) writes a signed `approval.agents`, revokes every agent approval not consumed yet, escalates every
 pending one agents could answer (`approval.escalated` by the signer, so it stays with people after agents are switched
 on again) and sends every new approval to people until then.
@@ -546,15 +546,18 @@ apr-…`, run where the signer's data dir can be read.
 **On and off.** A person switches it: `tracekit reviewer on` (or `on --rules TK-A025` for some rules only) and
 `tracekit reviewer off`, each a signed record that names them. `off` withdraws its approvals not yet used and hands its
 waiting calls to people at once. With no switch, the policy and `signer.yaml` decide alone; `tracekit init` sets up no
-AI reviewer, so a new install starts without one. Only a person who answers approvals switches it, and never as the
-identity an agent session is open as: the signer refuses that, and the policy denies the agent's own `tracekit
-reviewer` changes (TK-D012). `tracekit reviewer status` says whether it is on, who switched it and when, what it may
-answer, what it never answers, and how often people agreed with it per rule.
+AI reviewer, so a new install starts without one. Only a person who answers approvals switches it, and never as an
+identity an agent session runs or ran as in its tenant (one any run, open or ended, had as its client or a writer; an
+agent that closes its sessions first is still refused): the signer refuses that, `tracekit doctor` fails
+`D-APPROVER-AGENT` where `approvals.approvers` lists the agent's user, and the policy denies the agent's own `tracekit
+reviewer` changes and `approvals revoke` (TK-D012). `tracekit reviewer status` says whether it is on, who switched it
+and when, what it may answer (nothing while the operator's `approval_agents` kill switch is off), what it never
+answers, and how often people agreed with it per rule.
 
 **Taking one back.** You can take back an AI approval before the agent's retry runs it: `tracekit approvals revoke
 apr-… --reason …` (`reject` of it does the same, and so does the viewer's approvals desk). `approvals show` and `list`,
 and the hook's Person line during `veto_s`, name the command while the approval is not yet used. Only a person takes one
-back: the signer refuses the identity an agent session is open as. The AI reviewer then only suggests for that rule,
+back: the signer refuses an identity an agent session runs or ran as. The AI reviewer then only suggests for that rule,
 and a person decides, until you run `tracekit reviewer enable TK-A025`. `tracekit reviewer status` lists those rules and
 why, and `approvals show` says who took it back and when:
 
@@ -576,8 +579,10 @@ proposed (`tracekit reviewer accept ID` puts one in force, `tracekit reviewer dr
 
 Only a lesson a person accepts counts, as a signed record; `drop` drops one for good. A lesson that says people said
 no to a kind of call ("don't approve … without a person", or "rejected 4 of 4") binds: from the accept on, the signer
-holds every call with its key (the same key precedents match by) for a person, asks no model, and says why in the
-approval ("an accepted lesson L-3f… says a person decides calls like this"); a call that was waiting for the AI goes
+holds every call like it for a person, in any project and however a package index is spelled (a default port or a
+trailing slash makes no other call), asks no model, and says why in the approval ("an accepted lesson L-3f… says a
+person decides calls like this, in any project"): the project is the agent's own word, and the index's spelling its
+choice, so neither steps around a no. Precedents still match exactly. A call that was waiting for the AI goes
 to people, and an AI approval of one not yet used is withdrawn. A lesson that says people approved a kind of call is
 advice: the AI reviewer reads it, and it never widens a bound (a yes still needs a person's yes to a call like it).
 `lessons`, `status` and `accept` say which a lesson is. When a person later decides a call like an accepted lesson the
@@ -772,7 +777,6 @@ authorize:
 Merged, for an agent `uid:1000`, you as `uid:1001` and the reviewer as `uid:998` (Linux):
 
 ```yaml
-# written by `tracekit init --v2`; a re-run writes its own keys again and keeps the others
 data_dir: "/var/lib/tracekit-signer"
 socket: "/run/tracekit-signer/signer.sock"
 socket_mode: "0666"
@@ -792,6 +796,14 @@ authorize:
   "uid:998": [approval_list, approval_review, approval_decide, status]   # added
 policy: "/etc/tracekit/policy.yaml"
 ```
+
+A later `tracekit init --v2` keeps what you merged into `tenants`, `approvals` and `authorize`, and writes each of
+those three sections back on one line, as JSON. It writes its own entries again (the agent's, `--approver`'s, the
+tailer's), lists only `--approver` in `approvals.approvers` and says which others it dropped, and refuses to write a
+file where an entry would give the agent's uid approval rights (`agents` or `break_glass` naming it, or an `authorize`
+grant that is never a default); it checks the merged file with the signer's own loader before it writes it. If the
+signer still refuses to start, or `approvals.agents` is gone, `tracekit doctor` fails `D-AGENT-APPROVERS` (the policy
+lets agent approvers answer and `approvals.agents` names none) and `D-SIGNER-UP`.
 
 Then put these files in the reviewer's home, owned by it. The reviewer refuses `reviewer.yaml`, its folder,
 `state_file`, its folder and `key_file` when another user than its own (or root) owns one or group or others can write

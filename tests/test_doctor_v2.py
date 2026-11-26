@@ -61,9 +61,10 @@ class E16(unittest.TestCase):
         d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # a socket path short enough for macOS
         self.addCleanup(shutil.rmtree, d, True)
         sock = os.path.join(d, "s.sock")
-        ok, said = doctor._answers(sock)
+        ok, said, fix = doctor._answers(sock)
         self.assertFalse(ok)
         self.assertTrue(said.startswith(f"the signer at {sock} doesn't answer: "), said)
+        self.assertTrue(fix.startswith("start it (Linux: sudo systemctl start tracekit-signer"), fix)
         cfg = {"data_dir": os.path.join(d, "data"), "socket": sock}
         signer = svc.open_service(cfg)
         servers = svc.serve(cfg, signer)
@@ -71,7 +72,24 @@ class E16(unittest.TestCase):
         for srv in servers:
             self.addCleanup(srv.server_close)
             self.addCleanup(srv.shutdown)
-        self.assertEqual(doctor._answers(sock), (True, f"the signer at {sock} answers (Tracekit {__version__})"))
+        self.assertEqual(doctor._answers(sock), (True, f"the signer at {sock} answers (Tracekit {__version__})", ""))
+
+    def test_a_signer_that_answers_otherwise_is_said_as_it_is(self):
+        """Review: a signer that answered another protocol, or refused doctor's identity, was said not to answer, with
+        a fix to start it."""
+        from tracekit.sdk import client as sdk
+        from tracekit.signer.rpc_schema import RPCError
+        for raised, said, fix in (
+                (sdk.Incompatible("speaks 28", older=True), "an older signer still runs at /s.sock, from before the "
+                 "upgrade (speaks 28)", "restart it (Linux: sudo systemctl restart tracekit-signer"),
+                (sdk.Incompatible("speaks 30"), "the signer at /s.sock runs a newer Tracekit than this doctor (speaks 30)",
+                 f"upgrade {install.OPT} to the signer's release"),
+                (RPCError("forbidden", "uid:7 may not call status"), "the signer at /s.sock answers, but refused this "
+                 "identity's status call (forbidden: uid:7 may not call status)", "run doctor as root")):
+            with self.subTest(said), mock.patch.object(sdk.Client, "status", side_effect=raised):
+                got = doctor._answers("/s.sock")
+                self.assertEqual(got[:2], (False, said))
+                self.assertTrue(got[2].startswith(fix), got[2])
 
     def test_malformed_agent_settings_are_results_not_crashes(self):
         def bad(shape):

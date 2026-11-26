@@ -596,14 +596,16 @@ def status_lines(out):
     suggests) and what it never answers (the policy's run bound among it), and how often people agreed with it per
     rule, with a suggestion when they agreed enough to let it answer a rule it only suggests for."""
     from tracekit.signer.pipeline import AGREEMENT_BAR, AGREEMENT_MIN
-    sw, demoted = out["switch"], {x["rule"] for x in out["demoted"]}
-    off = [r for r in out["rules"] if sw and (not sw["on"] or sw.get("rules") and r not in sw["rules"])]
+    sw, demoted, killed = out["switch"], {x["rule"] for x in out["demoted"]}, out.get("agents_off")
+    off = [r for r in out["rules"] if killed or sw and (not sw["on"] or sw.get("rules") and r not in sw["rules"])]
     may = [r for r in out["rules"] if r not in off]
     lines = [("the AI reviewer is " + ("on" + (f" for {', '.join(sw['rules'])} only" if sw.get("rules") else "")
                                        if sw["on"] else "off")
               + f": {sw.get('person') or sw['by']} switched it {'on' if sw['on'] else 'off'} at {sw['at'][:16].replace('T', ' ')} UTC"
               + (f" ({sw['reason']})" if sw.get("reason") else "")) if sw else
-             "the AI reviewer answers as the policy and signer.yaml say (no one switched it on or off)"]
+             "the AI reviewer answers as the policy and signer.yaml say (no one switched it on or off)"] + [
+        "the operator switched agent approvals off (approval_agents), whatever this switch says: no agent approver "
+        "answers anything until the operator switches them on"] * bool(killed)
     if may:
         lines += [("it may answer" if out["mode"] == "enforce" else "it only suggests (the policy's mode is shadow) for")
                   + ":"] + [f"  {r}: {RULE_WORDS.get(r, r)}" + (" (it only suggests now: the circuit breaker)"
@@ -611,7 +613,8 @@ def status_lines(out):
                             for r in may]
     if off:
         lines += [("it answers nothing while it is off; " if not may else "") + "a person decides these rules of the "
-                  "policy, which the switch leaves out:"] + [f"  {r}: {RULE_WORDS.get(r, r)}" for r in off]
+                  "policy" + (", agent approvals being off:" if killed else ", which the switch leaves out:")] + [
+            f"  {r}: {RULE_WORDS.get(r, r)}" for r in off]
     lines += [
         "it never answers: " + ", ".join([LABEL_NEVER.get(x, f"a call in a session labelled {x}")
                                           for x in out.get("clean", ["secrets_access"])]
@@ -630,7 +633,8 @@ def status_lines(out):
 
 
 # what a lesson in force does (service.binds): people said no to calls like it, or it is advice
-BINDS = "the signer holds calls like it for a person and asks no model"
+BINDS = ("the signer holds calls like it, in any project and however a package index is spelled, for a person and "
+         "asks no model")
 ADVICE = "the AI reviewer reads it; it never widens a bound (a yes still needs a person's yes to a call like it)"
 
 
@@ -741,9 +745,11 @@ def main(argv=None):
     if a.cmd == "friction":
         try:
             out = friction(records(a.store, a.bundle))
-        except PermissionError as e:   # a signer's data dir is its own user's: root reads it
+        except PermissionError as e:   # a signer's data dir is its own user's: root reads it, with root's own Python
+            # (the system-mode venv's; never this process's, which may be one the agent's user can write)
+            from tracekit.install import OPT_PYTHON
             print(f"tracekit reviewer friction: {e}: the signer's data dir is its user's alone; run it as root: `sudo "
-                  f"{shlex.quote(sys.executable)} -I -m tracekit reviewer friction --store {shlex.quote(a.store)}`"
+                  f"{OPT_PYTHON} -I -m tracekit reviewer friction --store {shlex.quote(a.store)}`"
                   if a.store else f"tracekit reviewer friction: {e}", file=sys.stderr)
             return 2
         except (OSError, ValueError) as e:

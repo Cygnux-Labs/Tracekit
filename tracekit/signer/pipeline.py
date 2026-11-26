@@ -305,7 +305,7 @@ def approver_state(set_, log, run, e, a, pop):
                 pop(ag["precedents"], old)
             set_(ag["precedents"], d["approval_id"], {
                 "tenant": tenant, "requester": a["requester"], "digest": ap["digest"], "key": ap["key"],
-                "rules": ap["key"]["rules"],
+                "rules": ap["key"]["rules"], **({"wide_digest": ap["wide_digest"]} if "wide_digest" in ap else {}),
                 "decision": d["decision"], "at": epoch(e["ts"]), "run": f"{tenant}\0{e['run_id']}",
                 "by": d.get("person") or d["approver"], **({"reason": d["reason"]} if d.get("reason") else {})})
         if a.get("suggested"):   # the person's answer to a call the AI answered in shadow mode
@@ -353,19 +353,21 @@ def approver_state(set_, log, run, e, a, pop):
         entries = {k: v for k, v in book["entries"].items() if k != d["id"]}
         if d["action"] == "accept":
             entries[d["id"]] = {"text": d["text"], "key": d["key"],
-                                **{k: d[k] for k in ("digest", "decision", "evidence") if k in d}}
+                                **{k: d[k] for k in ("digest", "decision", "evidence", "wide_digest") if k in d}}
         set_(ag["playbook"], tenant, {"version": book["version"] + 1, "entries": entries})
 
 
 def lesson(set_, ag, tenant, a, d, e, did):
     """Draft a lesson, in `ag["lessons"]`, from a person's answer `d` (record `e`) that went against the AI's on
-    approval `a`: what it holds in plain words, the precedent key and its digest, the people's decision, and the
-    evidence (the AI's answer's record id and the person's). Its id is L- and 32 hex digits of its text and evidence's
+    approval `a`: what it holds in plain words, the precedent key and its digest (and the request's wide_digest: a no
+    binds calls like it in any project), the people's decision, and the evidence (the AI's answer's record id and the
+    person's). Its id is L- and 32 hex digits of its text and evidence's
     sha256. A person accepts it into the playbook, or drops it (playbook.entry)."""
     ap, ai = a["ai"], a.get("agent_answer") or {}
     what = "; ".join(" ".join(v) for v in ap["key"]["target"].values())[:200] or f"{ap['key']['tool'][:64]} calls"
     who, when = d.get("person") or d.get("approver") or d.get("by"), e["ts"][5:10]
-    text = (f"don't approve {what} ({', '.join(ap['key']['rules'])}) without a person: {who} {did} one on {when} that "
+    text = (f"don't approve {what} ({', '.join(ap['key']['rules'])}) without a person, in any project: {who} {did} one "
+            f"on {when} that "
             f"the AI {'approved' if ai.get('mode') == 'enforce' else 'would have approved'}"
             if d["decision"] == "reject" else
             f"{who} approved {what} ({', '.join(ap['key']['rules'])}) on {when}, which the AI would have "
@@ -375,7 +377,7 @@ def lesson(set_, ag, tenant, a, d, e, did):
     lid = "L-" + hashlib.sha256(json.dumps([text, evidence]).encode("utf-8", "surrogatepass")).hexdigest()[:32]
     set_(ag.setdefault("lessons", {}), lid, {
         "tenant": tenant, "text": text, "key": ap["key"], "digest": ap["digest"], "decision": d["decision"],
-        "evidence": evidence, "approval_id": a.get("id") or d["approval_id"], "by": who, "at": epoch(e["ts"])})
+        **({"wide_digest": ap["wide_digest"]} if "wide_digest" in ap else {}), "evidence": evidence, "approval_id": a.get("id") or d["approval_id"], "by": who, "at": epoch(e["ts"])})
 
 
 def pinned(d):

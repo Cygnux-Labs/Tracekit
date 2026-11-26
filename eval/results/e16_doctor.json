@@ -44,6 +44,16 @@
         "fix": "remove the agent's uid from analyzers in signer.yaml; run tracekit analyze --v2 as an operator identity"
       }
     },
+    "the agent's user is an approver": {
+      "expect": "D-APPROVER-AGENT",
+      "flagged": true,
+      "result": {
+        "id": "D-APPROVER-AGENT",
+        "status": "fail",
+        "detail": "approvals.approvers list uid:54321, the agent's user e16-agent, whose sessions register the runs: it answers approvals as a person (the signer refuses its changes to the AI reviewer and its take-backs, as an identity an agent session ran as)",
+        "fix": "list a person's own user in approvals.approvers, another than the agent's (init's --approver), and take the agent's uid out"
+      }
+    },
     "keys readable by the agent": {
       "expect": "D-AGENT-PROBE",
       "flagged": true,
@@ -360,7 +370,7 @@
       "result": {
         "id": "D-SIGNER-UP",
         "status": "fail",
-        "detail": "the signer at <run>/run/signer.sock doesn't answer: [Errno 2] No such file or directory",
+        "detail": "the signer at <run>/run/signer.sock doesn't answer: no signer answering at <run>/run/signer.sock: [Errno 2] No such file or directory",
         "fix": "start it (Linux: sudo systemctl start tracekit-signer; macOS: sudo launchctl kickstart -k system/dev.tracekit.signer); its log says why it stopped (journalctl -u tracekit-signer; macOS: /var/lib/tracekit-signer/signer.log), often a row above"
       }
     },
