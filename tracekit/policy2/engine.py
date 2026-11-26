@@ -204,12 +204,22 @@ class Engine:
         self._parts = {}
         # the strings each rule's matches start with (compile.prefixes): a subject that starts with none is not searched
         self._pre = {r["id"]: prefixes(r["pattern"]) for _, r, *_ in self.rules}
+        def part(rule, text, more):
+            """(its compiled search, its strings, the strings its matches start with, its group's alternatives as
+            (compiled, starts) and the places of those each string prefilters, or None) for a part of a pattern."""
+            if more is None:
+                return rx({**rule, "pattern": text}, "pattern"), literals(text), prefixes(text) or "", None
+            held_by = {}
+            for place, a in enumerate(more):
+                for string in literals(a):
+                    held_by.setdefault(string, []).append(place)
+            return None, literals(text), prefixes(text) or "", (
+                [(rx({**rule, "pattern": a}, "pattern"), prefixes(a) or "") for a in more], held_by)
         if not self.engine.startswith("re2@"):
             for _, r, _, pat, *_ in self.rules:
-                parts = _alternatives(r["pattern"]) or ()
-                if parts and all(map(literals, parts)):
-                    self._parts[id(pat)] = [(rx({**r, "pattern": a}, "pattern"), literals(a), prefixes(a) or "")
-                                            for a in parts]
+                parts = _search_parts(r["pattern"])
+                if parts:
+                    self._parts[id(pat)] = [part(r, a, more) for a, more in parts]
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
         self._tracekit_gate = TracekitGate.of(self.rules)
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
@@ -224,8 +234,8 @@ class Engine:
         self.flag_ids = frozenset(r["id"] for sec, r, *_ in self.rules if sec == "flag")   # signer.service.evaluate's
         self._sections = {r["id"]: sec for sec, r, *_ in self.rules}
         self._of = {}
-        # whether a rule's tool pattern takes a tool name, by (pattern, name): RE2's matches spend no deadline (_backend)
-        self._names = {} if self.engine.startswith("re2@") else None
+        # whether a rule's tool pattern takes a tool name, by (pattern, name)
+        self._names = {}
         # an ask rule's approval.agent patterns: (rule id, argument name) -> compiled
         self._bounds = {(r["id"], name): compile_(b["pattern"]) for _, r, *_ in self.rules
                         for name, b in (r.get("approval") or {}).get("agent", {}).get("allow", {}).get("fields", {}).items()
@@ -378,10 +388,10 @@ class Engine:
         fallback engine 0.3 s on a laptop, past its 1 s on CI's macOS runners (#481)."""
         if tool_re is None:
             return True
-        if self._names is not None and (tool_re, name) in self._names:
+        if deadline[0] > 0 and (tool_re, name) in self._names:   # (a spent deadline raises in _match, as it does uncached)
             return self._names[tool_re, name]
         got = bool((lits is None or any(map(low.__contains__, lits))) and self._match(tool_re, name, True, deadline))
-        if self._names is not None and len(self._names) < 4096 and len(name) <= 256:
+        if len(self._names) < 4096 and len(name) <= 256:
             self._names[tool_re, name] = got
         return got
 
@@ -567,9 +577,9 @@ class Engine:
                 # 4 of them twins): each read once
                 folded = set() if (rule.get("class") == "a2a" or rule.get("field") == "tracekit") and \
                     "from" not in rule else None
-                if parts is not None and len(texts) > 1:   # (a part whose strings the whole text lacks reads no subject)
+                if parts is not None:   # (a part whose strings the whole text lacks reads no subject)
                     parts = [x for x in parts if any(map(joined.__contains__, x[1]))]
-                for subject, low in zip(texts, lows):
+                for subject, low in zip(texts, lows) if parts is None or parts else ():
                     if folded is not None and subject.isascii():
                         if low in folded:
                             continue
@@ -577,12 +587,13 @@ class Engine:
                     # `unless`: an exemption checked against the same subject (use it only where the subject is
                     # one target, e.g. a file path; in a whole command it could exempt a different target)
                     if (pre is None or low.startswith(pre)) and (
-                            lits is None or len(texts) == 1 or holds(lits, ids, low)) and (
+                            lits is None or parts is not None or len(texts) == 1 or (any(map(low.__contains__, lits)) if ids is None
+                                                                else holds(lits, ids, low))) and (
                             req is None or len(low) < REQUIREMENTS_FROM or
                             any(all(any(map(low.__contains__, s)) for s in alt) for alt in req)) and (
                             self._match(pat, subject, False, deadline) if parts is None else any(
-                                self._match(rx, subject, False, deadline) for rx, strings, starts in parts
-                                if low.startswith(starts) and any(map(low.__contains__, strings)))) and (
+                                self._part_hit(part, subject, low, deadline) for part in parts
+                                if low.startswith(part[2]) and any(map(low.__contains__, part[1])))) and (
                             cli is not None or not (unless is not None and self._match(unless, subject, False,
                                                                                          deadline) and (
                                 (marked := getattr(subject, "marked", None)) is None or
@@ -621,10 +632,12 @@ class Engine:
             held = False
             # (on the fallback, where a rule's strings are a scan each: on RE2 one Set lookup tells that first)
             if (m := memo.get(entry[8])) and not m[3] and entry[11] is not None and self._set is None and \
-                    not any(map(str.startswith, m[1], itertools.repeat(entry[11]))):   # no subject starts so
+                    not (m[1][0].startswith(entry[11]) if len(m[1]) == 1 else
+                         any(map(str.startswith, m[1], itertools.repeat(entry[11])))):   # no subject starts so
                 continue
             if entry[2] is None and m and not m[3] and (
-                    not m[0] or entry[5] is not None and not (held := holds(entry[5], entry[9], m[2]))):
+                    not m[0] or entry[5] is not None and not (held := any(map(m[2].__contains__, entry[5]))
+                                                              if entry[9] is None else holds(entry[5], entry[9], m[2]))):
                 continue
             fresh = entry[8] not in memo
             try:
@@ -750,6 +763,16 @@ class Engine:
             if base.get("when"):
                 out["when"] = {**base["when"], **out.get("when", {})}
         return self.condition(out, labels)
+
+    def _part_hit(self, part, subject, low, deadline):
+        """Whether a search of `subject` (`low`: its casefolded form) finds a part of a pattern searched a part at a time."""
+        compiled, _, _, group = part
+        if group is None:
+            return self._match(compiled, subject, False, deadline)
+        alternatives, held_by = group
+        return any(self._match(alternatives[place][0], subject, False, deadline) for place in sorted(
+            {place for string in held_by if string in low for place in held_by[string]})
+            if low.startswith(alternatives[place][1]))
 
     def _labelled(self, mine, deadline):
         """The rules on LABELS_FIELD whose pattern, and not their unless, matches labels subject `mine` (each subject is
@@ -1216,6 +1239,69 @@ def _alternatives(pattern):
             start = i + 1
         i += 1
     return parts + [pattern[start:]] if parts else None
+
+
+def _group_end(pattern, at):
+    """Where the group that opens at `at` in a checked pattern closes (the index of its `)`), or None."""
+    depth, cls, i = 0, None, at
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+            continue
+        if cls is not None:
+            if c == "]" and i > cls:
+                cls = None
+        elif c == "[":
+            cls = i + 1 + (pattern[i + 1:i + 2] == "^")
+            i = cls
+            continue
+        elif c in "()":
+            depth += 1 if c == "(" else -1
+            if not depth:
+                return i
+        i += 1
+    return None
+
+
+_LAZY_ANY = r"[\w\W]*?(?:"
+
+
+def _after_lazy_any(part):
+    r"""The alternatives of a group that ends a pattern after a lazy any (`^ACT:[\w\W]*?(?:a|b)` is `^ACT:[\w\W]*?a` and
+    `^ACT:[\w\W]*?b`: a search for one of them finds what a search of the whole does), or None when it has none."""
+    depth, cls, i = 0, None, 0
+    while i < len(part):
+        c = part[i]
+        if c == "\\":
+            i += 2
+            continue
+        if cls is not None:
+            if c == "]" and i > cls:
+                cls = None
+        elif c == "[":
+            if not depth and part.startswith(_LAZY_ANY, i):
+                end = _group_end(part, i + len(_LAZY_ANY) - 3)
+                inner = part[i + len(_LAZY_ANY):end] if end == len(part) - 1 else None
+                alts = _alternatives(inner) if inner else None
+                return [part[:i + len(_LAZY_ANY) - 3] + a for a in alts] if alts else None
+            cls = i + 1 + (part[i + 1:i + 2] == "^")
+            i = cls
+            continue
+        elif c in "()":
+            depth += 1 if c == "(" else -1
+        i += 1
+    return None
+
+
+def _search_parts(pattern):
+    """The parts a search of a checked pattern is made of, each with a prefilter (compile.literals): (a top-level
+    alternative, the alternatives of its group after a lazy any, or None), for two or more parts or a group; else None."""
+    parts = []
+    for a in _alternatives(pattern) or [pattern]:
+        more = _after_lazy_any(a)
+        parts.append((a, more if more and all(map(literals, more)) else None))
+    return parts if (len(parts) > 1 or parts[0][1]) and all(literals(a) for a, _ in parts) else None
 
 
 def _finer(req, lits):
@@ -6977,13 +7063,17 @@ def _prepare(subjects, tag=0):
     to k, as casefold() does and lower() doesn't); those joined by a newline; whether one was longer). A rule matches
     every subject it can read, wherever a long one is, and takes TK-OVERSIZE only when it matches none of them: a long
     word never hides a later command (`X=<17 KB>; true $X$X$X$X; sudo id`) or a later path."""
-    texts = []
+    if not subjects:
+        return [], [], "", False
+    texts, limit = [], MAX_SUBJECT + tag
     for s in subjects:
-        b = s if s.isascii() else s.encode("utf-8", "backslashreplace")   # ASCII is its own UTF-8
-        if len(b) > MAX_SUBJECT + tag:
+        if s.isascii():   # ASCII is its own UTF-8
+            if len(s) <= limit:
+                texts.append(s)
             continue
-        texts.append(s if b is s else _form(s, _text))
-    lows = [t.casefold() for t in texts]
+        if len(s.encode("utf-8", "backslashreplace")) <= limit:
+            texts.append(_form(s, _text))
+    lows = list(map(str.casefold, texts))
     return texts, lows, "\n".join(lows), len(texts) < len(subjects)
 
 
