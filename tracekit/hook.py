@@ -10,6 +10,7 @@ A policy deny always blocks, whether or not the signer is reachable.
     python -I -m tracekit.hook   (wired by `tracekit init`)
 """
 import functools
+import gc
 import getpass
 import hashlib
 import json
@@ -88,10 +89,15 @@ def transcript_entries(f, final=False):
     for line in f:
         if not line.endswith(b"\n") and not final:
             return
+        collecting = gc.isenabled()
+        gc.disable()   # a line nested to the recursion limit must not run other objects' finalisers on that full stack
         try:
             e = json.loads(line)
         except (ValueError, RecursionError):   # RecursionError: nested past what json.loads takes
             e = None
+        finally:
+            if collecting:
+                gc.enable()
         yield len(line), e if isinstance(e, dict) else None
 
 

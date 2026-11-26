@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-108'
+version: '2026.11-v2-109'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -1203,9 +1203,10 @@ ask:
     # useradd and adduser of any form; usermod with a group option (-G or -g, also in a cluster or joined to its value,
     # --groups, --gid) naming sudo, wheel or admin, or making a login root (-u 0, also with -o); gpasswd adding a
     # member or an administrator to one of those groups (-a, -M, -A); macOS's dscl creating a user record under
-    # /Users. lean: up to 16 words before the option, as the fallback engine backtracks a longer list slowly; read more
-    # if a real call has more
-    pattern: '^(?:useradd|adduser)(?: |$)|^usermod(?: [^ ]+){0,16}? (?:(?:-[a-fh-zA-FH-Z]*[Gg] ?|--(?:groups|gid)[ =])(?:[^ ]*?,)?(?:sudo|wheel|admin)(?:,| |$)|(?:-[a-tv-zA-Z]*u ?|--uid[ =])0+?(?: |$))|^gpasswd(?: [^ ]+){0,4}? (?:-[aMA]|--(?:add|members|administrators))[ =][^ ]+ (?:sudo|wheel|admin)(?: |$)|^dscl(?: [^ ]+){0,16}? -create /[Uu]sers/'
+    # /Users, sysadminctl adding or deleting a user or resetting one's password (-addUser, -deleteUser,
+    # -resetPasswordFor), and dseditgroup adding a member (-a) to admin or wheel. lean: up to 16 words before the
+    # option, as the fallback engine backtracks a longer list slowly; read more if a real call has more
+    pattern: '^(?:useradd|adduser)(?: |$)|^usermod(?: [^ ]+){0,16}? (?:(?:-[a-fh-zA-FH-Z]*[Gg] ?|--(?:groups|gid)[ =])(?:[^ ]*?,)?(?:sudo|wheel|admin)(?:,| |$)|(?:-[a-tv-zA-Z]*u ?|--uid[ =])0+?(?: |$))|^gpasswd(?: [^ ]+){0,4}? (?:-[aMA]|--(?:add|members|administrators))[ =][^ ]+ (?:sudo|wheel|admin)(?: |$)|^dscl(?: [^ ]+){0,16}? -create /[Uu]sers/|^sysadminctl(?: [^ ]+){0,16}? -(?:addUser|deleteUser|resetPasswordFor)(?: |$)|^dseditgroup(?: [^ ]+){0,16}? -a(?: [^ ]+){1,16}? (?:admin|wheel)(?: |$)'
     reason: creating a login or adding a user to an administrator group
     remedy: Have a person create the account or change its groups; the task rarely needs a login.
     rationale: A new login or sudo membership grants access that outlives the session; a person confirms it.
@@ -1225,14 +1226,20 @@ ask:
     # chmod's setuid or setgid bit in its mode after up to eight options, and install's (-m, --mode or a GNU prefix of
     # it: --m, --mo, --mod) after up to 64 words: an s that a + or = adds, in any clause of a comma list and among
     # other letters (u+s, +sx, g+s,u+x, u=rwxs, u-x+s), or a numeric mode whose setuid/setgid digit is set (4 digits
-    # starting with 2 to 7, also with leading zeros, + or =: 4755, 04755, =2755); and setcap granting cap_setuid,
-    # cap_setgid or cap_sys_admin (by name in any case, or by number as libcap's strtoul(…, 0) reads it: 7, 6 and 21 in
-    # decimal, octal or hex, 07, 006, 025, 0x7, 0X15), or every capability (`all`, or an
+    # starting with 2 to 7, also with leading zeros, + or =: 4755, 04755, =2755); and setcap granting a capability that
+    # is root's power by another road: cap_setuid and cap_setgid (become any user or group), cap_sys_admin (mount,
+    # namespaces and most of root's other work), cap_dac_override and cap_dac_read_search (write or read any file,
+    # /etc/shadow included), cap_fowner (chmod or chattr any file) and cap_chown (take any file over), cap_sys_ptrace
+    # (inject code into any process) and cap_sys_module (load a kernel module), by name in any case, or by number as
+    # libcap's strtoul(…, 0) reads it (7, 6, 21, 1, 2, 3, 0, 19 and 16 in decimal, octal or hex: 07, 025, 0x15, 023,
+    # 0x13, 020, 0x10), or every capability (`all`, or an
     # empty list before =: =ep), after up to sixteen words: a list of up to 64 names holding one of them, then
-    # operators each with its flags, one a + or = that adds e, i or p (+ep, =eip, =+ep, -e+p). Removing it (chmod u-s,
+    # operators each with its flags, one a + or = that adds e, i or p (+ep, =eip, =+ep, -e+p); also what `setcap -`
+    # reads on its stdin, as its own words (shell._home_readings: piped input the line doesn't give exactly, and a
+    # heredoc or herestring holding a variable or a substitution, read as all+ep). Removing it (chmod u-s,
     # install -m u-s, setcap -r, cap_setuid-ep, cap_setuid=), the sticky bit alone (1777) and setcap -v (verify only)
     # stay unheld. lean: the word and list bounds keep the fallback engine linear
-    pattern: '^(?:chmod(?: -[^ ]+){0,8}? (?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|install(?: [^ ]+){0,64}? (?:-[a-zA-Z]*m ?|--m(?:o(?:de?)?)?[ =])(?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|setcap(?: [^ ]+){0,16}? (?:(?:[A-Za-z0-9_]+,){0,64}?(?:[Cc][Aa][Pp]_(?:[Ss][Ee][Tt][Uu][Ii][Dd]|[Ss][Ee][Tt][Gg][Ii][Dd]|[Ss][Yy][Ss]_[Aa][Dd][Mm][Ii][Nn])|[Aa][Ll][Ll]|0*[67]|21|0+25|0[Xx]0*(?:[67]|15))(?:,[A-Za-z0-9_]+){0,64})?(?:[-+=][EeIiPp]*){0,8}?[+=][EeIiPp])'
+    pattern: '^(?:chmod(?: -[^ ]+){0,8}? (?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|install(?: [^ ]+){0,64}? (?:-[a-zA-Z]*m ?|--m(?:o(?:de?)?)?[ =])(?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|setcap(?: [^ ]+){0,16}? (?:(?:[A-Za-z0-9_]+,){0,64}?(?:[Cc][Aa][Pp]_(?:[Ss][Ee][Tt][Uu][Ii][Dd]|[Ss][Ee][Tt][Gg][Ii][Dd]|[Ss][Yy][Ss]_(?:[Aa][Dd][Mm][Ii][Nn]|[Pp][Tt][Rr][Aa][Cc][Ee]|[Mm][Oo][Dd][Uu][Ll][Ee])|[Dd][Aa][Cc]_(?:[Oo][Vv][Ee][Rr][Rr][Ii][Dd][Ee]|[Rr][Ee][Aa][Dd]_[Ss][Ee][Aa][Rr][Cc][Hh])|[Ff][Oo][Ww][Nn][Ee][Rr]|[Cc][Hh][Oo][Ww][Nn])|[Aa][Ll][Ll]|0*[0-367]|1[69]|21|0+2[035]|0[Xx]0*(?:[0-367]|1[035]))(?:,[A-Za-z0-9_]+){0,64})?(?:[-+=][EeIiPp]*){0,8}?[+=][EeIiPp])'
     unless: '^setcap(?: -(?:q|n [^ ]+)){0,4} -(?:q?v|vq)(?: |$)'
     reason: setting the setuid or setgid bit or privileged file capabilities
     remedy: Have a person set the bit or capabilities; a program that runs with elevated privileges needs a person's review.
