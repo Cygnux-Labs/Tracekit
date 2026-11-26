@@ -68,7 +68,10 @@ With none of them installed it warns and records nothing: record your agent's ca
 Each tool call is decided before it runs (`allow`, `deny` or `ask`) and recorded after. A denied call reaches the model
 as a refusal and the agent goes on. A held call (`ask`) waits for a person: run `tracekit approvals list` in another
 terminal to see it, and `tracekit approvals approve <id>` to let it run once ([approve from another
-terminal](#approve-from-another-terminal)). While it waits, an SDK agent prints nothing: it just seems to stop.
+terminal](#approve-from-another-terminal)). While it waits, most SDK agents print nothing: they just seem to stop. The
+OpenAI Agents SDK doesn't wait: `Runner.run_sync` returns at once with `final_output` None and `result.interruptions`, and
+at exit the process prints each held approval's id with its approve and reject commands. Resume it once a person has
+decided: [the OpenAI Agents quickstart](quickstarts/openai-agents.md#resume-a-held-call-under-instrument).
 
 Claude Code: `tracekit init --dev --v2` instead ([the Claude Code quickstart](quickstarts/claude-code.md)).
 TypeScript: `const tk = await instrument()` from `@cygnuxlabs/tracekit`, then pass `tk.ai` (Vercel AI SDK) or

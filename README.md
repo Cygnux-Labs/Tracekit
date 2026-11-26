@@ -49,7 +49,7 @@ Tracekit sits in the tool-call path, the way a flight recorder sits in a plane:
 |---|---|
 | **Stop** | Checks every tool call *before it runs*: allow, deny, or hold it for a person. An approval covers exactly the arguments that were approved, once. |
 | **Record** | Signs every call, decision and result into a hash chain held by a signer the agent can't reach. A lost event becomes a signed gap, never silence. |
-| **Prove** | Exports each run as one `.tkb` file. Anyone can verify it offline, even in a browser, and see `VERIFIED`, or `FAILED` with the record that was changed. |
+| **Prove** | Exports each run as one `.tkb` file. Anyone can verify it offline, even in a browser, and see `VERIFIED`, or `TAMPERED at event N` naming the record that was changed. |
 
 Here is one run, recorded both ways. A support ticket hides an instruction; the agent deletes 43 orders, then rewrites
 its own log and Tracekit's record so the delete reads as a lookup:

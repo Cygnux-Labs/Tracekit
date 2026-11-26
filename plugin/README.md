@@ -23,6 +23,11 @@ tracekit init --dev --v2 --no-hooks   # same-user dev signer (starts on the firs
 sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks
 ```
 
+In dev mode the hook runs in the first of `TRACEKIT_PYTHON`, `python3` and `python` that has tracekit. With
+Tracekit in a venv (or a `uv tool` or pipx install) that Python isn't on `PATH`: set `TRACEKIT_PYTHON` to the
+venv's Python (`export` it, or put it under `env` in `~/.claude/settings.json`) before `tracekit init --dev --v2`.
+Until one has it, init exits 1 and `tracekit doctor` fails `D-HOOKS-PYTHON`, since the hook blocks every tool call.
+
 System mode runs init from a root-owned clone of the release, which
 [laptop system mode](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy#laptop-system-mode) sets up.
 

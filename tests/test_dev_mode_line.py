@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -60,11 +61,48 @@ class DevModeLine(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(out.count(LINE), 1)
 
+    def test_init_dev_v2_with_the_plugin_and_no_python_the_hook_finds_exits_non_zero(self):
+        """With Tracekit in a venv the plugin's hook finds no Python and blocks every call, while init said nothing
+        and exited 0."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        err = io.StringIO()
+        with mock.patch.object(cli, "_signer_extra", return_value=True), \
+                mock.patch.object(install, "plugin_enabled", return_value=("settings.json", "tracekit@x")), \
+                mock.patch.object(install, "plugin_hook_python", return_value=None), \
+                mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d, "LOCALAPPDATA": d,
+                                             "TRACEKIT_CLIENT_HOME": os.path.join(d, "client")}), \
+                contextlib.redirect_stderr(err):
+            code, _ = run(["init", "--dev", "--v2", "--no-thinking-summaries"])
+        self.assertEqual(code, 1)
+        self.assertIn("TRACEKIT_PYTHON=", err.getvalue())
+
+    def test_doctor_fails_when_the_plugin_is_on_and_its_hook_finds_no_python(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for python, want in ((None, "fail"), ("/usr/bin/python3", None)):
+            with self.subTest(python=python), mock.patch.object(install, "plugin_enabled",
+                                                              return_value=("settings.json", "tracekit@x")), \
+                    mock.patch.object(install, "plugin_hook_python", return_value=python), \
+                    mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d,
+                                                 "LOCALAPPDATA": d, "TRACEKIT_CLIENT_HOME": os.path.join(d, "client")}):
+                got = {r["id"]: r for r in doctor.collect()}
+                self.assertEqual(got.get("D-HOOKS-PYTHON", {}).get("status"), want)
+                if want:
+                    self.assertIn("TRACEKIT_PYTHON=", got["D-HOOKS-PYTHON"]["fix"])
+
+    def test_the_hook_python_is_the_first_that_imports_tracekit(self):
+        with mock.patch.dict(os.environ, {"TRACEKIT_PYTHON": sys.executable}):
+            self.assertEqual(install.plugin_hook_python(), shutil.which(sys.executable))
+        with mock.patch.dict(os.environ, {"TRACEKIT_PYTHON": "", "PATH": tempfile.gettempdir()}):
+            self.assertIsNone(install.plugin_hook_python())
+
     def test_init_dev_v2_with_the_plugin_enabled_says_it_too(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         with mock.patch.object(cli, "_signer_extra", return_value=True), \
                 mock.patch.object(install, "plugin_enabled", return_value=("settings.json", "tracekit@x")), \
+                mock.patch.object(install, "plugin_hook_python", return_value="/usr/bin/python3"), \
                 mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d, "LOCALAPPDATA": d,
                                              "TRACEKIT_CLIENT_HOME": os.path.join(d, "client")}):
             code, out = run(["init", "--dev", "--v2", "--no-thinking-summaries"])

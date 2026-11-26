@@ -67,11 +67,36 @@ not new `deny`, `ask` or `flag` rules.
 - **Coding agents on laptops:** system mode takes the file at install, root-owned so the agent can't change it:
   `sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user <agent user> --approver <admin> --policy
   /etc/tracekit/policy.yaml` ([deploy](deploy.md)).
-- **To try it on your machine:** `tracekit signer serve --config signer.yaml` with `policy:` set, then point a client
-  or a hook at it with `TRACEKIT_SIGNER` (its socket path or URL). The dev signer that `tracekit up` starts always runs
-  the built-in dev pack.
+- **To try it on your machine:** run a signer of your own, as the next section shows. The dev signer that
+  `tracekit up` or an SDK agent starts always runs the built-in dev pack.
 
 Restart the signer to load a change.
+
+### Run your own policy on your machine
+
+The dev signer is the dev pack (`dev.yaml`: the coding, browser, data, network, cloud, comms and core packs, two demo
+rules, unmapped tools flagged), and `TRACEKIT_POLICY` isn't read by it: that variable is the v1 engine's. To run your
+own policy, start a signer from a `signer.yaml` that names it (paths are relative to the file):
+
+```yaml
+data_dir: data
+socket: /tmp/tracekit-signer.sock
+policy: policy.yaml
+content: {retain: true}            # keep redacted content, so `tracekit view` and `tracekit why` can show it
+approvals: {self_approval: allow}  # you answer your own agent's holds; the run's assurance stays dev
+```
+
+```sh
+tracekit signer serve --config signer.yaml        # leave it running
+export TRACEKIT_SIGNER=/tmp/tracekit-signer.sock  # in the shell that runs your agent: the SDK uses this signer
+tracekit approvals show ID --config signer.yaml   # why a call was held, from your policy
+tracekit approvals approve ID
+tracekit last --config signer.yaml                # export and verify the most recent finished run
+```
+
+A configured signer refuses the user that runs the agent as the approver of its own holds unless `approvals:` says
+`self_approval: allow` (or lists another identity under `approvers`). With `TRACEKIT_SIGNER` set, `tracekit last`
+without `--config` reads the dev signer's store and says so.
 
 ## 6. See it work
 

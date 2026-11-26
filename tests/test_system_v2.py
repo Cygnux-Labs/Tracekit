@@ -54,6 +54,35 @@ class SignerConfig(unittest.TestCase):
             "content": {"keep": True}, "witnesses": [{"url": "https://w2.example", "class": "operator"}],
             "metrics": {"listen": "127.0.0.1:9464", "note": 'rack 12" A, row 3'}, "contact": "2026-01-01"})
 
+    def test_a_rerun_keeps_the_entries_init_does_not_write_in_its_own_sections(self):
+        """A re-run dropped `approvals.agents`, `approvals.persons`, extra tenants and extra authorize entries without
+        saying so. Init's own entries win; the operator's others stay, and the run names them."""
+        old = install.v2_signer_yaml(AGENT, 501, "/old/policy.yaml", "/run/s.sock", 64102)
+        old = old.replace('approvals:\n', 'approvals:\n  agents: [{"name": "bot", "uid": "uid:700"}]\n'
+                          '  persons: {"ana": "uid:800"}\n', 1)
+        old = old.replace('tenants:\n', 'tenants:\n  "uid:1234": "other"\n', 1)
+        old = old.replace('authorize:\n', 'authorize:\n  "uid:555": [status]\n', 1)
+        old = old.replace('"uid:64102": [', '"uid:64102": [extra_method, ', 1)
+        config = install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock", 64102)
+        text, names = install.merge_shared_keys(config, old)
+        cfg = install.yamlmini.loads(text)
+        self.assertEqual(cfg["approvals"], {"self_approval": "deny", "approvers": ["uid:501"],
+                                            "agents": [{"name": "bot", "uid": "uid:700"}],
+                                            "persons": {"ana": "uid:800"}})
+        self.assertEqual(cfg["tenants"], {"uid:64101": "agent", "uid:501": "agent", "uid:1234": "other"})
+        self.assertEqual(cfg["authorize"]["uid:555"], ["status"])
+        self.assertIn("extra_method", cfg["authorize"]["uid:64102"])
+        self.assertEqual(cfg["authorize"]["uid:64102"][:5], install.TAILER_METHODS[:5])
+        self.assertEqual(cfg["policy"], POLICY)
+        self.assertEqual(sorted(names), ["approvals.agents", "approvals.persons", "authorize.uid:555",
+                                         "authorize.uid:64102", "tenants.uid:1234"])
+        self.assertEqual(install.merge_shared_keys(config, install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock",
+                                                                                  64102)), (config, []))
+
+    def test_a_shared_section_that_is_not_a_mapping_is_refused(self):
+        with self.assertRaises(ValueError):
+            install.hand_keys('data_dir: "/x"\ntenants: [a, b]\n')
+
     def test_init_own_witness_line_is_not_kept(self):
         """A comment after it doesn't make it a hand list either."""
         old = (install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock", 64102, public_witness=True)
@@ -1116,6 +1145,7 @@ class CliProject(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
                                           "LOCALAPPDATA": os.path.join(home, "data")}), \
                 mock.patch.object(client, "system_config", return_value=None), \
+                mock.patch.object(install, "plugin_hook_python", return_value="/usr/bin/python3"), \
                 contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-witness", "--project", repo]), 0)
         self.assertIn(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {settings}", out.getvalue())
@@ -1196,3 +1226,20 @@ class CliManaged(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InitNeedsNoThirdPartyImports(unittest.TestCase):
+    def test_hand_keys_runs_without_rfc8785_and_cryptography(self):
+        """The clone route runs init on a system Python with no dependencies: a re-init read CONFIG_KEYS from
+        signer.service, which imports both, and crashed once signer.yaml existed."""
+        code = ("import sys\n"
+                "class Block:\n"
+                "    def find_spec(self, name, path=None, target=None):\n"
+                "        if name.split('.')[0] in ('rfc8785', 'cryptography'):\n"
+                "            raise ModuleNotFoundError(name)\n"
+                "sys.meta_path.insert(0, Block())\n"
+                "from tracekit import install\n"
+                "print(install.hand_keys('data_dir: \"/x\"\\ncontent: {\"retain\": true}\\n')[1])\n")
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "['content']"), r.stderr)
