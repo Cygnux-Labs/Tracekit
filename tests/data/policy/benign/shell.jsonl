@@ -412,3 +412,7 @@
 {"tool": "Bash", "args": {"command": "gh extension list"}, "expect": "allow", "note": "listing extensions runs none of them (TK-A084 twin)"}
 {"tool": "Bash", "args": {"command": "gh pr list"}, "expect": "allow", "note": "a command of gh's own is no alias or extension (TK-A084 twin)"}
 {"tool": "Bash", "args": {"command": "gh repo view"}, "expect": "allow", "note": "reading a repository runs no alias's words (TK-A084 twin)"}
+{"tool": "Bash", "args": {"command": "tracekit tips"}, "expect": "allow", "note": "reading lessons is the agent's own work (TK-D012 twin)"}
+{"tool": "Bash", "args": {"command": "tracekit tips --for-agent"}, "expect": "allow", "note": "the agent's own lesson block answers nothing (TK-D012 twin)"}
+{"tool": "Bash", "args": {"command": "tracekit approvals list"}, "expect": "allow", "note": "listing approvals answers none of them (TK-D012 twin)"}
+{"tool": "Bash", "args": {"command": "tracekit tips --help"}, "expect": "allow", "note": "help answers nothing (TK-D012 twin)"}
