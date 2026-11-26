@@ -1015,6 +1015,12 @@ def precedent_key(tool, target, project):
     return key, "sha256:" + hashlib.sha256(canonical(key)).hexdigest()
 
 
+def binds(entry):
+    """Whether playbook entry `entry` binds the AI reviewer (SignerService._bound_by_lesson): people said no to calls
+    like it, so the signer holds them for a person. Else it is advice the reviewer reads."""
+    return entry.get("decision") == "reject"
+
+
 def _playbook_ref(book):
     """{version, digest} of a tenant's playbook in force (pipeline.approver_state; None: none yet): the digest is over
     its entries, [{id, text}] by id."""
@@ -2395,6 +2401,7 @@ class SignerService:
     def _agent_refusal(self, a):
         """Why an agent's answer to approval `a` is refused now (people answer it), or None."""
         return ("agent approvals are switched off: people answer it" if self.log.agent["off"] else
+                lesson if (lesson := a.get("ai") and self._bound_by_lesson(a["run_key"][0], a["ai"]["digest"])) else
                 "it was escalated: people answer it now" if a["escalated"] else
                 "the policy changed since it was requested: people answer it"
                 if a["policy_hash"] != self.policy.policy_hash else
@@ -2404,6 +2411,15 @@ class SignerService:
                 "person decides" if a.get("ai") and (unclean := self._unclean(self.log.runs[a["run_key"]],
                                                                               a["requester"])) else
                 self._switched_off(a))
+
+    def _bound_by_lesson(self, tenant, digest):
+        """Why an accepted lesson keeps the AI reviewer from a call of `tenant` with precedent key `digest`, or None: a
+        playbook entry in force with that key that says people said no to calls like it (a lesson "don't approve …
+        without a person", or an entry "rejected N of N") binds, so the signer holds the call for a person and no model
+        is asked. An entry that says people approved is advice the reviewer reads: it never widens a bound."""
+        entries = (self.log.agent["playbook"].get(tenant) or {"entries": {}})["entries"]
+        lid = next((k for k, v in sorted(entries.items()) if binds(v) and v.get("digest") == digest), None)
+        return lid and f"an accepted lesson {lid} says a person decides calls like this"
 
     def _switched_off(self, a):
         """Why a person's switch (approver.switched in its tenant) keeps the AI reviewer from approval `a`, or None:
@@ -2686,7 +2702,7 @@ class SignerService:
                **({"asserted": ["project"]} if project else {})}
         why = (f"{self._unclean_words(run, requester, unclean)}: a person decides" if unclean else
                "an argument came from untrusted content (a web page, an email or a download): a person decides"
-               if untrusted else
+               if untrusted else lesson if (lesson := self._bound_by_lesson(run["tenant"], digest)) else
                "no person has approved a call like this one yet (the same rules, tool, target and project, in a "
                "clean session): a person decides" if not (prec["approve"] or prec["reject"]) else
                "people have answered calls like this one both ways: a person decides" if prec["approve"] and prec["reject"]
@@ -4640,17 +4656,18 @@ class SignerService:
                 sw = ag.get("switch", {}).get(tenant)
                 pairs = {k.split("\0", 1)[1]: v for k, v in ag["pairs"].items() if k.startswith(tenant + "\0")}
                 return {"switch": sw and {**sw, "at": _iso(sw["at"])}, "rules": aa["rules"], "mode": aa["mode"],
+                        "clean": aa["run"]["clean"],
                         "agreement": [{"rule": r, "agreed": sum(v), "of": len(v), "recent": {
                             "agreed": sum(v[-AGREEMENT_MIN:]), "of": len(v[-AGREEMENT_MIN:])}}
                             for r, v in sorted(pairs.items())],
                         "demoted": [{"rule": k.split("\0", 1)[1], "reason": v} for k, v in
                                     sorted(self.log.agent["demoted"].items()) if k.startswith(tenant + "\0")],
                         "playbook": {**_playbook_ref(book), "entries": [
-                            {"id": k, "text": v["text"], **({"contradicted": v["contradicted"]} if "contradicted" in v
-                                                            else {})}
+                            {"id": k, "text": v["text"], "binds": binds(v),
+                             **({"contradicted": v["contradicted"]} if "contradicted" in v else {})}
                             for k, v in sorted((book or {"entries": {}})["entries"].items())]},
-                        "proposals": [{"id": k, "text": v["text"], **({"evidence": v["evidence"]} if "evidence" in v
-                                                                       else {})}
+                        "proposals": [{"id": k, "text": v["text"], "binds": binds(v),
+                                       **({"evidence": v["evidence"]} if "evidence" in v else {})}
                                       for k, v in self._proposals(tenant).items()]}
             return self.log.write(status)
         self.quotas.take_event(identity)
@@ -4706,7 +4723,12 @@ class SignerService:
                 typ, data = "approver.enabled", {"rules": req["rules"]}
             seq = tx.emit(self.log.signer_run(tx, tenant), typ, {**data, "by": by, **reason}, source="signer",
                           request_id=req["request_id"])
-            return {"action": action, "run_seq": seq, **({"revoked": revoked} if revoked else {})}
+            if action == "accept" and binds(data):   # calls like it go to people from now: those waiting, and the
+                # AI's approvals of them not yet used
+                revoked = self._agents_off(tx, self._bound_by_lesson(tenant, data["digest"]), lambda a: bool(
+                    a.get("ai")) and a["run_key"][0] == tenant and a["ai"]["digest"] == data["digest"])
+            return {"action": action, "run_seq": seq, **({"revoked": revoked} if revoked else {}),
+                    **({"binds": binds(data)} if action == "accept" else {})}
         out = self.log.submit(identity, "approver", req, fn)
         for aid in out.get("revoked", ()):
             self._drop_args(aid)
@@ -4880,7 +4902,8 @@ class SignerService:
                     f"{self._unclean_words(run, a['requester'], u)} since it was approved"
                     if (u := self._unclean(run, a["requester"])) else
                     "the policy has no AI approver now" if "approval_agent" not in self.policy.policy else
-                    None) or self._switched_off(a) or ("a person rejected a call like this one" if (p := self._precedents(
+                    None) or self._switched_off(a) or self._bound_by_lesson(run["tenant"], a["ai"]["digest"]) or (
+                    "a person rejected a call like this one" if (p := self._precedents(
                         run["tenant"], a["requester"], a["ai"]["digest"]))["reject"] else
                     "the person's approval it matched no longer counts" if not p["approve"] else None)):
                 # the circuit breaker tripped, the run took a label of the bound, or the precedents changed, since the

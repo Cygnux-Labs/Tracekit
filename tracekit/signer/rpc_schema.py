@@ -630,22 +630,26 @@ RESPONSES = {
     # status: {demoted, playbook, proposals}; a change: the action and the run_seq of its record
     # status: a person's switch (null: the policy and signer.yaml decide alone), the rules and mode the policy gives
     # the AI reviewer, how often people agreed with it per rule (all of the circuit breaker's last pairs, and the most
-    # recent ones), the rules the breaker dropped, the playbook, the proposals; a change: its record, and what an `off`
-    # withdrew
-    "approver": {"oneOf": [_obj(["switch", "rules", "mode", "agreement", "demoted", "playbook", "proposals"],
+    # recent ones), the rules the breaker dropped, the playbook and the proposals (each entry with `binds`: people said
+    # no to calls like it, so the signer holds them for a person; else it is advice the reviewer reads), the run labels
+    # that send a session's calls to people (`clean`); a change: its record, what an `off` or an accept that binds
+    # withdrew, and whether an accepted entry binds
+    "approver": {"oneOf": [_obj(["switch", "rules", "mode", "agreement", "demoted", "playbook", "proposals", "clean"],
                                 switch={"oneOf": [{"type": "null"}, _obj(
                                     ["on", "by", "at"], on={"type": "boolean"}, by=_str(256), at=_str(40),
                                     person=_str(256),
                                     rules={"type": "array", "maxItems": 32, "items": _str(64)}, reason=REASON)]},
                                 rules={"type": "array", "maxItems": 32, "items": _str(64)},
                                 mode={"enum": ["shadow", "enforce"]},
+                                clean={"type": "array", "maxItems": 8, "items": _str(64)},
                                 agreement={"type": "array", "maxItems": 32, "items": _obj(
                                     ["rule", "agreed", "of", "recent"], rule=_str(64), agreed=SEQ, of=SEQ,
                                     recent=_obj(["agreed", "of"], agreed=SEQ, of=SEQ))},
                                 demoted={"type": "array"}, playbook={"type": "object"}, proposals={"type": "array"}),
                            _obj(["action", "run_seq"], action={"enum": ["on", "off", "accept", "retire", "drop",
                                                                         "revoke", "enable"]},
-                                run_seq=SEQ, revoked={"type": "array", "maxItems": 100000, "items": ID})]},
+                                run_seq=SEQ, revoked={"type": "array", "maxItems": 100000, "items": ID},
+                                binds={"type": "boolean"})]},
     # open: a gateway's close_run, which ends its stream only
     "close_run": _obj(["run_id", "state", "run_seq"], run_id=ID, state={"enum": ["closing", "open"]}, run_seq=SEQ),
     "delegate_run": _obj(["run_token"], run_token=TOKEN),

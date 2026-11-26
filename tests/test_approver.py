@@ -981,30 +981,59 @@ class TestBreaker(Case):
         self.assertEqual((sug["relied_on"]["mode"], sug["relied_on"]["demoted"][:5]), ("shadow", "alice"))
         self.assertEqual([e["data"]["rules"] for e in es if e["type"] == "approver.enabled"], [["TK-A025"]])
 
-    def test_another_model_prompt_or_playbook_answers_in_shadow_until_a_person_enables_it(self):
+    def test_another_model_or_prompt_answers_in_shadow_until_a_person_enables_it(self):
         self.precedent()
         aid, _ = self.ask()
-        self.assertEqual(self.ai(aid)["state"], "approved")   # pins m-a, version 1, no prompt, playbook v0
+        self.assertEqual(self.ai(aid)["state"], "approved")   # pins m-a, version 1, no prompt
         for asserted in ({"model": "m-z", "version": "1"}, {"model": "m-a", "version": "2"},
                          {"model": "m-a", "version": "1", "prompt_hash": "sha256:" + "e" * 64}):
             with self.subTest(asserted):
                 aid, _ = self.ask()
                 out = self.ai(aid, asserted=asserted)
                 self.assertEqual((out["state"], out.get("suggested")), ("requested", True))
-                self.assertIn("model, its identity, version, prompt or playbook changed",
+                self.assertIn("model, its identity, version or prompt changed",
                               self.s.log.agent["demoted"]["default\0TK-A025"])
                 self.s.call(ALICE, "approver", {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]})
                 aid, _ = self.ask()
                 self.assertEqual(self.ai(aid, asserted=asserted)["state"], "approved")   # the new one, enabled
-                self.ai_pin = asserted
-        for _ in range(svc.PLAYBOOK_MIN - 1):
-            self.precedent()
-        prop = self.s.call(ALICE, "approver", {"action": "status"})["proposals"][0]
-        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "accept", "id": prop["id"]})
         aid, _ = self.ask()
-        self.assertTrue(self.ai(aid, asserted=self.ai_pin).get("suggested"))   # a new playbook: shadow first
+        self.assertTrue(self.ai(aid).get("suggested"))   # back to the first: a change again
         self.restart()   # the pins and what they dropped come back from the records
         self.assertIn("default\0TK-A025", self.s.log.agent["demoted"])
+
+    def test_a_persons_playbook_change_keeps_the_rule_answering(self):
+        """Accepting or retiring a lesson is a person's own signed decision, not a change no one chose: the next AI
+        answer still decides, and the agreement people measured stays (the acceptance test's accept, then a silent
+        drop to shadow, then `enable` resetting agreement to none)."""
+        self.s.close()
+        self.policy = {"mode": "shadow"}
+        self.s = self.open()
+        self.run, self.seq = self.register()
+        self.precedent()
+        for decision in ("approve", "approve", "reject"):   # two agreements, one disagreement: a lesson
+            aid, _ = self.ask(run=self.register())
+            self.ai(aid)
+            self.person(aid, decision)
+        [lesson] = [x for x in self.s.call(ALICE, "approver", {"action": "status"})["proposals"]
+                    if x["id"].startswith("L-")]
+        before = self.s.call(ALICE, "approver", {"action": "status"})["agreement"]
+        self.s.close()
+        self.policy = {}
+        self.s = self.open()
+        self.run, self.seq = self.register()
+        self.precedent(HELD)   # people answered the install both ways in the shadow week: another call to answer
+        aid, _ = self.ask(HELD, run=self.register())
+        self.assertEqual(self.ai(aid)["state"], "approved")   # pinned, playbook v0
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "accept", "id": lesson["id"]})
+        aid, _ = self.ask(HELD, run=self.register())
+        self.assertEqual(self.ai(aid)["state"], "approved")   # playbook v1: still decides
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "retire", "id": lesson["id"]})
+        aid, _ = self.ask(HELD, run=self.register())
+        self.assertEqual(self.ai(aid)["state"], "approved")   # v2 too
+        st = self.s.call(ALICE, "approver", {"action": "status"})
+        self.assertEqual((st["demoted"], st["agreement"]), ([], before))
+        self.restart()   # and from the records
+        self.assertEqual(self.s.log.agent["demoted"], {})
 
     def test_a_model_recreated_under_its_name_answers_in_shadow_until_a_person_enables_it(self):
         """The pin holds each model's identity as its server gave it (an Ollama model's /api/show digest): the agent's
@@ -1142,6 +1171,71 @@ class TestLessons(Case):
         self.assertEqual(self.lessons(), [])
         [entry] = [e["data"] for e in self.events() if e["type"] == "playbook.entry"]
         self.assertEqual((entry["action"], entry["decision"], entry["evidence"]), ("accept", "reject", [said, no]))
+
+    def test_an_accepted_no_binds_whatever_the_model_says(self):
+        """The acceptance story: a person takes back an AI yes, accepts the lesson it drafts ("don't approve … without
+        a person") and enables the rule again. The same call then goes to a person, the model is never asked (one that
+        approves anything), and the approval says why; what waited for the AI, or its yes not yet used, goes to people
+        when the lesson is accepted. An entry people approved stays advice: the AI still answers."""
+        self.precedent()
+        took, _ = self.ask()
+        self.ai(took)
+        self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": took, "reason": "staging db"})
+        [lesson] = self.lessons()
+        self.assertTrue(lesson["binds"])
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]})
+        waiting, _ = self.ask()   # asked before the accept: the AI may answer it now
+        unused, _ = self.ask()
+        self.ai(unused)   # an AI yes not yet used
+        out = self.s.call(ALICE, "approver", {"request_id": rid(), "action": "accept", "id": lesson["id"]})
+        self.assertEqual((out["binds"], out["revoked"]), (True, [unused]))
+        why = f"an accepted lesson {lesson['id']} says a person decides calls like this"
+        self.assertEqual((self.s.log.approvals[unused]["state"], self.s.log.approvals[waiting]["escalation"]),
+                         ("rejected", {"by": "signer", "reason": why}))
+        aid, a = self.ask()
+        self.assertEqual((a["agent"]["eligible"], a["agent"]["reason"]), (False, why))   # in its signed request
+        self.assertEqual(self.get_ai(aid), (None, why))
+        model = FakeModel(said("approve"))
+        rv = reviewer.Reviewer([("", As(self, REVIEWER))], model, ["m-a", "m-b"])
+        rv.poll()
+        self.assertEqual((model.calls, self.s.log.approvals[aid]["state"]), ([], "requested"))   # no model asked
+        self.refused("unknown_approval", REVIEWER, "approval_review", {"approval_id": aid})
+        for x in (waiting, aid):
+            self.assertEqual(self.get_ai(x), (None, why))
+        cli = mock.patch("tracekit.sdk.client.Client", lambda signer=None: As(self, ALICE))
+        with cli, contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(reviewer.main(["lessons"]), 0)
+        self.assertIn(f"  {lesson['id']}  don't approve pip --index-url https://pypi.internal/… (TK-A025) without a "
+                      "person: alice took back one on ", out.getvalue())
+        self.assertIn("\n      binds: the signer holds calls like it for a person and asks no model\n", out.getvalue())
+        self.restart()   # from the records
+        self.run, self.seq = self.register()
+        _, a = self.ask()
+        self.assertEqual(a["agent"]["reason"], why)
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "retire", "id": lesson["id"]})
+        aid, a = self.ask()   # retired: the AI answers it again
+        self.assertTrue(a["agent"]["eligible"], a["agent"])
+        self.assertEqual(self.ai(aid)["state"], "approved")
+        es = self.events()
+        [esc] = [e["data"] for e in es if e["type"] == "approval.escalated" and e["data"]["approval_id"] == waiting]
+        self.assertEqual(esc["reason"], why)
+
+    def test_an_accepted_yes_is_advice(self):
+        for _ in range(svc.PLAYBOOK_MIN):
+            self.precedent()
+        [prop] = self.s.call(ALICE, "approver", {"action": "status"})["proposals"]
+        self.assertFalse(prop["binds"])
+        cli = mock.patch("tracekit.sdk.client.Client", lambda signer=None: As(self, ALICE))
+        with cli, contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(reviewer.main(["accept", prop["id"]]), 0)
+        self.assertIn(f"{prop['id']} is advice: the AI reviewer reads it; it never widens a bound", out.getvalue())
+        aid, a = self.ask()
+        self.assertTrue(a["agent"]["eligible"], a["agent"])
+        self.assertEqual(self.ai(aid)["state"], "approved")
+
+    def get_ai(self, aid):
+        ai = self.s.call(ALICE, "approval_get", {"approval_id": aid})["ai"]
+        return ai["mode"], ai["reason"]
 
     def test_taking_back_an_ai_yes_drafts_one_and_a_person_drops_it(self):
         self.precedent()

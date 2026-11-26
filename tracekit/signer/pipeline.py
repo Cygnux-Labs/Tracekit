@@ -77,7 +77,7 @@ RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a 
 # AI suggestions with people's answers, over the last AGREEMENT_PAIRS, read once there are AGREEMENT_MIN
 PRECEDENT_S = 30 * 86400
 AGREEMENT_PAIRS, AGREEMENT_MIN, AGREEMENT_BAR = 20, 10, 0.9
-CHANGED = "the reviewer's model, its identity, version, prompt or playbook changed since its last answer"   # repinned
+CHANGED = "the reviewer's model, its identity, version or prompt changed since its last answer"   # repinned
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
 
 
@@ -244,8 +244,9 @@ def approver_state(set_, log, run, e, a, pop):
     `tried` (labels.tried_state: the labels calls that didn't run set for the run bound alone). A precedent goes bad
     when a person revokes it (precedent.revoked), an incident opens in its run, or a why finding is written about its
     run; a rule is demoted when a person revokes an AI approval of it, a precedent of it goes bad, agreement falls under
-    AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an answer comes from another model, identity, version, prompt or
-    playbook than its pin; a person's approver.enabled restores it (the pin stays the answer's that changed it)."""
+    AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an answer comes from another model, identity, version or prompt
+    than its pin (a person's playbook change is no such change); a person's approver.enabled restores it (the pin stays
+    the answer's that changed it)."""
     typ, d, ag, tenant = e["type"], e["data"], log.agent, e["tenant"]
 
     def demote(rules, why):
@@ -370,14 +371,17 @@ def pinned(d):
 
 
 def repinned(old, new):
-    """(the pin after answer pin `new`, whether it changed pin `old`): another model, version, prompt or playbook, or
-    another identity of a model both name. A model the answer didn't ask (a no needs one answer) keeps its identity."""
+    """(the pin after answer pin `new`, whether it changed pin `old`): another model, version or prompt, or another
+    identity of a model both name: a change no person chose. The playbook digest is kept with it, never compared: a
+    person changes the playbook (accept, retire) by a signed decision of their own, an entry that says people said no
+    binds on the signer (SignerService._bound_by_lesson), and one that says yes can't widen a bound. A model the answer
+    didn't ask (a no needs one answer) keeps its identity."""
     if old is None:
         return new, False
     ids = old[4] if len(old) > 4 else {}
-    if old[:4] != new[:4] or any(m in ids and ids[m] != i for m, i in new[4].items()):
+    if old[:3] != new[:3] or any(m in ids and ids[m] != i for m, i in new[4].items()):
         return new, True
-    return old[:4] + [{**ids, **new[4]}], False
+    return new[:4] + [{**ids, **new[4]}], False
 
 
 def new_contain():

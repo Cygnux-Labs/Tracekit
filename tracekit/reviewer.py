@@ -592,23 +592,29 @@ def status_lines(out):
     return lines + (["  none yet"] if not out["agreement"] else [])
 
 
+# what a lesson in force does (service.binds): people said no to calls like it, or it is advice
+BINDS = "the signer holds calls like it for a person and asks no model"
+ADVICE = "the AI reviewer reads it; it never widens a bound (a yes still needs a person's yes to a call like it)"
+
+
 def lesson_lines(out):
-    """What `tracekit reviewer lessons` prints, and status ends with: the lessons in force (the only ones the AI
-    reviewer reads), each flagged when a person's later decision went the other way, and those proposed, from
-    disagreements with people (with the records they come from) and from people's answers all one way."""
+    """What `tracekit reviewer lessons` prints, and status ends with: the lessons in force, each with whether it binds
+    (people said no to calls like it: the signer holds them for a person) or is advice the AI reviewer reads, and
+    flagged when a person's later decision went the other way; and those proposed, from disagreements with people
+    (with the records they come from) and from people's answers all one way."""
     book = out["playbook"]
-    lines = [f"lessons in force, which the AI reviewer reads (playbook v{book['version']}, {book['digest']}; "
-             "`tracekit reviewer retire ID` ends one):"]
+    lines = [f"lessons in force (playbook v{book['version']}, {book['digest']}; `tracekit reviewer retire ID` ends one):"]
     for x in book["entries"]:
         c = x.get("contradicted")
-        lines += [f"  {x['id']}  {x['text']}"] + ([
+        lines += [f"  {x['id']}  {x['text']}", f"      binds: {BINDS}" if x.get("binds") else f"      advice: {ADVICE}"] + ([
             f"      to review: {c['by']} {'approved' if c['decision'] == 'approve' else 'rejected'} a call like it "
             f"on {c['at'][5:10]} ({c['approval_id']})"] if c else [])
     lines += ["  none"] * (not book["entries"]) + [
         "proposed (`tracekit reviewer accept ID` puts one in force, `tracekit reviewer drop ID` drops it):"]
     for x in out["proposals"]:
-        lines += [f"  {x['id']}  {x['text']}"] + ([f"      from the records {', '.join(x['evidence'])}"]
-                                                   if x.get("evidence") else [])
+        lines += [f"  {x['id']}  {x['text']}", f"      once accepted it binds: {BINDS}" if x.get("binds") else
+                  f"      once accepted it is advice: {ADVICE}"] + (
+            [f"      from the records {', '.join(x['evidence'])}"] if x.get("evidence") else [])
     return lines + ["  none"] * (not out["proposals"])
 
 
@@ -638,6 +644,11 @@ def people(a):
     elif a.cmd == "lessons" and not a.json:
         from tracekit.signer.service import _escaped
         print("\n".join(_escaped(line) for line in lesson_lines(out)))
+    elif a.cmd == "accept":
+        n = len(out.get("revoked", ()))
+        print(f"accept: done (signed record {out['run_seq']} in the tenant's signer run): {a.id} " + (
+            f"binds: {BINDS}" + (f"; {n} AI approval(s) of calls like it not yet used were withdrawn" if n else "")
+            if out.get("binds") else f"is advice: {ADVICE}"))
     elif a.cmd not in ("status", "lessons"):
         print(f"{a.cmd}: done (signed record {out['run_seq']} in the tenant's signer run)")
     elif a.json:

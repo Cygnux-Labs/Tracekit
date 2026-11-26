@@ -556,13 +556,20 @@ with the records it comes from:
 $ tracekit reviewer lessons
 proposed (`tracekit reviewer accept ID` puts one in force, `tracekit reviewer drop ID` drops it):
   L-3f…  don't approve pip --index-url https://pypi.internal/… (TK-A025) without a person: alice rejected one on 11-23 that the AI would have approved (that package is new to us)
+      once accepted it binds: the signer holds calls like it for a person and asks no model
       from the records 76d0…, 9a1c…
 ```
 
-Only a lesson a person accepts reaches the AI reviewer, as a signed record; `drop` drops one for good. The AI never
-widens its own bounds: a lesson only changes how it answers within them. When a person later decides a call like an
-accepted lesson the other way, `lessons` flags it for review. `tracekit reviewer status` shows how often people agreed
-with it per rule, over its recent answers too, so you can see whether it is getting better.
+Only a lesson a person accepts counts, as a signed record; `drop` drops one for good. A lesson that says people said
+no to a kind of call ("don't approve … without a person", or "rejected 4 of 4") binds: from the accept on, the signer
+holds every call with its key (the same key precedents match by) for a person, asks no model, and says why in the
+approval ("an accepted lesson L-3f… says a person decides calls like this"); a call that was waiting for the AI goes
+to people, and an AI approval of one not yet used is withdrawn. A lesson that says people approved a kind of call is
+advice: the AI reviewer reads it, and it never widens a bound (a yes still needs a person's yes to a call like it).
+`lessons`, `status` and `accept` say which a lesson is. When a person later decides a call like an accepted lesson the
+other way, `lessons` flags it for review; `retire` ends it. Accepting or retiring a lesson is your own decision, so it
+doesn't trip the circuit breaker: the rules keep answering as they did. `tracekit reviewer status` shows how often
+people agreed with it per rule, over its recent answers too, so you can see whether it is getting better.
 
 The rest of this section is the precise version: the bounds, the run labels, precedents, two keys, the circuit
 breaker, the view the reviewer answers, the records and what the verifiers check. The AI reviewer is an agent approver
@@ -627,12 +634,14 @@ escalates a yes that doesn't carry two.
 
 **Circuit breaker.** A rule drops to shadow in its tenant when a person revokes an AI approval of it, when a precedent of
 it goes bad, when the AI agreed with people on fewer than 9 in 10 of the last calls both answered (at least 10, in
-shadow mode), or when an answer comes from another model, version, prompt or playbook than the rule's last one (each
-answer's `asserted` and playbook digest are pinned), or from a model whose identity changed under the same name (each
+shadow mode), or when an answer comes from another model, version or prompt than the rule's last one (each answer's
+`asserted` is pinned), or from a model whose identity changed under the same name (each
 answer carries the model's identity as its server gives it: for an Ollama model the digest of what `/api/show` says it
 is, its weights, template, system prompt and parameters; otherwise the answer's `model` and `system_fingerprint`): a
 change runs in shadow before it decides. Its AI answers are then suggestions, and an AI approval of it not yet run never runs. A person turns it
-back on: `tracekit reviewer enable TK-A025`.
+back on: `tracekit reviewer enable TK-A025`, which also measures its agreement afresh. A person's change to the
+playbook is no such change: it is their own signed decision, a lesson that binds is kept by the signer itself, and one
+that is advice can't widen a bound.
 
 **Playbook.** `tracekit reviewer status` lists the rules dropped to shadow, the playbook in force, and entries proposed
 from people's answers of the last week: a kind of call with 3 or more answers, all one way ("TK-A025 by Bash, TK-A025
@@ -640,9 +649,12 @@ pip --index-url https://pypi.internal/…, in api (1a2b3c4d): approved 4 of 4 (l
 agent wrote is shown with control and hidden characters escaped, there and in the reviewer's view. Lessons (`L-…`)
 are proposed with them: each from one disagreement of a person with the AI (a person's answer against its shadow
 suggestion, or a revoke of its approval), with the two records' ids as evidence. `tracekit reviewer accept ID`, `drop
-ID` and `retire ID` change it, each a signed `playbook.entry` record (a dropped proposal isn't proposed again). The
-reviewer reads the playbook; it never widens a bound. A person's later answer to a call with an accepted entry's
-precedent key, the other way, flags the entry for review.
+ID` and `retire ID` change it, each a signed `playbook.entry` record (a dropped proposal isn't proposed again). An
+entry in force whose people said no (`decision: reject`) binds: the signer holds a call with its precedent key for a
+person (its request's `agent.reason` names the entry), escalates such calls still waiting when it is accepted and
+withdraws AI approvals of them not yet used, and refuses such a consume after. The reviewer reads the rest as advice; it
+never widens a bound. A person's later answer to a call with an accepted entry's precedent key, the other way, flags
+the entry for review.
 
 **What the reviewer sees.** `approval_review` adds `ai`: the precedent key, the run's labels, each precedent (the
 answer, when, the person's reason), the playbook in force (each entry as its id, people's answer and the precedent
