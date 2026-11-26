@@ -33,6 +33,8 @@ tools:
   Read: fs
   Grep: fs
   Glob: fs
+  artifact_create: fs        # OpenCode 2.x: sends its `files` to an artifact provider (TK-F029)
+  artifact_update: fs        # OpenCode 2.x: the same, for an artifact it already published (TK-F029)
   LibraryUpload: fs          # CodeBuddy Code: sends the local file at its path to its library (TK-D022, TK-F024)
   WebFetch: http
   WebSearch: http
@@ -1704,3 +1706,10 @@ flag:
     # skills/execute.py): the commands are in the skill's file, not the call. Writing one is held (TK-A085, TK-F015)
     pattern: '^'
     label: skill_run
+  - id: TK-F029
+    tool: '^(?:artifact_create|artifact_update)$'
+    # every call of OpenCode 2.x's artifact tools: the `files` it is given (relative path -> the file's text) leave the
+    # machine to an artifact provider, as an uploaded file does (TK-F024); a publish is ordinary work on a laptop, so it
+    # is flagged here and held on server and strict. No path is read from disk, so TK-D022 has nothing to hold
+    pattern: '^'
+    label: egress

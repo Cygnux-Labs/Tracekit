@@ -21,7 +21,7 @@
 # rules for them hold only the harmful forms.
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
           server-core.yaml]
-version: '2026.11-dev-12'
+version: '2026.11-dev-13'
 description: dev default (the server pack's rules, unmapped tools flagged, uploads to cloud storage held, a demo deny and a demo ask)
 unknown_tools: flag
 # a call over 64 KiB, which the policy doesn't read, waits for a person (TK-OVERSIZE as an ask) where the server pack's
@@ -182,6 +182,15 @@ ask:
     reason: a cloud routine that runs where Tracekit doesn't decide its calls
     remedy: Have a person approve the held call, or run the task in this session, where each of its calls is decided.
     rationale: A routine runs Claude Code in the cloud on a schedule or an event; none of its tool calls are decided or recorded here, so a person confirms what it is set up to do.
+  - id: TK-F029
+    tool: '^(?:artifact_create|artifact_update)$'
+    pattern: '^'
+    label: egress
+    # OpenCode 2.x's artifact tools publish their `files` to an artifact provider; the coding pack maps them to `fs`
+    # and TK-F029 flags each call there. This pack is the server pack's rules (it extends the same parts, not
+    # server.yaml), so the publish is held here as the server pack holds it, and as TK-A032 holds a bucket upload.
+    reason: publishing an artifact sends its files off the machine
+    remedy: Have a person approve the held call, or keep the files in the workspace.
   - id: TK-DEMO-ASK
     tool: '(mcp:[^/]+/)?tracekit_demo_ask'
     pattern: '^'

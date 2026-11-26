@@ -7114,7 +7114,8 @@ class StrictPack(unittest.TestCase):
         coding = {r["id"]: r for r in pc.build(os.path.join(PACKS, "coding.yaml"))[0]["flag"]}
         mine = {r["id"]: r for r in self.pol["ask"] if r["id"] in coding}
         # TK-F024 (#757): an upload tool's file waits too, as a network command does; TK-F025 a shell startup file
-        self.assertEqual(sorted(mine), ["TK-F004", "TK-F011", "TK-F013", "TK-F024", "TK-F025"])
+        # TK-F029 (#988): OpenCode's artifact tools, which server holds and strict re-tiers
+        self.assertEqual(sorted(mine), ["TK-F004", "TK-F011", "TK-F013", "TK-F024", "TK-F025", "TK-F029"])
         for rid, r in mine.items():
             keys = ("pattern", "label") + tuple(k for k in ("field", "tool") if k in r or k in coding[rid])
             if rid == "TK-F011":   # the coding pack's flag reads each assignment now (`target`) and adds a startup
