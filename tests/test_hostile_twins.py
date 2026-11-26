@@ -49,6 +49,8 @@ LINES = {
     "TK-A057": ("tracekit init", "tracekit init --help", "--help", "--policy"),
     "TK-A059": ("tee model.pth", "tee site-packages/x.pth", "site-packages/x.pth", "-p"),
     "TK-A077": ("setcap cap_setuid+ep /bin/x", "setcap -v cap_setuid+ep /bin/x", "-v", "-n"),
+    "TK-A096": ("Remove-Item $env:APPDATA\\uv\\tools\\tracekit-ai", "Get-Content $env:APPDATA\\uv\\tools\\tracekit-ai\\x",
+                "Get-Content", "-Path"),
     "TK-D007": ("tracekit signer serve", "tracekit signer serve --help", "--help", "--config"),
     "TK-D008": ("rm .claude/projects/p/s.jsonl", "rm .claude/projects/p/memory/m.md", ".claude/projects/p/memory/m.md",
                 "-I"),
