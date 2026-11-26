@@ -264,7 +264,7 @@ it); and **WHOSE WORDS**: where the instruction behind a held or blocked call ca
 RELAYED, another agent's message; TOOL/WEB, a tool result or page), from the signed argument provenance and the run's
 observed inputs, or that the records don't say.
 
-![TIMELINE BY CALL: one row per call on one time axis, the expired push hatched while it waited; the rejected billing.py edit selected, the inspector with why this decision and what the model said before it](viewer/1.5/timeline.png)
+![TIMELINE BY CALL: the chips with their counts, the overview strip with the held calls hatched, and one row per call and model turn (a provider monogram for each model) with its bar, over the footer's counts and the Verified seal](viewer/1.5/timeline.png)
 
 ![EVIDENCE: the run's signed records in order, each covered by the viewer's check, the checks of its verifier report and the VERIFIED stamp](viewer/1.5/evidence.png)
 

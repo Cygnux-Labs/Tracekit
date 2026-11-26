@@ -26,6 +26,14 @@
       --blue: #7aa2ff;
       --yellow: #ffdd57;
       --ink: #000;
+      --mc-ink: #fff;
+      --mc-claude: #d97757;
+      --mc-openai: #10a37f;
+      --mc-google: #4285f4;
+      --mc-qwen: #615ced;
+      --mc-meta: #0866ff;
+      --mc-mistral: #fa520f;
+      --mc-deepseek: #4d6bfe;
       --row-line: #121210;
       --row-hover: #12100b;
       --track: #141310;
@@ -68,6 +76,14 @@
         --blue: #2f56c6;
         --yellow: #8a6a00;
         --ink: #fff;
+        --mc-ink: #fff;
+        --mc-claude: #d97757;
+        --mc-openai: #10a37f;
+        --mc-google: #4285f4;
+        --mc-qwen: #615ced;
+        --mc-meta: #0866ff;
+        --mc-mistral: #fa520f;
+        --mc-deepseek: #4d6bfe;
         --row-line: #e8e4da;
         --row-hover: #f3ead9;
         --track: #e6e2d8;
@@ -107,6 +123,14 @@
       --blue: #2f56c6;
       --yellow: #8a6a00;
       --ink: #fff;
+      --mc-ink: #fff;
+      --mc-claude: #d97757;
+      --mc-openai: #10a37f;
+      --mc-google: #4285f4;
+      --mc-qwen: #615ced;
+      --mc-meta: #0866ff;
+      --mc-mistral: #fa520f;
+      --mc-deepseek: #4d6bfe;
       --row-line: #e8e4da;
       --row-hover: #f3ead9;
       --track: #e6e2d8;
@@ -1590,6 +1614,42 @@
 
     #wf .ic.llm {
       color: var(--t-llm)
+    }
+
+    #wf .ic.mono {
+      color: var(--mc-ink);
+      font-weight: 800;
+      font-size: 15px;
+      line-height: 1;
+      box-shadow: none
+    }
+
+    #wf .ic.m-claude {
+      background: var(--mc-claude)
+    }
+
+    #wf .ic.m-openai {
+      background: var(--mc-openai)
+    }
+
+    #wf .ic.m-google {
+      background: var(--mc-google)
+    }
+
+    #wf .ic.m-qwen {
+      background: var(--mc-qwen)
+    }
+
+    #wf .ic.m-meta {
+      background: var(--mc-meta)
+    }
+
+    #wf .ic.m-mistral {
+      background: var(--mc-mistral)
+    }
+
+    #wf .ic.m-deepseek {
+      background: var(--mc-deepseek)
     }
 
     #wf .nm {
@@ -6814,6 +6874,19 @@
       clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>', copy: '<rect x="8.5" y="8.5" width="10" height="11" rx="2"/><path d="M5.5 15.5v-9a2 2 0 012-2h8"/>', check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
     };
     const wfSvg = (n, s = 14) => `<svg viewBox="0 0 24 24" width="${esc(s)}" height="${esc(s)}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` + (WFI[n]) + `</svg>`;
+    // a model's provider as a monogram tile: its letter and colour token (a model name after an optional provider prefix); null: the sparkle
+    const WFMODELS = [[/^claude/, "C", "claude"], [/^(gpt|o[134](?![a-z])|chatgpt|codex)/, "O", "openai"], [/^gemini/, "G", "google"], [/^qwen/, "Q", "qwen"], [/^llama/, "L", "meta"], [/^(mistral|codestral)/, "M", "mistral"], [/^deepseek/, "D", "deepseek"]];
+    function wfModelMark(name) {
+      const n = String(name || "").toLowerCase();
+      for (const m of [n, n.replace(/^[^/:]+[/:]/, "")]) { const hit = WFMODELS.find(([re]) => re.test(m)); if (hit) return { letter: hit[1], tone: hit[2] }; }
+      return null;
+    }
+    // a row's or the drawer's icon tile: a model turn's provider monogram, else the glyph
+    function wfIconBox(r, size, role) {
+      const mark = r.kind === "llm" && wfModelMark(r.name), at = role ? ' role="cell"' : "";
+      return mark ? '<span class="ic llm mono m-' + esc(mark.tone) + '"' + at + ">" + esc(mark.letter) + "</span>"
+        : '<span class="ic ' + esc(r.kind) + '"' + at + ">" + wfSvg(wfIconOf(r), size) + "</span>";
+    }
     const wfIconOf = r => r.kind === "llm" ? "spark" : { exec: "terminal", read: /^(Grep|Glob|LS)$/.test(r.name) ? "search" : "file", write: "pencil", net: /^mcp__/.test(r.name) ? "plug" : "globe", agent: "agent", bad: "terminal" }[category({ ...r.x, denied: false, error: false })] || "terminal";
     // a row's bars on the shared axis (positions are CSS: --a and --e in seconds from the run's first record, the axis in --t0 and --span)
     function wfBarHtml(r, base) {
@@ -6833,7 +6906,7 @@
       const m = wfMark(wfAgent(r.agent)), name = wfAgent(r.agent);
       const badges = r.badges.map(([c, t, title, from]) => `<span class="bd ${esc(c)}${from != null ? " tn-live" : ""}" title="${esc(title)}"${from != null ? ` data-pre="HELD " data-from="${esc(+(from - base).toFixed(3))}"` : ""}>${esc(t)}</span>`).join("");
       return `<div class="tn-r" role="row" tabindex="0" data-k="${esc(r.key)}" ${r.kind === "llm" ? `data-wfl="${esc(r.j)}"` : `data-wf="${esc(r.i)}"`} aria-label="${esc(wfLabel(r, base))}">`
-        + `<span class="dot ${esc(r.state)}" role="cell" title="${esc(r.words[1].toLowerCase())}"></span><span class="ic ${esc(r.kind)}" role="cell">` + (wfSvg(wfIconOf(r), 15)) + `</span>`
+        + `<span class="dot ${esc(r.state)}" role="cell" title="${esc(r.words[1].toLowerCase())}"></span>` + wfIconBox(r, 15, true)
         + `<span class="nm" role="cell"><b>${esc(r.name)}</b>${r.arg ? `<span class="ar">${esc(r.arg)}</span>` : ""}` + (badges) + `</span>`
         + `<span class="ag" role="cell"><svg viewBox="0 0 11 11" width="11" height="11" aria-hidden="true" style="color:var(${esc(m.hue)})">` + (m.on.map((o, i) => o ? `<rect x="${esc((i % 3) * 4)}" y="${esc(Math.floor(i / 3) * 4)}" width="3" height="3" rx=".6" fill="currentColor"/>` : "").join("")) + `</svg><span>${esc(name)}</span></span>`
         + `<span class="sz" role="cell">${esc(r.sizeText)}</span><span class="tm${r.bad ? " bad" : ""}${r.durFrom != null ? " tn-live" : ""}" role="cell"${r.durFrom != null ? ` data-pre="" data-from="${esc(+(r.durFrom - base).toFixed(3))}"` : ""}>${esc(r.durFrom != null ? "" : wfDur(r.dur))}</span>`
@@ -6947,7 +7020,7 @@
       else if (T === "evidence") body = wfEvidenceHtml(r);
       else body = wfRetriesHtml(r);
       const word = r.denied ? "Denied" : r.failed ? "Failed" : r.state === "fail" ? "Rejected" : r.running ? (r.held ? "Held" : "Running") : r.held ? "Approved" : "Done", pc = r.state === "fail" ? "bad" : r.state === "run" ? "run" : r.held ? "held" : "ok";
-      return `<header><span class="ic ${esc(r.kind)}">` + (wfSvg(wfIconOf(r), 16)) + `</span><div class="hd"><div class="t"><b>${esc(r.name)}</b>${r.arg ? `<span class="ar">${esc(r.arg)}</span>` : ""}</div>`
+      return `<header>` + wfIconBox(r, 16, false) + `<div class="hd"><div class="t"><b>${esc(r.name)}</b>${r.arg ? `<span class="ar">${esc(r.arg)}</span>` : ""}</div>`
         + `<div class="s">${esc([llm ? "Model turn" : "Tool call", wfAgent(r.agent), llm || /^(⚑ )?ok$/i.test(r.words[1]) ? "" : r.words[1].toLowerCase(), r.dur == null ? "" : wfDur(r.dur)].filter(Boolean).join(" · "))}</div></div>`
         + `<span class="pill ${esc(pc)}">${esc(word)}</span><button type="button" class="x" data-wfx aria-label="Close the details">` + (wfSvg("x", 16)) + `</button></header>`
         + `<div class="tabs" role="tablist">` + (tabs.map(t => `<button type="button" role="tab" class="${t === T ? "on" : ""}" aria-selected="${esc(t === T)}" data-wft="${esc(t)}">${esc(t[0].toUpperCase() + t.slice(1))}</button>`).join("")) + `</div><div class="pn" role="tabpanel">` + (body) + `</div>`;

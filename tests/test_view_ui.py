@@ -1057,7 +1057,7 @@ CALLS_JS = """
 WF_NAMES = ["esc", "plural", "lseq", "short", "j", "ANSWER", "lastAnswer", "ended", "used", "FILE_TOOLS", "category", "callState", "heldCall",
             "wfBars", "wfDur", "wfRel", "wfBytes", "wfTok", "wfTitleCase", "wfAgent", "wfHashed", "wfSize", "wfFailWord", "wfAnswer", "wfToolRow",
             "wfLlmRow", "WFMAX", "wfIn", "wfRows", "WFCMP", "tickStep", "wfModel", "wfNew", "wfRangeKey", "wfPhases", "wfTimingHtml", "wfRule", "wfCode",
-            "wfDecisionHtml", "WFI", "wfSvg", "wfIconOf", "wfEvidenceHtml", "wfRetriesHtml", "WFTABS", "wfDrawerHtml", "wfLive"]
+            "wfDecisionHtml", "WFI", "wfSvg", "wfIconOf", "WFMODELS", "wfModelMark", "wfIconBox", "wfEvidenceHtml", "wfRetriesHtml", "WFTABS", "wfDrawerHtml", "wfLive"]
 WF_RUN = """
     const V2 = true, R = null, mode = "replay", ENDED = false, STOPPED = "", scope = "r1", RUNS = new Map([["r1", { state: "final", verdict: "verified" }]]);
     let WFCHIP = "all", WFSORT = { k: "start", dir: 1 }, WFR = null, WFTAB = "request", selected = null;
@@ -1204,6 +1204,21 @@ class Waterfall(unittest.TestCase):
         self.assertIn("30,000 tokens", out["response"])
         self.assertIn("1,500 tokens", out["response"])
         self.assertIn("12,000 read from cache", out["response"])
+
+    def test_a_model_turn_gets_its_providers_monogram_and_any_other_name_the_sparkle(self):
+        needs_node(self)
+        names = ["claude-sonnet-5-5", "gpt-5.5-mini", "gemini-3-pro", "qwen2.5:7b", "mystery-1", "anthropic/claude-opus-5-5", "openai:o3-mini", "Llama3:8b",
+                 "mistral-large", "codestral", "deepseek-r1", "codex-1", "chatgpt-4o", "o1", "orca", "google/gemini-3-pro"]
+        out = json.loads(page_js(["esc", "WFI", "wfSvg", "wfIconOf", "category", "FILE_TOOLS", "WFMODELS", "wfModelMark", "wfIconBox"], """
+            const names = %s;
+            process.stdout.write(JSON.stringify([names.map(n => { const m = wfModelMark(n); return m && m.letter + m.tone; }),
+              wfIconBox({ kind: "llm", name: "claude-sonnet-5-5", x: {} }, 15, true), wfIconBox({ kind: "llm", name: "mystery-1", x: {} }, 15, true).slice(0, 60),
+              wfIconBox({ kind: "tool", name: "Bash", x: { tool: "Bash", flags: [] } }, 15, true).slice(0, 40)]));""" % json.dumps(names)))
+        self.assertEqual(out[0], ["Cclaude", "Oopenai", "Ggoogle", "Qqwen", None, "Cclaude", "Oopenai", "Lmeta", "Mmistral", "Mmistral", "Ddeepseek",
+                                  "Oopenai", "Oopenai", "Oopenai", None, "Ggoogle"])
+        self.assertEqual(out[1], '<span class="ic llm mono m-claude" role="cell">C</span>')
+        self.assertIn('<span class="ic llm" role="cell"><svg', out[2])   # an unknown model keeps the sparkle
+        self.assertIn('<span class="ic tool" role="cell"><svg', out[3])  # tools keep their glyphs
 
     def test_rows_that_arrive_below_the_scroll_are_counted_for_the_new_pill(self):
         needs_node(self)
