@@ -2223,7 +2223,7 @@ class CodexSandbox(unittest.TestCase):
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_a_config_too_deep_to_parse_is_unreadable_not_a_crash(self):
-        got = self.check("a = " + "[" * 5000 + "]" * 5000)
+        got = self.check("a = " + TOO_DEEP_JSON)
         self.assertEqual(got["status"], "info")
         self.assertIn("can't check Codex's approval settings", got["detail"])
 

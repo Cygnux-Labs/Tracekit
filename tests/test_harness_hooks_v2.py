@@ -2138,7 +2138,7 @@ class CodexReasoningSummary(unittest.TestCase):
 
     @unittest.skipIf(sys.version_info < (3, 11), "checks the file with tomllib")
     def test_a_config_too_deep_to_parse_is_refused_as_a_malformed_one_is(self):
-        for text in ("a = [\n", "a = " + "[" * 5000 + "]" * 5000):
+        for text in ("a = [\n", "a = " + TOO_DEEP_JSON):
             self.write(text)
             with self.assertRaisesRegex(install.SettingsError, "is TOML Tracekit can't add model_reasoning_summary"):
                 agent_hooks.codex_reasoning(self.hooks)
@@ -2383,7 +2383,7 @@ class CodexHookTrust(unittest.TestCase):
     def test_a_config_too_deep_to_parse_is_unreadable_not_a_crash(self):
         self.row()
         with open(self.toml, "w") as f:
-            f.write("a = " + "[" * 5000 + "]" * 5000)
+            f.write("a = " + TOO_DEEP_JSON)
         self.assertTrue(self.row(install=False)["detail"].startswith(
             f"can't confirm that Codex trusts Tracekit's hooks in {self.hooks} ({self.toml}: "))
 
