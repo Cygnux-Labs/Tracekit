@@ -1522,8 +1522,8 @@ class Records(unittest.TestCase):
 
     @pytest.mark.serial
     def test_graphify_join_indexes_five_thousand_file_nodes(self):
-        # CPU time, best of three: a loaded runner's wall clock passed 1.0 s on macOS while the join itself is
-        # unchanged; a real regression (sleep / quadratic work) still fails the bound.
+        # Wall clock, best of three: one slow run on a loaded runner (macOS passed 1.0 s while the join itself
+        # is unchanged) can't fail it, but a real regression (sleep / quadratic work) is slow every time.
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         p = os.path.join(d, "graph.json")
@@ -1534,9 +1534,9 @@ class Records(unittest.TestCase):
             g = Graph(None, "grade")
             for i in range(5000):
                 graph._node(g, f"file:/repo/pkg/{i}/item.py", "file", f"/repo/pkg/{i}/item.py")
-            start = time.process_time()
+            start = time.monotonic()
             linked = graph._graphify(g, p)["linked"]
-            return linked, time.process_time() - start
+            return linked, time.monotonic() - start
 
         samples = [once() for _ in range(3)]
         self.assertEqual(samples[-1][0], 5000)
