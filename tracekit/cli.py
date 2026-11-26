@@ -842,6 +842,16 @@ def _run(a):
             if a.v2:
                 if not _signer_extra():
                     return 2
+                from .sdk import autospawn
+                try:
+                    autospawn.runtime_dir()   # the check every hook makes: init refuses what would block each call
+                except autospawn.SignerUnavailable as e:
+                    print(f"tracekit: {e}. Run: chmod 700 {str(e).split(' must be ')[0]} (or point TRACEKIT_RUNTIME_DIR at a folder you own)",
+                          file=sys.stderr)
+                    return 2
+                except OSError as e:
+                    print(f"tracekit: cannot use the runtime dir: {e}", file=sys.stderr)
+                    return 2
                 from .signer.service import dev_data_dir
                 anchoring = _init_dev_witness(a.no_witness, a.public_witness)
                 dev_data_dir()   # the plugin's hook blocks tool calls it cannot record once this exists

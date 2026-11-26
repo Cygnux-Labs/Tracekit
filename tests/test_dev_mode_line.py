@@ -311,3 +311,22 @@ class HookPythonNote(unittest.TestCase):
     def test_with_the_plugin_it_stays_the_first_line(self):
         _, _, err = self.init(("settings.json", "tracekit@x"))
         self.assertTrue(err.startswith("hook Python not recorded"))
+
+
+class RuntimeDirCheck(unittest.TestCase):
+    def test_init_refuses_a_runtime_dir_every_hook_would_refuse_before_it_writes_hooks(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        run_dir = os.path.join(d, "run")
+        os.mkdir(run_dir, 0o755)
+        os.chmod(run_dir, 0o755)
+        err = io.StringIO()
+        env = {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d, "LOCALAPPDATA": d, "CLAUDE_CONFIG_DIR": os.path.join(d, "c"),
+               "TRACEKIT_CLIENT_HOME": os.path.join(d, "client"), "TRACEKIT_RUNTIME_DIR": run_dir}
+        with mock.patch.object(cli, "_signer_extra", return_value=True), mock.patch.dict(os.environ, env), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = cli.main(["init", "--dev", "--v2"])
+        self.assertEqual(code, 2)
+        self.assertIn(f"{run_dir} must be a directory owned by you with mode 0700", err.getvalue())
+        self.assertIn(f"chmod 700 {run_dir}", err.getvalue())
+        self.assertFalse(os.path.exists(os.path.join(d, "c", "settings.json")))

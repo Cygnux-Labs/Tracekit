@@ -207,7 +207,8 @@ data dir, one per `HOME`. It listens on a Unix socket in a private runtime dir; 
 dir (macOS's `/tmp` fallback for a long `HOME`, Linux's `$XDG_RUNTIME_DIR`), each gets its own signer, the second in a
 sibling dir named after its data dir. `TRACEKIT_RUNTIME_DIR` sets that dir; one too long for a socket path (macOS caps
 them at 104 bytes) gives way to a short private dir of its own, `/tmp/tk-<uid>.<12 hex>`, which `tracekit status`
-names. On Windows it listens on a loopback TCP port instead,
+names. The dir must be yours with mode 0700: `tracekit init --dev --v2` refuses one that isn't (`chmod 700 <dir>`)
+before it writes hooks, as every hook would block its calls. On Windows it listens on a loopback TCP port instead,
 and publishes the port and a token in `%LOCALAPPDATA%\tracekit\run\endpoint.json`, which only you can read. Each side
 proves it holds the token before any request is answered.
 
