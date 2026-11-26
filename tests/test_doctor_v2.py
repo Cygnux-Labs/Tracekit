@@ -308,6 +308,86 @@ class CodingAgentHooks(unittest.TestCase):
                         rid, doctor.OK if ok else bad), {harness: path}, False, self.d)
                     self.assertEqual(got["D-HOOKS-TIMEOUT"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
 
+    def test_a_codebuddy_settings_file_that_turns_every_hook_off_is_named(self):
+        """CodeBuddy Code runs no hook while `disableAllHooks` is set. Its bundle (2.183.0, dist/codebuddy.js,
+        `settingsDisableAllHooks`) reads <home>/settings.json, the project's .codebuddy/settings.json and
+        settings.local.json beside it, keeps the last one that sets the key, and returns `true === value`, so a later
+        file's false lifts an earlier true. Doctor read none of them."""
+        home, proj = os.path.join(self.d, "home"), os.path.join(self.d, "proj")
+        user, project = agent_hooks.config_path("codebuddy", home=home), agent_hooks.config_path("codebuddy", proj)
+        local = os.path.join(os.path.dirname(project), "settings.local.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codebuddy", path=user, v2=True)
+
+        def row():
+            # several checks report under D-HOOKS-EVENT, so take the strictest rather than the first
+            rank, worst = {doctor.OK: 0, doctor.INFO: 1, doctor.WARN: 2, doctor.FAIL: 3}, {}
+            with mock.patch("os.getcwd", return_value=proj):
+                doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=doctor.FAIL: worst.__setitem__(
+                    rid, max(worst.get(rid, (doctor.OK, "")), (doctor.OK if ok else bad, detail),
+                             key=lambda r: rank[r[0]])), {"codebuddy": user}, False, home)
+            return worst["D-HOOKS-EVENT"]
+
+        self.assertEqual(row()[0], doctor.OK, "nothing turns them off yet")
+        os.makedirs(os.path.dirname(project), exist_ok=True)
+        for f, value, want in ((project, True, doctor.WARN), (local, True, doctor.WARN), (local, False, doctor.OK)):
+            with open(f, "w") as out:
+                json.dump({"disableAllHooks": value}, out)
+            with self.subTest(file=os.path.basename(f), value=value):
+                status, detail = row()
+                self.assertEqual(status, want, detail)
+                if want == doctor.WARN:
+                    self.assertIn(f, detail)
+        # system mode fails rather than warns, as Claude Code's row does
+        with open(local, "w") as out:
+            json.dump({"disableAllHooks": True}, out)
+        with mock.patch("os.getcwd", return_value=proj):
+            prod = {}
+            rank = {doctor.OK: 0, doctor.INFO: 1, doctor.WARN: 2, doctor.FAIL: 3}
+            doctor._harness_hook_checks(
+                lambda rid, ok, detail, fix, bad=doctor.FAIL: prod.__setitem__(
+                    rid, max(prod.get(rid, doctor.OK), doctor.OK if ok else bad, key=lambda s: rank[s])),
+                {"codebuddy": user}, True, home)
+        self.assertEqual(prod["D-HOOKS-EVENT"], doctor.FAIL, "system mode: FAIL, not WARN")
+        # the reader returns true only for a literal true, and a later null does not lift an earlier true
+        for value, want in (("false", doctor.OK), (1, doctor.OK), ([], doctor.OK), ({}, doctor.OK),
+                            (None, doctor.WARN)):
+            with open(local, "w") as out:
+                json.dump({"disableAllHooks": value if value is not None else True}, out)
+            if value is None:   # a later null: the earlier file's true stands
+                with open(project, "w") as out:
+                    json.dump({"disableAllHooks": True}, out)
+                with open(local, "w") as out:
+                    json.dump({"disableAllHooks": None}, out)
+            with self.subTest(value=value):
+                self.assertEqual(row()[0], want, f"disableAllHooks: {value!r}")
+
+    def test_a_codebuddy_config_dir_naming_another_folder_is_named(self):
+        """Init writes the file `$CODEBUDDY_CONFIG_DIR` names when it runs; a CodeBuddy Code that starts with another
+        value reads another file, so Tracekit's hooks don't run and nothing says so. Doctor reads the variable in its
+        own environment, so it compares the folder holding the hooks with the one the variable names."""
+        home, proj = os.path.join(self.d, "home"), os.path.join(self.d, "proj")
+        user = agent_hooks.config_path("codebuddy", home=home)
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codebuddy", path=user, v2=True)
+
+        def said():
+            rows = []
+            with mock.patch("os.getcwd", return_value=proj):
+                doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append(detail),
+                                            {"codebuddy": user}, False, home)
+            return [d for d in rows if "CODEBUDDY_CONFIG_DIR" in d]
+
+        self.assertEqual(said(), [], "unset: nothing to compare")
+        elsewhere = os.path.join(self.d, "elsewhere")
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": elsewhere}):
+            got = said()
+        self.assertEqual(len(got), 1, got)
+        self.assertIn(elsewhere, got[0])
+        self.assertIn(user, got[0])
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": os.path.dirname(user)}):
+            self.assertEqual(said(), [], "the folder holding the hooks is not a mismatch")
+
     def test_a_codebuddy_pre_tool_hook_that_runs_after_tracekits_is_named(self):
         """#761's review: CodeBuddy Code runs the user's settings' PreToolUse hooks, then the project's
         .codebuddy/settings.json and settings.local.json, each in its order, and the last permissionDecision stands, so
