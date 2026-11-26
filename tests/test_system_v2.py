@@ -204,6 +204,13 @@ class SignerConfig(unittest.TestCase):
             service.check_identities({}, {"uid:501": ["export_run", "status"]}, tenants={})
         service.check_identities({}, {"uid:501": ["export_run", "status"]}, tenants={"uid:501": "t"})
 
+    def test_init_passes_an_export_run_identity_whose_uid_is_mapped_in_tenants(self):
+        text = self.earlier(authorize='  "uid:501": [export_run, status, read, approval_get, approval_list]\n')
+        self.assertEqual(install.yamlmini.loads(text)["tenants"]["uid:501"], "agent")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        r = subprocess.run([sys.executable, "-c", install.CHECK_CONFIG], input=text, capture_output=True, text=True, cwd=root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_an_identity_whose_entries_add_up_to_running_agents_and_deciding_on_behalf_is_refused_at_decision_time(self):
         """An OIDC identity's grants combine its oidc, person and group entries; the startup check sees each entry
         alone, so the signer checks the combined grants when it is asked to decide on someone's behalf."""
