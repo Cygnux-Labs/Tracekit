@@ -4464,7 +4464,10 @@ class CodingPack(unittest.TestCase):
         searched, match = [], e._match
         e._match = lambda c, s, full, deadline: searched.append(c) or match(c, s, full, deadline)
         e.decide("mcp__x__" + "run_" * 12000, {"a": 1})
-        ids = {id(t): r["id"] for _, r, t, *_ in e.rules if t is not None}
+        ids = {}
+        for _, r, t, *_ in e.rules:
+            if t is not None:
+                ids.setdefault(id(t), r["id"])
         self.assertEqual(({"TK-A036", "TK-A037"} & {ids.get(id(c)) for c in searched}), {"TK-A036"})
 
     @pytest.mark.serial
