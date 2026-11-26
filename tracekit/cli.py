@@ -850,9 +850,9 @@ def _run(a):
                 except install.SettingsError as e:
                     print(f"tracekit: {e}", file=sys.stderr)
                     return 1
-                if note:
-                    print(note, file=sys.stderr)
                 plugin = hooks and install.plugin_enabled(project=a.project)
+                if note and (plugin or not hooks):   # the plugin's hook is what this Python can't run
+                    print(note, file=sys.stderr)
                 if plugin:   # both would decide every call, and one would consume each approval the other waits on
                     settings_path, plugin_key = plugin
                     print(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {settings_path}, "
@@ -887,6 +887,9 @@ def _run(a):
                     print(f"tracekit: {e}", file=sys.stderr)
                     return 1
                 print("v2 hooks:", hooks or "not installed")
+                if note and hooks:
+                    print(f"note: the Claude Code plugin's hook runs only a uv tool or pipx install, which {sys.executable} "
+                          f"is not; the hooks in {hooks} run this Python and work as they are")
                 print(install.DEV_MODE_LINE)
                 print(*anchoring, sep="\n")
                 if hooks and not a.no_thinking_summaries:

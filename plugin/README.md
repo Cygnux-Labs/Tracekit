@@ -158,7 +158,7 @@ runs.
 - **Dev mode**: the hook runs in the Python `tracekit init` recorded (`hook_python` in `~/.tracekit-client/config.json`),
   and only there: not `TRACEKIT_PYTHON`, `PATH` or a default folder. Init records only the Python of a `uv tool` or pipx
   install of Tracekit (every dev init does, with the plugin enabled or `--project` too); from any other Python it says
-  what to run, or `--allow-hook-python` records that one, which then runs the hook with whatever its site-packages hold. A
+  what to run (a note after the `v2 hooks:` line when the plugin isn't enabled: init's own hooks in `settings.json` run this Python and work as they are), or `--allow-hook-python` records that one, which then runs the hook with whatever its site-packages hold. A
   record outside those installs that you didn't allow, a record that can't run the hook, or a Tracekit that is set up with
   none recorded, blocks tool calls and says what to run (`tracekit init --dev --v2 --no-hooks` again, from the install). Before Tracekit is set up the hook runs in `TRACEKIT_PYTHON` if that has the `tracekit` package;
   else in the Python of a `uv tool` or pipx install where uv (`UV_TOOL_DIR`) or pipx (`PIPX_HOME`) put it, else by
