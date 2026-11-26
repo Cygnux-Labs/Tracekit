@@ -44,6 +44,16 @@
         "fix": "remove the agent's uid from analyzers in signer.yaml; run tracekit analyze --v2 as an operator identity"
       }
     },
+    "replaced approver keeps break_glass": {
+      "expect": "D-BREAK-GLASS-STALE",
+      "flagged": true,
+      "result": {
+        "id": "D-BREAK-GLASS-STALE",
+        "status": "warn",
+        "detail": "uid:501 was replaced as approver (client.json replaced_approvers) and approvals.break_glass or approvals.agents still names it",
+        "fix": "remove it from approvals.break_glass in signer.yaml, or add it as an approver, then restart the signer"
+      }
+    },
     "keys readable by the agent": {
       "expect": "D-AGENT-PROBE",
       "flagged": true,

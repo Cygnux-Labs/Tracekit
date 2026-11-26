@@ -1256,7 +1256,7 @@ def _v2_client_keys():
         sc = client.system_config() or {}
     except client.SystemConfigError:
         sc = {}
-    return {k: sc[k] for k in ("signer", "hooks", "tailer") if k in sc}
+    return {k: sc[k] for k in ("signer", "hooks", "tailer", "replaced_approvers") if k in sc}
 
 
 def _write_root_file(path, data):
@@ -1739,6 +1739,7 @@ def merge_shared_keys(config, old, agent_uid, approver_uid):
         names.append(f"authorize.{k}")
     for r in replaced:
         keeps = [n for n, hit in (("break_glass", _covers(approvals.get("break_glass") or [], r)),
+                                  ("agents", _covers(approvals.get("agents") or [], r)),
                                   ("persons", r in (approvals.get("persons") or {})),
                                   ("authorize", r in authorize)) if hit]
         if keeps:
@@ -1752,6 +1753,19 @@ def merge_shared_keys(config, old, agent_uid, approver_uid):
         if back.get(key) != merged:
             raise ValueError(f"{key} would not be written back as it is")
     return config, names, notes
+
+
+def replaced_approvers(old, merged, recorded, approver_uid):
+    """What client.json records as `replaced_approvers`: those an earlier init recorded (`recorded`) and the approvers
+    in signer.yaml text `old` that init replaced, less the approver now and any that keeps no break_glass or agents
+    entry in the merged text `merged`."""
+    was = ((yamlmini.loads(old) or {}).get("approvals") or {}).get("approvers") or [] if old else []
+    former = [r for r in dict.fromkeys([*recorded, *(a for a in was if isinstance(a, str))])
+              if r != f"uid:{approver_uid}"]
+    if not former:
+        return []
+    kept = (yamlmini.loads(merged) or {}).get("approvals") or {}
+    return [r for r in former if _covers(kept.get("break_glass") or [], r) or _covers(kept.get("agents") or [], r)]
 
 
 CHECK_CONFIG = (
@@ -2054,7 +2068,10 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     _remove_v2_hooks(sc, was, settings, owner if managed else None)
     # after the hooks, so a failed init leaves the config recording the file that still has them;
     # no `tailer` key: the hook has the signer record a tailer_lost gap for each run instead of starting one
-    _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
+    former = replaced_approvers(old_text, config, sc.get("replaced_approvers") or [], approver.pw_uid)
+    _write_system_client_config(dict({k: v for k, v in sc.items() if k != "replaced_approvers"}, mode="system",
+                                     signer=sock, fail_mode=sc.get("fail_mode", "closed"),
+                                     **({"replaced_approvers": former} if former else {}),
                                      hooks={"user": target_user, "settings": settings, "agent": agent,
                                             **({"env": proxy} if proxy else {}),
                                             **({} if hooks else {"no_hooks": True}),   # doctor: the choice it is

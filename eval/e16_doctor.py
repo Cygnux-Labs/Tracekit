@@ -153,6 +153,11 @@ def _chmod(rel, mode):
     return lambda L: os.chmod(L.path(rel), mode)
 
 
+def _replaced_approver_keeps_break_glass(L):
+    L.client({"mode": "system", "signer": L.sock, "fail_mode": "closed", "replaced_approvers": ["uid:501"]})
+    L.signer_yaml(approvals={"approvers": ["uid:502"], "break_glass": ["uid:0", "uid:501"]})
+
+
 def _probe_keys(L):
     for rel, mode in (("data", 0o711), ("data/keys", 0o755), ("data/keys/record.key", 0o644)):
         os.chmod(L.path(rel), mode)
@@ -194,6 +199,7 @@ CASES = [
     ("signer.yaml world-writable", "D-CONFIG", _chmod("etc/signer.yaml", 0o666)),
     ("agent is root", "D-AGENT-PRIV", lambda L: L.kw.update(agent=types.SimpleNamespace(**dict(vars(AGENT), pw_uid=0)))),
     ("agent may sign findings", "D-ANALYZER-AGENT", lambda L: L.signer_yaml(analyzers=[f"uid:{AGENT.pw_uid}"])),
+    ("replaced approver keeps break_glass", "D-BREAK-GLASS-STALE", _replaced_approver_keeps_break_glass),
     ("keys readable by the agent", "D-AGENT-PROBE", _probe_keys),
     ("client.json writable by the agent", "D-AGENT-PROBE", _chmod("etc/client.json", 0o666)),
     ("policy writable by others", "D-POLICY-TRUST", _chmod("etc/policy.json", 0o666)),

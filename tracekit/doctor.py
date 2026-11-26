@@ -1651,6 +1651,21 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "runs" if listed else f"{agent.pw_name} is not in analyzers",
             "remove the agent's uid from analyzers in signer.yaml; run tracekit analyze --v2 as an operator identity",
             bad=WARN)
+    if prod:   # init keeps the operator's break_glass and agents entries when it replaces the approver
+        approvals = cfg.get("approvals") or {}
+        try:
+            replaced = read_json(client_json).get("replaced_approvers") or []
+        except (OSError, ValueError, AttributeError, TypeError):   # D-SYSTEM-CONFIG's
+            replaced = []
+        stale = [r for r in replaced if r not in (approvals.get("approvers") or ())
+                 and (install._covers(approvals.get("break_glass") or [], r)
+                      or install._covers(approvals.get("agents") or [], r))]
+        add("D-BREAK-GLASS-STALE", not stale,
+            f"{', '.join(stale)} was replaced as approver (client.json replaced_approvers) and approvals.break_glass "
+            "or approvals.agents still names it" if stale
+            else "none of the replaced approvers keeps break_glass or agents rights, or none was replaced",
+            "remove it from approvals.break_glass in signer.yaml, or add it as an approver, then restart the signer",
+            bad=WARN)
     try:
         owner = os.stat(data).st_uid
     except OSError as e:
