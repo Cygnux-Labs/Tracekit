@@ -4054,7 +4054,9 @@ _FIRSTS = {dot: list(dict.fromkeys(p[0] for p in _PROTECTED_PATHS if (p[0][:1] =
 _PATTERNED_MAX = 32   # the patterned components of one path read: a bound that keeps the reading linear
 
 
-_FORMS_MAX = 64   # the forms one path reads as: past it the path is unread (held)
+# the forms one path reads as: past it the path is unread (held). `~/**/x` under dotglob reads as 69 (each folder of a
+# harness and along a trust root, Windows' among them), so a bound under that would hold every such line unread
+_FORMS_MAX = 96
 
 
 def _protected_forms(path, options=(), work=None):
