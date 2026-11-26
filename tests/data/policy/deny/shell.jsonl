@@ -606,3 +606,10 @@
 {"tool": "Bash", "args": {"command": "gh extension install evil/gh-x"}, "expect": "ask", "note": "an extension runs what its definition says (TK-A084)"}
 {"tool": "Bash", "args": {"command": "gh ext exec x"}, "expect": "ask", "note": "executing an extension's code (TK-A084)"}
 {"tool": "Bash", "args": {"command": "gh config set pager 'less -R'"}, "expect": "ask", "note": "the pager, editor or browser is a program gh runs (TK-A084)"}
+{"args": {"command": "kubectl -o yaml get secret db"}, "expect": "ask", "note": "#981: an output given before get still prints the secret (TK-A052)", "tool": "Bash"}
+{"args": {"command": "microk8s kubectl get secret db -o yaml"}, "expect": "ask", "note": "#981: kubectl as microk8s runs it (TK-A052)", "tool": "Bash"}
+{"args": {"command": "minikube kubectl -- get secret db -o yaml"}, "expect": "ask", "note": "#981: kubectl as minikube runs it (TK-A052)", "tool": "Bash"}
+{"args": {"command": "vault login -method=userpass username=ops"}, "expect": "ask", "note": "#981: a Vault login returns a token (TK-A053)", "tool": "Bash"}
+{"args": {"command": "vault write auth/approle/login role_id=r secret_id=s"}, "expect": "ask", "note": "#981: an approle login returns a token (TK-A053)", "tool": "Bash"}
+{"args": {"command": "vault write pki/issue/web common_name=web.example"}, "expect": "ask", "note": "#981: an issued certificate is a credential (TK-A053)", "tool": "Bash"}
+{"args": {"command": "vault token lookup"}, "expect": "ask", "note": "#981: token lookup prints the token's own id (TK-A053)", "tool": "Bash"}
