@@ -320,7 +320,9 @@ in run order (few or no links between them) wraps them into lines as wide as the
 at full size with FIT too (`scroll ↓` when it is taller). With ACTUAL SIZE another flowchart wider than its panel
 scrolls sideways (`scroll →` in the panel's title), and a clicked node is scrolled into view. A held call's node says how its approval ended
 (**APPROVED**, **REJECTED**, **EXPIRED**). The why views follow the run whose page is open; a run that failed
-verification has no graph, and GRAPH says why.
+verification has no graph, and GRAPH says why. A call held for a person and not answered yet has no result, so
+the why log leaves it out: a run whose only call is held shows an empty log, OVERVIEW and WHY say its held calls are in
+CALLS, and INFLUENCE does not count it.
 
 With why logs (`--why DIR`, or a `why/` folder in the data dir) the viewer imports no signed run, so a run without a
 why log has no graph. GRAPH says so and names what shows it: `tracekit view` without `--why`, or, when the data dir
@@ -339,7 +341,7 @@ matrix fills in as tests run; the critical path is the longest chain of the run.
 
 ![INFLUENCE: sources on the left, tools on the right; thicker lines reached in more runs, red lines confirmed causes with their effect; the sources table below](viewer/1.5/influence.png)
 
-Across every why run, INFLUENCE answers one question: did something your agents read come before a blocked or held
+Across every why run, whichever run is selected, INFLUENCE answers one question: did something your agents read come before a blocked or held
 call? It says "came before": the content was in front of the agent when it decided on the call. Only a replay that
 confirmed it says "caused".
 
@@ -404,7 +406,9 @@ source it mixes, and the page's first line says what it read; the
 tips list sessions from every project under the transcripts folder. Dollars are Anthropic's and OpenAI's list prices, dated in
 `tracekit/tips.py`: a subscription bills none of them, but the same tokens fill its usage limit. The sessions of a model with
 no price are left out, with a note naming it. A tip without enough data says so and why. The page is worked out again at most
-once a minute, and at once on **READ AGAIN**. Like the verdicts, the tips are operator-side, not evidence. Its limits
+once a minute, and at once on **READ AGAIN**. The viewer reads each transcript in full once and keeps what it read in
+memory: from then on a transcript that only grew is read from where the last read stopped, one changed any other way from
+its start (`tracekit tips` reads them all each time). Like the verdicts, the tips are operator-side, not evidence. Its limits
 are in [limits](limits.md#viewer).
 
 #### Lessons

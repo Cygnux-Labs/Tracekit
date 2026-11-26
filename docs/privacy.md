@@ -24,7 +24,11 @@ reasoning_capture: true      # also record the model's own text from the Claude 
 
 Point Tracekit at it:
 
-- **dev mode:** set `TRACEKIT_POLICY=/path/to/policy.yaml` in the environment the agent (and so its hooks) runs in.
+- **dev mode (v1):** set `TRACEKIT_POLICY=/path/to/policy.yaml` in the environment the agent (and so its hooks) runs
+  in. Only the v1 engine reads it. The v2 dev signer (`tracekit init --dev --v2`, SDK agents) ignores it and runs the
+  dev pack: to run a v2 policy of your own, see [run your own policy on your
+  machine](policy-guide.md#run-your-own-policy-on-your-machine); `content_capture` is v1's too, and v2's equivalent is
+  [the content vault](#the-content-vault).
 - **system mode:** `TRACEKIT_POLICY` is ignored. Put a root-owned copy outside the agent's reach, set `"policy"` to its
   path in `/etc/tracekit/client.json`, then run `sudo /opt/tracekit/bin/python -I -m tracekit migrate --system` to pin it and restart `tracekitd`.
 

@@ -176,7 +176,7 @@ def _openai_agents(run):
     from agents import Agent
 
     from .integrations.openai_agents import TracekitAgents
-    tk = TracekitAgents(run.client, run.registered)
+    tk = run.openai_agents = TracekitAgents(run.client, run.registered)
 
     def gate(t):
         if getattr(t, "_tracekit", False):   # Agent.clone builds the agent again from its gated tools
@@ -420,13 +420,17 @@ def _close(run):
     try:
         autotrace.flush()
         try:
-            waiting = any(run.call("approval_list", state=state, limit=1)["approvals"] for state in ("requested",
-                                                                                                    "approved"))
+            held = {state: run.call("approval_list", state=state, limit=20)["approvals"]
+                    for state in ("requested", "approved")}
         except Exception:   # a listing that fails (no grant) waits for nothing
-            waiting = False
-        if waiting:
-            logging.getLogger("tracekit").warning("tracekit: run %s left open: approvals of it are waiting for a "
-                                                  "person or to be resumed", run.run_id)
+            held = {}
+        if any(held.values()):
+            lines = [f"  {a['approval_id']}  {a['tool']}\n    approve: tracekit approvals approve {a['approval_id']}\n"
+                     f"    reject:  tracekit approvals reject {a['approval_id']}" for a in held["requested"]]
+            lines += [f"  {a['approval_id']}  {a['tool']}: approved, waiting to be resumed" for a in held["approved"]]
+            logging.getLogger("tracekit").warning(
+                "tracekit: run %s left open: approvals of it are waiting for a person or to be resumed\n%s",
+                run.run_id, "\n".join(lines))
         else:
             run.close("process exit")
     except Exception:   # exiting: nothing left to tell

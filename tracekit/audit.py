@@ -1057,7 +1057,9 @@ def main(argv=None):
             print(f"tracekit audit: no such folder: {root} ({where})", file=sys.stderr)
             return 2
     elif a.calls is None and a.agent is None and not any(_defaults(d) for d, _, _ in READERS.values()):
-        print(f"tracekit audit: no agent's folder found ({where}); give a ROOT, or --calls FILE", file=sys.stderr)
+        print(f"tracekit audit: no coding-agent sessions found: looked for {', '.join(READERS)} sessions under "
+              f"{os.path.expanduser('~')} and where $CLAUDE_CONFIG_DIR, $CODEX_HOME and the like point. Give a ROOT "
+              "folder, or --calls FILE; tracekit audit --help says where each agent keeps them", file=sys.stderr)
         return 2
     try:
         report = audit(root, a.policy, a.since, a.show, agent=a.agent, calls=a.calls)

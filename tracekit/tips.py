@@ -94,6 +94,7 @@ POLLS = {"sleep", "until", "while", "watch"}
 KEYWORDS = {"for", "if", "case", "select", "function", "do", "then"}
 BUILDS = {"pytest", "make", "npm", "npx", "tox", "cargo", "go", "gradle", "mvn"}
 PERSON = {"AskUserQuestion", "ExitPlanMode"}   # tools that wait for a person's answer: no poll keeps that cache
+COUNTS = ("in", "out", "cr", "w5", "w1h", "w")   # a step's token counts, by kind
 READ_CHUNK = 1000   # records one content_get reads for lessons, its most: one signed content.accessed record each
 
 
@@ -125,15 +126,14 @@ def _step(t, mid, model, src="transcripts"):   # a transcript is the agent's to 
             "lat": None, "calls": [], "src": src}
 
 
-def _usage(s, u):
-    """Fold one transcript line's `usage` into step s (Claude Code writes a line per content block, each repeating the
-    message's usage): the largest count of each kind."""
+def _usage(u):
+    """One transcript line's `usage` as its counts of each of COUNTS. Claude Code writes a line per content block, each
+    repeating the message's usage: a step keeps the largest count of each kind (_fold)."""
     split = u.get("cache_creation") if isinstance(u.get("cache_creation"), dict) else {}
     w5, w1h = _int(split.get("ephemeral_5m_input_tokens")) or 0, _int(split.get("ephemeral_1h_input_tokens")) or 0
-    for k, v in (("in", _int(u.get("input_tokens"))), ("out", _int(u.get("output_tokens"))),
-                 ("cr", _int(u.get("cache_read_input_tokens"))), ("w5", w5), ("w1h", w1h),
-                 ("w", max(0, (_int(u.get("cache_creation_input_tokens")) or 0) - w5 - w1h))):
-        s[k] = max(s[k], v or 0)
+    return (_int(u.get("input_tokens")) or 0, _int(u.get("output_tokens")) or 0,
+            _int(u.get("cache_read_input_tokens")) or 0, w5, w1h,
+            max(0, (_int(u.get("cache_creation_input_tokens")) or 0) - w5 - w1h))
 
 
 def _family(cmd):
@@ -192,77 +192,172 @@ def _result_text(content):
     return content[:4096] if isinstance(content, str) else None
 
 
-def read_transcripts(root, since):
+class Transcripts:
+    """What read_transcripts parsed of each Claude Code transcript, kept in memory between reads by the process that
+    serves the TIPS page (Page): {(root, path): _File}. Nothing is written anywhere. A read changes no _File and
+    replaces `files` whole when it ends, so two reads at once each see a complete one (Page's lock keeps them to one at
+    a time, so that none parses again what another just did)."""
+
+    def __init__(self):
+        self.files = {}
+
+
+# a file's lstat when it was read (_stat); the bytes of its complete lines read; the
+# window's start then; its records (_record) from there on; those of a last line without its newline
+_File = collections.namedtuple("_File", "stat offset since records tail")
+
+
+def _stat(st):   # ctime too: no process sets it, and a chmod or a rewrite put back to its mtime still changes it
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
+def _record(e, since, skip=()):
+    """What _fold reads of one transcript line's entry (transcript_entries) from `since` on, else None: an assistant
+    line as ("a", t, message id, model, _usage, its calls as (id, tool, family, cwd)), but none for a message id in
+    `skip`; a user line as ("u", t, its tool results as (tool_use id, failed, error text))."""
+    at = e and _entry_time(e)
+    if at is None or at.timestamp() < since:
+        return None
+    t, m = at.timestamp(), e.get("message") if isinstance(e.get("message"), dict) else {}
+    blocks = [b for b in m.get("content") or () if isinstance(b, dict)] if isinstance(m.get("content"), list) else []
+    if e.get("type") == "assistant":
+        mid, model = m.get("id"), m.get("model")
+        if not isinstance(mid, str) or mid in skip or not isinstance(m.get("usage"), dict) or \
+                model == "<synthetic>":   # an error's stand-in
+            return None
+        cwd, uses = e.get("cwd") if isinstance(e.get("cwd"), str) else None, []
+        for b in blocks:
+            if b.get("type") == "tool_use" and isinstance(b.get("id"), str):
+                inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                uses.append((b["id"], str(b.get("name")), _family(inp.get("command", "")) if b.get("name") == "Bash"
+                             else str(b.get("name")), cwd))
+        return "a", t, mid, model, _usage(m["usage"]), uses
+    if e.get("type") == "user":
+        results = []
+        for b in blocks:
+            if b.get("type") == "tool_result" and isinstance(b.get("tool_use_id"), str):
+                failed = b.get("is_error") is True
+                results.append((b["tool_use_id"], failed, _result_text(b.get("content")) if failed else None))
+        return "u", t, results
+    return None
+
+
+def _records(f, since, skip=()):   # the records (_record) of f's lines from its position, its last line ended or not
+    return filter(None, (_record(e, since, skip) for _, e in transcript_entries(f, final=True)))
+
+
+def _parse(f, since, out):
+    """Append the records (_record) of f's complete lines from its position to `out` -> (their bytes, the records of a
+    last line without its newline: read as a finished file's last line, kept apart until it ends)."""
+    at, n = f.tell(), 0
+    for size, e in transcript_entries(f):
+        n += size
+        r = _record(e, since)
+        if r:
+            out.append(r)
+    if f.tell() == at + n:
+        return n, []
+    f.seek(at + n)
+    return n, list(_records(f, since))
+
+
+def _fold(records, key, project, seen, calls, mine):
+    """Fold one transcript file's records (_record), in its order, into `mine`: its steps by message id. `seen` holds
+    the message ids the files read before it counted, and `calls` their calls: a resumed session's file repeats its
+    earlier messages, which count once, in the first file to hold them."""
+    last_user = None
+    for r in records:
+        if r[0] == "a":
+            _, t, mid, model, usage, uses = r
+            if mid in seen:
+                continue
+            s = mine.get(mid)
+            if s is None:
+                s = mine[mid] = _step(t, mid, model, "transcripts")
+                s["lat"] = t - last_user if last_user is not None else None
+            for k, v in zip(COUNTS, usage):
+                s[k] = max(s[k], v)
+            s["t1"] = max(s["t1"], t)
+            for i, tool, family, cwd in uses:
+                calls[i] = {"id": i, "agent": key, "tool": tool, "t0": t, "t1": None, "family": family,
+                            "project": project, "cwd": cwd}
+                s["calls"].append(i)
+            last_user = None
+        else:
+            for tid, failed, text in r[2]:
+                c = calls.get(tid)
+                if c and c["t1"] is None:
+                    c["t1"] = r[1]
+                    if failed:   # what failed, for a fix lesson's error line
+                        c["error"] = text
+            last_user = r[1]
+
+
+def read_transcripts(root, since, cache=None):
     """Claude Code's transcripts under root, read-only (audit's walk: no symlink followed, nothing written), from
     `since` on -> (agents, calls, files read, unreadable): one agent per transcript file (a session's main file, or one
     of its subagents'), each step a message (by id: a resumed session's file repeats its earlier ones, counted once);
     calls: tool_use id -> {id, agent, tool, family, t0, t1, project (the folder under root), cwd, error (a failed
-    call's result text, for lessons)}."""
-    # lean: every transcript written in the window is read again each time the page is worked out (a 983 MB folder took
-    # 6.7 s and 370 MB); keep each file's offset and fold in only its new lines if a team's week outgrows that
-    agents, calls, seen, unreadable, files = {}, {}, set(), [], 0
+    call's result text, for lessons)}. Without `cache` each file is folded as it is read, in one pass. With `cache` (a
+    Transcripts), a file read before is parsed again only from where that read stopped, when it has only grown since
+    (the same inode, a larger size, an mtime not earlier, the window not earlier), else from its start; every file's
+    records are then folded again."""
+    # lean: a refresh still folds every record in the window again (a 1 GB folder: 1.4 s of a fresh read's 14 s CPU,
+    # with 130 MB of records kept); keep each file's steps too if a team's week outgrows that. A file that grew under
+    # the same inode is taken to be one Claude Code appended to: one rewritten in place to a larger size, or a new file
+    # given a freed inode number, keeps its old start until it shrinks, is replaced or leaves the window
+    real = os.path.realpath(root)
+    agents, calls, seen, unreadable, files, kept = {}, {}, set(), [], 0, {}
     for path, session in _iter_transcripts(root, unreadable):
         try:
-            if os.lstat(path).st_mtime < since:   # not written in the window: nothing in it can be
-                continue
+            st = os.lstat(path)
         except OSError:
             continue
-        f, err = _safe_open(path)
-        if err:
-            unreadable.append({"path": path, "error": err})
+        if st.st_mtime < since:   # not written in the window: nothing in it can be
             continue
-        files += 1
         sub = "subagents" in os.path.relpath(path, root).split(os.sep)
-        project = os.path.relpath(path, os.path.realpath(root)).split(os.sep)[0]   # the walk's paths are real ones
+        project = os.path.relpath(path, real).split(os.sep)[0]   # the walk's paths are real ones
         name = os.path.basename(path)[:-len(".jsonl")]
         key = session + ("/" + name if sub else "")
-        mine, last_user = {}, None
-        try:
-            for _n, e in transcript_entries(f, final=True):
-                at = e and _entry_time(e)
-                if at is None or at.timestamp() < since:
-                    continue
-                t, m = at.timestamp(), e.get("message") if isinstance(e.get("message"), dict) else {}
-                blocks = [b for b in m.get("content") or () if isinstance(b, dict)] if isinstance(m.get("content"), list) else []
-                if e.get("type") == "assistant":
-                    mid = m.get("id")
-                    if not isinstance(mid, str) or not isinstance(m.get("usage"), dict) or \
-                            (mid in seen and mid not in mine) or m.get("model") == "<synthetic>":   # an error's stand-in
-                        continue
-                    s = mine.get(mid)
-                    if s is None:
-                        s = mine[mid] = _step(t, mid, m.get("model"), "transcripts")
-                        s["lat"] = t - last_user if last_user is not None else None
-                        seen.add(mid)
-                    _usage(s, m["usage"])
-                    s["t1"] = max(s["t1"], t)
-                    for b in blocks:
-                        if b.get("type") == "tool_use" and isinstance(b.get("id"), str):
-                            inp = b.get("input") if isinstance(b.get("input"), dict) else {}
-                            calls[b["id"]] = {"id": b["id"], "agent": key, "tool": str(b.get("name")), "t0": t,
-                                              "t1": None, "family": _family(inp.get("command", ""))
-                                              if b.get("name") == "Bash" else str(b.get("name")), "project": project,
-                                              "cwd": e.get("cwd") if isinstance(e.get("cwd"), str) else None}
-                            s["calls"].append(b["id"])
-                    last_user = None
-                elif e.get("type") == "user":
-                    for b in blocks:
-                        tid = b.get("tool_use_id")
-                        c = calls.get(tid) if b.get("type") == "tool_result" and isinstance(tid, str) else None
-                        if c and c["t1"] is None:
-                            c["t1"] = t
-                            if b.get("is_error") is True:   # what failed, for a fix lesson's error line
-                                c["error"] = _result_text(b.get("content"))
-                    last_user = t
-        except OSError as x:
-            unreadable.append({"path": path, "error": f"cannot read: {x}"})
-        finally:
-            f.close()
+        mine, records = {}, []
+        old = cache.files.get((real, path)) if cache else None
+        if old and old.stat == _stat(st) and since >= old.since:
+            kept[real, path] = got = old if since == old.since else old._replace(
+                since=since, records=[r for r in old.records if r[1] >= since],
+                tail=[r for r in old.tail if r[1] >= since])
+            records = got.records + got.tail
+        else:
+            f, err = _safe_open(path)
+            if err:
+                unreadable.append({"path": path, "error": err})
+                continue
+            try:
+                if not cache:   # nothing kept: a message an earlier file counted is passed over before its usage is read
+                    _fold(_records(f, since, seen), key, project, seen, calls, mine)
+                else:
+                    cur = _stat(os.fstat(f.fileno()))
+                    grown = old and old.stat[:2] == cur[:2] and cur[2] > old.stat[2] and cur[2] >= old.offset and \
+                        cur[3] >= old.stat[3] and since >= old.since
+                    if grown:
+                        f.seek(old.offset)
+                        records = [r for r in old.records if r[1] >= since]
+                    n, tail = _parse(f, since, records)
+                    kept[real, path] = _File(cur, n + (old.offset if grown else 0), since, records, tail)
+                    records = records + tail
+            except OSError as x:   # what was read counts, and is read again next time
+                unreadable.append({"path": path, "error": f"cannot read: {x}"})
+            finally:
+                f.close()
+        files += 1
+        _fold(records, key, project, seen, calls, mine)
+        seen.update(mine)
         if mine:
             a = agents.setdefault(key, {"key": key, "kind": "subagent" if sub else "main", "source": "transcripts",
                                         "label": (f"subagent {name[6:14]} of session {session[:8]}" if sub else
                                                   f"session {session[:8]}"), "steps": []})
             a["steps"] += mine.values()
+    if cache:
+        cache.files = {**{k: v for k, v in cache.files.items() if k[0] != real}, **kept}
     for a in agents.values():
         a["steps"].sort(key=lambda s: s["t"])
     return agents, calls, files, unreadable
@@ -904,19 +999,19 @@ def lessons_part(rows, agents, calls, folder, now, since, known=None):
     return lessons.page(rows, calls, folder, _costs(agents), now, since, cwds, known)
 
 
-def build(rows, root=None, now=None, since=None, folder=None, known=None, codex=None):
+def build(rows, root=None, now=None, since=None, folder=None, known=None, codex=None, cache=None):
     """The TIPS page's data: what was read (`sources`), the window (from `since`, by default WINDOW_S before `now`), the
     price table's date, the lessons (lessons_part; their folder `folder`, None outside the dev store) and the three
     tips. A signed step the transcripts also hold counts once, at its signed counts in the transcript's place
     (`sources.signed.also`); one _join refused counts for nothing (`sources.signed.refused`). The signed records are
     the viewer's live view, its newest rows, so they may span less than the window:
     `sources.signed.span`. Codex CLI's session files are read from `codex` (~/.codex/sessions) when that folder
-    exists."""
+    exists. `cache`: the transcripts' (read_transcripts)."""
     now = time.time() if now is None else now
     since = now - WINDOW_S if since is None else since
     rows = [r for r in rows if r and not r.get("signer")]
     signed = signed_steps(rows, since)
-    agents, calls, files, unreadable = read_transcripts(root, since) if root and os.path.isdir(root) else \
+    agents, calls, files, unreadable = read_transcripts(root, since, cache) if root and os.path.isdir(root) else \
         ({}, {}, 0, [])
     codex_agents, codex_files, codex_bad = read_codex_sessions(codex, since)
     part = lessons_part([r for r in rows if (r.get("ts") or 0) >= since], agents, calls, folder, now, since, known)
@@ -975,17 +1070,18 @@ def build(rows, root=None, now=None, since=None, folder=None, known=None, codex=
 class Page:
     """/api/tips' answer: build() over `rows()` (the viewer's rows) and the transcripts under `root`, worked out again
     at most once every `ttl` seconds unless asked `fresh` (READ AGAIN), one request at a time (a week of transcripts
-    takes seconds to read)."""
+    takes seconds to read the first time; after that only what they gained is, `transcripts`)."""
 
     def __init__(self, rows, root, ttl=60, folder=None, known=None, codex=None):
         self.rows, self.root, self.ttl, self.folder, self.known, self.codex = rows, root, ttl, folder, known, codex
-        self.lock, self.at, self.body = threading.Lock(), 0.0, None
+        self.lock, self.at, self.body, self.transcripts = threading.Lock(), 0.0, None, Transcripts()
 
     def __call__(self, fresh=False):
         with self.lock:
             if fresh or self.body is None or time.monotonic() - self.at > self.ttl:
                 self.body = json.dumps(build(self.rows(), self.root, folder=self.folder,
-                                             known=self.known() if self.known else None, codex=self.codex),
+                                             known=self.known() if self.known else None, codex=self.codex,
+                                             cache=self.transcripts),
                                        ensure_ascii=False)
                 self.at = time.monotonic()
             return self.body
