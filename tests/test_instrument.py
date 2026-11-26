@@ -10,7 +10,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import types
+import uuid
 import unittest
 import warnings
 import weakref
@@ -99,6 +101,36 @@ class TestOpenRun(DevSigner):
         self.assertIn("\nIntegrity: VERIFIED TO HEAD", out)
         self.assertIn("(open).\nAssurance: dev", out)
 
+    def test_last_names_the_open_approval_that_keeps_a_run_open(self):
+        """The process had exited, yet last said the run finishes when the agent's process exits."""
+        out = self.sh("-c", "import os; from tracekit.sdk.client import Client; r = Client().run('held-one'); "
+                            "d = r.decide('c1', 'Bash', {'command': 'npm publish'}); "
+                            "a = r.call('approval_request', tool_call_id='c1')['approval_id']; print(a, flush=True); "
+                            "os._exit(0)").stdout.split()[0]
+        err = self.sh("-m", "tracekit", "last", code=1).stderr
+        self.assertIn(f"approval {out} of it waits for a person", err)
+        self.assertIn(f"tracekit approvals approve {out}", err)
+        self.assertNotIn("when the agent's process exits", err)
+
+    def test_last_words_an_answered_approval_by_its_state(self):
+        """A rejected approval was called "not used yet"."""
+        for decision, want in (("reject", "was answered reject: the run finishes when the agent's process exits"),
+                               ("approve", "was approved and not used yet")):
+            with self.subTest(decision):
+                aid = self.sh("-c", "import os; from tracekit.sdk.client import Client; r = Client().run('held-two'); "
+                                    "r.decide('c1', 'Bash', {'command': 'npm publish'}); "
+                                    "a = r.call('approval_request', tool_call_id='c1')['approval_id']; "
+                                    f"Client().approval_decide({{'approval_id': a, 'decision': '{decision}'}}); "
+                                    "print(a, flush=True); os._exit(0)").stdout.split()[0]
+                err = self.sh("-m", "tracekit", "last", code=1).stderr
+                self.assertIn(f"approval {aid} of it {want}", err)
+
+    def test_last_warns_when_tracekit_signer_is_set_but_it_reads_the_dev_signer(self):
+        p = subprocess.run([sys.executable, "-m", "tracekit", "last"], capture_output=True, text=True, cwd=self.dir,
+                           env={**self.env, "TRACEKIT_SIGNER": "/tmp/other.sock"}, timeout=120)
+        self.assertIn("TRACEKIT_SIGNER names /tmp/other.sock, but last reads the dev signer's store", p.stderr)
+        self.assertIn("tracekit last --config signer.yaml", p.stderr)
+
     def test_last_open_explains_coding_agent_session(self):
         self.sh("-c", "import os; from tracekit.sdk.client import Client; r = Client().run('claude-code'); "
                           "r.decide('c1', 'Bash', {'command': 'ls'}); print(r.run_id, flush=True); os._exit(0)")
@@ -127,6 +159,35 @@ class TestOpenRun(DevSigner):
                           "idle timeout", line)
         self.assertIn("still open: it finishes when the Cline task completes",
                       next(line for line in lines if "(cline)" in line))
+
+
+class TestLastConfig(DevSigner):
+    def test_last_config_exports_the_run_of_the_signer_that_config_names(self):
+        """`tracekit last` read the dev signer only, so with a signer started by `signer serve --config` it exported
+        the dev signer's run, or none."""
+        from tracekit.identity.base import CallerIdentity
+        from tracekit.signer import service as svc
+        me = CallerIdentity("uid", str(os.getuid()), True)
+        data = os.path.join(self.dir, "own-signer")
+        s = svc.SignerService(data, grace_s=0, fsck_every_s=0)
+        try:
+            call = lambda m, req: s.call(me, m, {"request_id": uuid.uuid4().hex, **req})   # noqa: E731
+            run = call("register_run", {"agent": {"name": "own-agent"}})
+            call("close_run", {"run_id": run["run_id"], "run_token": run["run_token"]})
+            s.sweep(time.monotonic() + 1)
+            s.checkpoint()
+        finally:
+            s.close()
+        cfg = os.path.join(self.dir, "signer.yaml")
+        with open(cfg, "w") as f:
+            f.write(f'data_dir: "{data}"\n')
+        self.assertEqual(self.sh("-m", "tracekit", "last", code=1).stdout, "")
+        p = self.sh("-m", "tracekit", "last", "--config", cfg, "-o", os.path.join(self.dir, "own.tkb"))
+        self.assertIn(f"run {run['run_id']} (own-agent)\nVERIFIED", p.stdout)
+        self.assertIn(f"trusted: the log key in {data} (from {cfg})", p.stdout)
+        self.assertIn(f"next: tracekit view --config {cfg}", p.stdout)
+        self.assertNotIn("dev signer", p.stdout + p.stderr)
+        self.sh("-m", "tracekit", "last", "--config", os.path.join(self.dir, "missing.yaml"), code=1)
 
 
 class TestThreeSteps(DevSigner):
@@ -529,14 +590,19 @@ class TestInstrument(unittest.TestCase):
         def no_grant(state):
             raise RPCError("forbidden", "approval_list")
 
+        held = {"approval_id": "apr-1", "tool": "transfer_funds"}
         for listing, closed in ((lambda s: {"approvals": []}, True),
-                                (lambda s: {"approvals": [{"approval_id": "a"}] if s == "approved" else []}, False),
-                                (lambda s: {"approvals": [{"approval_id": "a"}] if s == "requested" else []}, False),
+                                (lambda s: {"approvals": [held] if s == "approved" else []}, False),
+                                (lambda s: {"approvals": [held] if s == "requested" else []}, False),
                                 (no_grant, True)):   # a listing that fails waits for nothing
             run = Run(listing)
-            with self.assertLogs("tracekit", "WARNING") if not closed else contextlib.nullcontext():
+            with self.assertLogs("tracekit", "WARNING") if not closed else contextlib.nullcontext() as logs:
                 autowire._close(run)
             self.assertEqual(run.closed, closed)
+            if not closed:   # the person is told which approval, and the command to answer it
+                text = "\n".join(logs.output)
+                self.assertIn("apr-1  transfer_funds", text)
+                self.assertEqual("tracekit approvals approve apr-1" in text, bool(listing("requested")["approvals"]))
 
     def test_release(self):
         for v, want in (("0.23.1", (0, 23, 1)), ("1.2.14", (1, 2, 14)), ("2.3.0rc1", (2, 3, 0)), ("1.4.dev0", (1, 4))):

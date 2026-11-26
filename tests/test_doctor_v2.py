@@ -2080,8 +2080,60 @@ class Detect(unittest.TestCase):
     def collect(self, sc, config=None):
         with mock.patch.object(doctor.client, "system_config", return_value=sc), \
                 mock.patch.object(install, "v1_results", return_value=[doctor.result("D-V1-X", "ok", "v1")]), \
+                mock.patch.object(doctor, "_signer_answers", return_value=[]), \
                 mock.patch.object(doctor, "v2_checks", return_value=[doctor.result("D-V2", "ok", "v2")]) as v2:
             return [r["id"] for r in doctor.collect(config)], v2
+
+    def test_collect_adds_the_signer_answers_row_in_system_mode(self):
+        """The wiring: collect() runs _signer_answers with the socket client.json names."""
+        row = doctor.result("D-SIGNER-ANSWERS", "fail", "no answer", "look")
+        with mock.patch.object(doctor.client, "system_config", return_value={
+                "signer": "/run/tracekit-signer/signer.sock", "hooks": {"user": "nobody-e16"}}), \
+                mock.patch.object(install, "v1_results", return_value=[]), \
+                mock.patch.object(doctor, "v2_checks", return_value=[]), \
+                mock.patch.object(doctor, "_signer_answers", return_value=[row]) as asked:
+            self.assertEqual([r["id"] for r in doctor.collect()], ["D-SIGNER-ANSWERS"])
+        asked.assert_called_once_with("/run/tracekit-signer/signer.sock")
+
+    def test_the_signer_check_closes_its_client_reads_a_refusal_as_one_and_gives_up_on_a_stall(self):
+        from tracekit.signer.rpc_schema import RPCError
+        with mock.patch("tracekit.sdk.client.Client") as c:
+            doctor._signer_answers("/s")
+        c.return_value.close.assert_called_once_with()
+        with mock.patch("tracekit.sdk.client.Client") as c:
+            c.return_value.status.side_effect = RPCError("forbidden", "not yours")
+            (row,) = doctor._signer_answers("/s")
+        self.assertIn("refused a status call", row["detail"])
+        self.assertNotIn("does not answer", row["detail"])
+        with mock.patch.object(doctor.sys, "platform", "darwin"), mock.patch("tracekit.sdk.client.Client") as c:
+            c.return_value.status.side_effect = OSError("gone")
+            (row,) = doctor._signer_answers("/s")
+        self.assertIn("sudo launchctl print", row["fix"])
+        self.assertIn("sudo tail", row["fix"])
+        d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "s.sock")
+        import socket as socketlib
+        srv = socketlib.socket(socketlib.AF_UNIX)
+        srv.bind(path)
+        srv.listen(4)   # accepts into its backlog and never answers
+        self.addCleanup(srv.close)
+        (row,) = doctor._signer_answers(path, wait=0.5)
+        self.assertEqual(row["status"], "fail")
+        self.assertIn("did not answer within 0.5 s", row["detail"])
+
+    def test_a_signer_that_does_not_answer_fails_with_where_to_look(self):
+        """System mode had no check that the signer runs: a crashed one (the re-init crash) left doctor green."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        (row,) = doctor._signer_answers(os.path.join(d, "signer.sock"))
+        self.assertEqual((row["id"], row["status"]), ("D-SIGNER-ANSWERS", "fail"))
+        self.assertIn("does not answer", row["detail"])
+        self.assertRegex(row["fix"], r"systemctl status|launchctl print")
+        self.assertEqual(doctor._signer_answers(None), [])
+        with mock.patch("tracekit.sdk.client.Client") as c:
+            self.assertEqual(doctor._signer_answers("/s")[0]["status"], "ok")
+        c.return_value.status.assert_called_once_with({})
 
     def test_v1_system_mode(self):
         self.assertEqual(self.collect({"socket": "/var/lib/tracekit/tracekitd.sock"})[0], ["D-V1-X"])
@@ -3022,6 +3074,34 @@ class DevProfile(unittest.TestCase):
         self.assertEqual(got["D-HOOKS-PRESENT"], "warn")
         self.assertEqual(got["D-DURABILITY"], "ok")
         self.assertNotIn("D-AGENT-PRIV", got)
+
+    def test_an_sdk_only_dev_setup_is_not_warned_about_missing_hooks(self):
+        """tracekit.instrument() needs no hooks; D-HOOKS-PRESENT warned with `tracekit init --dev --v2` anyway when
+        init never ran. Once init ran (and left no hooks), it is the warning again."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.chmod(d, 0o700)
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/local/bin/claude"):
+            for init_run, status in ((False, "info"), (True, "warn")):
+                got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev", settings=os.path.join(d, "none"),
+                                                            init_run=init_run)}
+                self.assertEqual(got["D-HOOKS-PRESENT"]["status"], status)
+                if not init_run:
+                    self.assertIn("only SDK agents", got["D-HOOKS-PRESENT"]["detail"])
+                    self.assertIn("tracekit init --dev --v2", got["D-HOOKS-PRESENT"]["fix"])
+
+    def test_laptop_system_mode_without_a_deployed_public_witness_is_a_warning_with_the_reason(self):
+        """A fresh system install failed D-WITNESS-CONFIGURED (exit 1) though init says the public witness isn't
+        deployed, and the dev doctor said info. A server's doctor (no system client config) still fails."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.chmod(d, 0o700)
+        with mock.patch.object(public_witness, "configured", return_value=False):
+            system = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, client_json=client.SYSTEM_CONFIG)}
+            server = {r["id"]: r for r in doctor.v2_checks({"data_dir": d})}
+        self.assertEqual(system["D-WITNESS-CONFIGURED"]["status"], "warn")
+        self.assertIn("isn't deployed yet", system["D-WITNESS-CONFIGURED"]["fix"])
+        self.assertEqual(server["D-WITNESS-CONFIGURED"]["status"], "fail")
 
     def test_a_data_dir_not_made_yet_is_checked_where_it_will_be(self):
         """#515: doctor no longer makes the dev data dir, so its file system is the nearest existing parent's."""
