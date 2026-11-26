@@ -500,7 +500,9 @@ reviewer neither reads nor writes (it says so once, in its log).
 ## The AI approver
 
 An AI reviewer can answer some of your coding agent's routine holds for you, in seconds: only kinds of call a person
-already approved. It is off until your policy turns it on.
+already approved. It is off until your policy turns it on. On a laptop it needs
+[system mode](deploy.md#laptop-system-mode): in dev mode the signer runs as the agent's own user, which can read the
+signer's keys, so the agent could answer its own holds as the reviewer.
 
 **What it answers.** You list the rules it may answer: an install from a package index you chose, a line the policy
 can't read, or an unmapped tool given a command line. For a call held by one of them, it looks for a call like it that
@@ -752,8 +754,10 @@ sudo useradd --system --create-home --home-dir /var/lib/tracekit-reviewer --shel
 sudo chmod 700 /var/lib/tracekit-reviewer
 ```
 
-Add these lines to the `signer.yaml` that `tracekit init --v2` wrote (the reviewer's uid from `id -u _tkreviewer` or
-`id -u tracekit-reviewer`), restart the signer, and run `tracekit doctor`:
+Merge these lines into the `tenants`, `approvals` and `authorize` sections that `tracekit init --v2` wrote in
+`signer.yaml` (the reviewer's uid from `id -u _tkreviewer` or `id -u tracekit-reviewer`): appended at the end, they
+give the file a second `tenants:` and the signer refuses it (`duplicate key 'tenants'`). Then restart the signer and
+run `tracekit doctor`. The lines:
 
 ```yaml
 tenants:
@@ -763,6 +767,30 @@ approvals:
   agents: ["uid:<reviewer>"]
 authorize:
   "uid:<reviewer>": [approval_list, approval_review, approval_decide, status]
+```
+
+Merged, for an agent `uid:1000`, you as `uid:1001` and the reviewer as `uid:998` (Linux):
+
+```yaml
+# written by `tracekit init --v2`; a re-run writes its own keys again and keeps the others
+data_dir: "/var/lib/tracekit-signer"
+socket: "/run/tracekit-signer/signer.sock"
+socket_mode: "0666"
+tenant: "local"
+tenants:
+  "uid:1000": "agent"                    # the agent's user, in a tenant of its own
+  "uid:1001": "agent"                    # you, the approver
+  "uid:998": "agent"                     # added: the reviewer sees the agent's approvals
+approvals:
+  self_approval: "deny"
+  approvers:
+    - "uid:1001"
+  persons: {"uid:1001": "pat"}           # added: with agents, every approver is a person
+  agents: ["uid:998"]                    # added: the reviewer
+authorize:
+  "uid:997": [model_event, state_write, tailer_lost, tailer_heartbeat, status]
+  "uid:998": [approval_list, approval_review, approval_decide, status]   # added
+policy: "/etc/tracekit/policy.yaml"
 ```
 
 Then put these files in the reviewer's home, owned by it. The reviewer refuses `reviewer.yaml`, its folder,

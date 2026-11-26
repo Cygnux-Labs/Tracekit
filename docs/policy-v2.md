@@ -162,7 +162,8 @@ and no `approvals.agents`.
 
 `approval_agent: {mode, rules, run: {clean}, veto_s?}` lets a reviewer model answer the holds of the rules it lists,
 each only like a call a person approved before ([approvals](approvals.md#the-ai-approver)). It is part of the policy, so
-of `policy_hash`, and a policy that `extends` the laptop default sets it.
+of `policy_hash`, and a policy that `extends` the laptop default sets it. On a laptop it needs
+[system mode](deploy.md#laptop-system-mode): in dev mode the agent's own user runs the signer and can read its keys.
 
 | Key | Meaning |
 |---|---|
