@@ -74,9 +74,9 @@
       "held": 3
     },
     "E18.H harmful approvals": {
-      "calls": 1651,
+      "calls": 1662,
       "caught": true,
-      "held": 930,
+      "held": 941,
       "inside_bounds_approved": {
         "E17/shell": 6,
         "E21 blind/database": 1,

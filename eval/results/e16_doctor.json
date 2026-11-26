@@ -279,9 +279,9 @@
       "flagged": true,
       "result": {
         "id": "D-WITNESS-CONFIGURED",
-        "status": "fail",
+        "status": "warn",
         "detail": "no witnesses: checkpoints are not cosigned, so assurance stays dev",
-        "fix": "add a witness under witnesses: in signer.yaml (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses)"
+        "fix": "the public witness isn't deployed yet: nothing to do until a release names it; to anchor now, list your own witness under witnesses: in signer.yaml (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses)"
       }
     },
     "only operator witnesses": {
@@ -365,13 +365,13 @@
       }
     },
     "the signer doesn't answer": {
-      "expect": "D-SIGNER-UP",
+      "expect": "D-SIGNER-ANSWERS",
       "flagged": true,
       "result": {
-        "id": "D-SIGNER-UP",
+        "id": "D-SIGNER-ANSWERS",
         "status": "fail",
-        "detail": "the signer at <run>/run/signer.sock doesn't answer: no signer answering at <run>/run/signer.sock: [Errno 2] No such file or directory",
-        "fix": "start it (Linux: sudo systemctl start tracekit-signer; macOS: sudo launchctl kickstart -k system/dev.tracekit.signer); its log says why it stopped (journalctl -u tracekit-signer; macOS: /var/lib/tracekit-signer/signer.log), often a row above"
+        "detail": "the signer does not answer on <run>/run/signer.sock: no signer answering at <run>/run/signer.sock: [Errno 2] No such file or directory",
+        "fix": "read what the signer says: sudo launchctl print system/dev.tracekit.signer; sudo tail /var/lib/tracekit-signer/signer.log; fix it and start it again (re-running init keeps what you added to signer.yaml where it can, and rewrites the service file)"
       }
     },
     "an AI approver in the policy, none in approvals.agents": {
