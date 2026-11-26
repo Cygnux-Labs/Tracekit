@@ -1277,7 +1277,7 @@ class Harnesses(DaemonCase):
         def deep(event, tool, **ids):   # each harness's own pre-tool payload
             return json.dumps({"hook_event_name": event, "tool_name": tool, "cwd": self.d, **ids,
                                "tool_input": {"command": "rm -rf ~", "x": "DEEP"}}).replace(
-                '"DEEP"', "[" * 5000 + "]" * 5000).encode()
+                '"DEEP"', TOO_DEEP_JSON).encode()
         claude = deep("PreToolUse", "Bash", session_id="s", tool_use_id="c")
         for argv, data in ((before, b"not json"),
                            (before, deep("tool.execute.before", "bash", session_id="o", tool_use_id="o1")),

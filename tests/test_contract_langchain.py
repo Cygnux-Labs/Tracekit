@@ -232,6 +232,17 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
                     self.assertTrue(texts, [str(w.message) for w in caught])
                     self.assertTrue(all(t.endswith(f" {wording}: gone") for t in texts), texts)
 
+    def test_a_lost_checkpoint_commitment_of_an_async_call_says_whether_it_may_have_been_recorded(self):
+        for recorded, wording in ((None, "may not have been recorded"), (False, "not recorded")):
+            with self.subTest(recorded=recorded):
+                with mock.patch.object(self.d.signer, "state_write", side_effect=lost(recorded)):
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        self.d.call("echo", {"text": "hi"}, f"call-async-{recorded}", mode="async")
+                texts = [str(w.message) for w in caught if str(w.message).startswith("tracekit: checkpoint commitment for")]
+                self.assertTrue(texts, [str(w.message) for w in caught])
+                self.assertTrue(all(t.endswith(f" {wording}: gone") for t in texts), texts)
+
     def test_a_write_the_signer_recorded_is_not_warned_about(self):
         with mock.patch.object(self.d.signer, "complete", side_effect=lost(True)):
             with warnings.catch_warnings(record=True) as caught:

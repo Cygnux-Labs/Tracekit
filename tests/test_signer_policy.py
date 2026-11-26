@@ -16,7 +16,7 @@ from unittest import mock
 
 import pytest
 
-from factories import SLOWER
+from factories import SLOWER, TOO_DEEP_JSON
 from tracekit import schema
 from tracekit.format.canon import event_hash
 from tracekit.policy2 import classes, compile as pc, shell
@@ -3263,7 +3263,7 @@ class CodingPack(unittest.TestCase):
         inner = json.dumps("*** Begin Patch\n*** Update File: /home/u/.cursor/hooks.json\n@@\n-a\n+b\n*** End Patch\n")
         note = "*** Begin Patch\n*** Update File: /w/src/app.py\n@@\n-a\n+b\n*** End Patch\n"
         held = ()
-        for first in ("[" * 5000 + "]" * 5000, "1" + "0" * 5000):
+        for first in (TOO_DEEP_JSON, "1" + "0" * 5000):
             text = '{"patch": ' + first + ', "patch": ' + inner + "}"
             try:
                 json.loads(text)
