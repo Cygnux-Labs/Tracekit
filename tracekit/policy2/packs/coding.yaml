@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-109'
+version: '2026.11-v2-110'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -1059,6 +1059,17 @@ ask:
     reason: reading a secret's value from a secret store through an MCP tool
     remedy: Have a person approve the held call, or ask the person for the one value the task needs.
     rationale: The MCP twin of TK-A035 for a tool that runs a CLI command; the same value-reading commands are held.
+  - id: TK-A093
+    class: mcp
+    # TK-A021's CLI credential-read commands as the cli_command, command or cmd argument of an MCP command-runner tool,
+    # using the same JSON word-separator and value-bounded scan rules as TK-A036. No `unless`: the call is one subject,
+    # so an exemption could be smuggled in another argument, and TK-A021's help and names-only forms (`pass ls`,
+    # `gopass sync`, `gh auth token --help`) are held here too.
+    tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])([Aa]ws|[Cc]li|[Cc]ommand|[Cc]md|[Ee]xec(ute)?|[Rr]un|[Ss]hell|[Bb]ash|[Tt]erminal)|mcp(:[^/]+/|__).*(Aws|Cli|Command|Cmd|Exec|Execute|Run|Shell|Bash|Terminal)'
+    pattern: '"(cli[_-]?[Cc]ommand|command|cmd)":"(?: |\\[tnr])*?(security(?: |\\[tnr])+?(?:(?:-[hilqv]+|-p(?: |\\[tnr])+?(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*)(?: |\\[tnr])+?){0,8}(?:find-generic-password|find-internet-password)(?:["]| |\\[tnr]|$)|secret-tool(?: |\\[tnr])+?(?:lookup|search)(?:["]| |\\[tnr]|$)|kwallet-query(?:["]| |\\[tnr]|$)|ssh-add(?: |\\[tnr])+?(?:-(?:[^" \\L]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}-[A-KM-Za-z]*L[A-Za-z]*(?:["]| |\\[tnr]|$)|(?:pass|gopass)(?: |\\[tnr])+?(?:[^" \\]|\\[^tnr])+|gh(?: |\\[tnr])+?auth(?: |\\[tnr])+?(?:token(?:["]| |\\[tnr]|$)|status(?:(?: |\\[tnr])(?:[^"\\]|\\.)*?)?(?: |\\[tnr])(?:--show-token|-[a-z]*t[a-z]*)(?:["]| |\\[tnr]|$)|git-credential(?: |\\[tnr])+?get(?:["]| |\\[tnr]|$))|glab(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:auth(?: |\\[tnr])+?status(?:(?: |\\[tnr])(?:[^"\\]|\\.)*?)?(?: |\\[tnr])(?:--show-token|-[a-z]*t[a-z]*)(?:["]| |\\[tnr]|$)|config(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}get(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}token(?:["]| |\\[tnr]|$))|aws(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}configure(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}get(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:[^" \\.]+\.){0,2}(?:aws_secret_access_key|aws_session_token|aws_security_token)(?:["]| |\\[tnr]|$)|(?:kubectl|oc)(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}config(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}view(?:(?: |\\[tnr])(?:[^"\\]|\\.)*?)?(?: |\\[tnr])--raw(?:=(?:true|t|T|1|TRUE|True))?(?:["]| |\\[tnr]|$)|gcloud(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}auth(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,4}(?:application-default(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,4})?print-(?:access|identity)-token(?:["]| |\\[tnr]|$)|(?:git(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}credential|git-credential)(?:-(?:[^" \\]|\\[^tnr])+)?(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:fill|get)(?:["]| |\\[tnr]|$)|keepassxc-cli(?:\.exe)?(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?){0,8}(?:show|clip|attachment-export)(?:["]| |\\[tnr]|$))'
+    reason: reading credentials from an operating-system, browser or CLI store, or listing an SSH agent's keys, through an MCP tool
+    remedy: Have a person approve the held call, or ask the person for the one credential or key the task needs.
+    rationale: The MCP twin of TK-A021 for a tool that runs a CLI command; the same credential-reading commands are held.
   - id: TK-A037
     class: mcp
     # a tool whose name ends in a word for reading a secret, as `mcp__<server>__<tool>` or `mcp:<server>/<tool>`, with
