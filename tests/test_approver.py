@@ -2249,8 +2249,8 @@ class TestReviewerOnTheSigner(Case):
         code, text, _ = friction()
         self.assertEqual(code, 0)
         self.assertIn("held by the AI approver's rules: 5 call(s)\n  a person's earlier yes let the AI answer: 3\n", text)
-        self.assertIn("  the AI cleared (approved or suggested approving, and no person said no or took it back): 2 (67% "
-                      "of the calls a person approved)\n", text)
+        self.assertIn("  the AI cleared (approved or suggested approving, and no person said no or took it back): 2; of "
+                      "the calls a person approved, it cleared 67%\n", text)
         self.assertIn("  false approves (an AI yes a person said no to or took back): 1\n", text)
         code, text, _ = friction("--json")
         self.assertEqual((code, json.loads(text)), (0, out))

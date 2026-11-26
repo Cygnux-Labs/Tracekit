@@ -565,7 +565,7 @@ def friction_lines(out):
     """What `tracekit reviewer friction` prints: friction's counts in plain words (`--json`: as they are)."""
     def n(x):
         return "none yet" if x is None else f"{x:.0f} s"
-    share = "" if out["cleared_share"] is None else f" ({out['cleared_share']:.0%} of the calls a person approved)"
+    share = "" if out["cleared_share"] is None else f"; of the calls a person approved, it cleared {out['cleared_share']:.0%}"
     return [f"held by the AI approver's rules: {out['holds']} call(s)",
             f"  a person's earlier yes let the AI answer: {out['covered']}",
             f"  a person approved: {out['benign']}",
