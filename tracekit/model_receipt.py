@@ -24,7 +24,6 @@ import stat
 import sys
 import time
 
-from . import constraints
 from .format.canon import canonical, loads_strict
 from .policy2.classes import PATH_KEYS, SHELL_KEYS, WORKDIR_KEYS
 
@@ -83,6 +82,7 @@ def _named(tool, args, later=False):
     if tool in WRITERS:
         paths, s = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), "")], {}
     elif tool == "Bash":
+        from . import constraints   # the policy engine's parser: only a Bash call's result needs it
         s = constraints.shell(args)
         paths = s["paths"]
         # a shell tool's own working directory (WORKDIR_KEYS, in any case), not the hook's cwd; any value, as the
