@@ -1964,6 +1964,22 @@ class View(unittest.TestCase):
         self.assertEqual(store.root, other)
         self.assertIn("start with --allow-program", out)
 
+    def test_a_block_is_one_alert_not_the_signed_record_and_the_why_import_of_it(self):
+        """ALERTS read "6 high" for 3 blocked calls: each block was the signer's BLOCKED row and the why import's "was
+        blocked by Tracekit policy" alert of the same call."""
+        run_id = self.finished_run()
+        why_dir = ts.tmpdir(self)
+        feed = store_feed(self, {"data_dir": self.d}, on_run=functools.partial(view.mirror_run, why_dir))
+        self.report(feed, run_id)
+        wait_for(lambda: len(os.listdir(why_dir)) == 1, 15)
+        store = Store(why_dir, out=feed)
+        self.assertTrue([r for r in self.rows(feed, run_id) if r.get("v2", {}).get("decision") == "deny"])
+        self.assertEqual([a["title"] for a in store.workspace()["alerts"] if "blocked" in a["title"]], [])
+        with feed.lock:   # a deny the live view no longer holds is shown by the why alert alone
+            feed.records[:] = [r for r in feed.records if r.get("v2", {}).get("decision") != "deny"]
+        self.assertEqual([a["title"] for a in store.workspace()["alerts"] if "blocked" in a["title"]],
+                         ["rm was blocked by Tracekit policy"])
+
     def test_a_store_with_no_why_logs_still_gets_a_graph_of_each_run_with_its_decisions(self):
         run_id = self.finished_run()
         why_dir = ts.tmpdir(self)
