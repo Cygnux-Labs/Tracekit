@@ -556,7 +556,7 @@ class TestWeb(Signer):
     def test_a_viewer_answer_retried_after_its_run_ends_is_refused(self):
         """The cache holds a viewer's answer under the person it names, with no tenant: only _visible checks that."""
         aid = self.pending("wire")
-        req = {"request_id": "web-1", "approval_id": aid, "on_behalf": ALICE, "decision": "approve"}
+        req = {"request_id": "web-1", "approval_id": aid, "on_behalf": ALICE, "decision": "reject"}
         self.s.call(BRIDGE, "approval_decide", req)
         self.final(aid)
         self.refused("unknown_approval", self.s.call, BRIDGE, "approval_decide", dict(req))
