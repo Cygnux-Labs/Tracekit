@@ -1274,7 +1274,7 @@ class Speed(unittest.TestCase):
                     start = time.perf_counter()
                     self.assertNotIn("nondeterministic", e.decide("Bash", {"command": cmd}))
                     self.assertLess(time.perf_counter() - start, 2 * SLOWER * scale)
-
+    @pytest.mark.serial
     def test_a_gh_api_call_of_many_words_is_read_in_linear_time(self):
         """The 1.8 parsing review: _gh_api copied its list of routes for each word of the call, so 64 KiB of words
         took time quadratic in their count (1.2 s for 30,000). Four times the words now take about four times as long,
@@ -1951,18 +1951,27 @@ class Shell(unittest.TestCase):
         self.assertEqual(shell.runner_at("uv", ["--directory", "run", "run", "x"]), [2])
 
     @pytest.mark.serial
-    def test_a_runner_s_unknown_option_is_read_for_names_within_a_third_of_the_parse_budget(self):
+    def test_a_runner_s_unknown_option_is_read_for_names_in_linear_time(self):
         """Each `run` after an unknown option (`uv --zz run --zz run …`) may be the subcommand, and a program the parser
         doesn't know is read for the paths its words name: once a word, not once a word of each reading (it took 1.13 s
-        against 0.1 s on main when each reading went over the 14,000 words again)."""
-        cmd = "curl -s x | uv " + "--zz run " * ((MAX_SUBJECT - 64) // 9) + "python -c 'exec(input())'"
+        against 0.1 s on main when each reading went over the 14,000 words again). Four times the words take under
+        eight times as long, as for gh api below: a fixed budget failed CI's runners (0.99 s against 0.82) whenever
+        machine_scale read one faster than it then ran."""
+        n = (MAX_SUBJECT - 64) // 9
+
+        def took(e, k):
+            cmd = "curl -s x | uv " + "--zz run " * k + "python -c 'exec(input())'"
+            e.decide("Bash", {"command": cmd})
+            best = float("inf")
+            for _ in range(3):
+                start = time.perf_counter()
+                e.decide("Bash", {"command": cmd})
+                best = min(best, time.perf_counter() - start)
+            return best
         for backend in BACKENDS:
             e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], backend)
-            e.decide("Bash", {"command": cmd})
-            start = time.perf_counter()
-            d = e.decide("Bash", {"command": cmd})
             with self.subTest(backend=backend):
-                self.assertLess(time.perf_counter() - start, 0.6 * machine_scale(), d["rule_ids"])
+                self.assertLess(took(e, n), 8 * took(e, n // 4))
 
     @pytest.mark.serial
     def test_the_second_readings_of_nested_code_stay_within_the_parse_budget(self):
@@ -5453,8 +5462,9 @@ class HarmlessStops(unittest.TestCase):
                       "npx -y create-vite@latest app", "bunx cowsay https://example.com",
                       "npx gen --package https://example.com/x.tgz"]
         # each place the subcommand may be is read up to the next (`uv --a run --a run …`: linear)
-        line, start = "uv " + "--a run " * 8000 + "x", time.perf_counter()
-        Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0]).decide("Bash", {"command": line})
+        e, line = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0]), "uv " + "--a run " * 8000 + "x"
+        start = time.perf_counter()   # the decision, not the pack's build (1.8's grammars made that the larger part)
+        e.decide("Bash", {"command": line})
         self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale())
         for pack, backend in itertools.product(("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)

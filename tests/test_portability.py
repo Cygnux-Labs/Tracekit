@@ -138,13 +138,15 @@ class PluginPackage(unittest.TestCase):
         self.assertEqual(set(hooks), set(install.TOOL_EVENTS + install.OTHER_EVENTS))
         for ev, groups in hooks.items():
             h = groups[0]["hooks"][0]
-            # sh execs /bin/sh on tracekit-hook, so the script runs without its exec bit, and before a tool call blocks
-            # it (2) when it can't read the script (sh's 127 or 126 doesn't block); PowerShell (Windows without Git
-            # Bash) skips that inside <# #> and runs tracekit-hook.ps1 in a try, exiting with the failure code if the
-            # script never starts or throws (#1097)
+            # sh execs /bin/sh on tracekit-hook, so the script runs without its exec bit, and when it can't read the
+            # script it says so and exits with the failure code first: before a tool call that blocks it (2); for the
+            # other events 1, which doesn't block, where /bin/sh's own exit would be 2 under dash (Linux) and stop
+            # Claude from stopping or drop the prompt. PowerShell (Windows without Git Bash) skips that inside <# #>
+            # and runs tracekit-hook.ps1 in a try, exiting with the failure code if the script never starts or throws
+            # (#1097)
             fail = 2 if ev == "PreToolUse" else 1
             check = ('[ -r "${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook" ] || { echo "tracekit plugin: the hook '
-                     'script did not run" >&2; exit 2; }; ') if ev == "PreToolUse" else ""
+                     f'script did not run" >&2; exit {fail}; }}; ')
             self.assertEqual(h["command"],
                              f'echo `# <#`>/dev/null; {check}exec /bin/sh "${{CLAUDE_PLUGIN_ROOT}}/scripts/tracekit-hook" {ev} '
                              f'#> >$null; $LASTEXITCODE = {fail}; '
@@ -297,8 +299,9 @@ class PluginPackage(unittest.TestCase):
 
     @unittest.skipIf(sys.platform == "win32", "PluginInPowerShell (test_hook_invocation.py) runs it on Windows")
     def test_a_missing_or_unreadable_script_blocks_a_tool_call_in_every_sh(self):
-        """sh exits 127 (126) when it can't read the script, which Claude Code doesn't count as a block: the pre-tool
-        command blocks (2) first; the other events stay non-blocking."""
+        """Every command checks the script first: the pre-tool command blocks (2); the other events exit 1, which
+        doesn't block, where sh's own exit for a script it can't open is 127 (126) under bash and 2 under dash
+        (Linux's /bin/sh), which would stop Claude from stopping and drop each prompt."""
         import json
         import shutil as sh_
         import subprocess
@@ -318,16 +321,14 @@ class PluginPackage(unittest.TestCase):
                         f.write("exit 0\n")
                     os.chmod(hook, 0)
                 for shell in shells:
-                    for ev in ("PreToolUse", "Stop"):
+                    for ev in sorted(hooks):
                         r = subprocess.run([shell, "-c", hooks[ev][0]["hooks"][0]["command"]], input="{}",
                                            capture_output=True, text=True,
                                            env={"PATH": "/usr/bin:/bin", "CLAUDE_PLUGIN_ROOT": root})
                         with self.subTest(state=state, shell=shell, event=ev):
-                            if ev == "PreToolUse":
-                                self.assertEqual((r.returncode, r.stderr),
-                                                 (2, "tracekit plugin: the hook script did not run\n"))
-                            else:
-                                self.assertIn(r.returncode, (126, 127), r.stderr)
+                            self.assertEqual((r.returncode, r.stderr),
+                                             (2 if ev == "PreToolUse" else 1,
+                                              "tracekit plugin: the hook script did not run\n"))
 
 
 if __name__ == "__main__":

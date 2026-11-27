@@ -186,8 +186,8 @@ class TestHostileTwins(unittest.TestCase):
         # _quoted makes a pass of the line per quoted word: past QUOTED_WORDS no unless exempts the call (6,500 such
         # words took a second, past DecideTime's budget)
         from tracekit.policy2 import engine as eng
-        few = "pass ls " + " ".join(f"'a {i}'" for i in range(3))
-        many = "pass ls " + " ".join(f"'a {i}'" for i in range(eng.QUOTED_WORDS + 1))
+        few = "pass find " + " ".join(f"'a {i}'" for i in range(3))   # pass find lists names (pass ls NAME shows one)
+        many = "pass find " + " ".join(f"'a {i}'" for i in range(eng.QUOTED_WORDS + 1))
         for backend in ("re2", "regex"):
             e = self.engine("coding", backend, None)
             self.assertNotIn("TK-A021", evaluate(e, "Bash", {"command": few})[0]["rule_ids"])
