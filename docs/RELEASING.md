@@ -55,7 +55,7 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    token. The release workflow doesn't run this step.
 7. If the release changed `plugin/`, copy it to
    [Cygnux-Labs/tracekit-plugin](https://github.com/Cygnux-Labs/tracekit-plugin) (named tracekit-claude-plugin until
-   1.7.1; GitHub redirects the old name), the source of the
+   1.8.0; GitHub redirects the old name), the source of the
    Claude Code plugin directory's listing (this repository is over the directory's 50 MiB limit) and the marketplace
    Claude Code, Codex, Copilot CLI and Cursor install the plugin from (its dot-folders hold each one's manifest). From
    the tagged checkout, `rsync -a --delete --exclude .git --exclude LICENSE plugin/ <clone>/` (the clone keeps its own
@@ -73,6 +73,8 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    v<v>`, replace everything but `.git` in a clone of `Cygnux-Labs/Tracekit.wiki.git` with `/tmp/wiki`, commit and push
    (the first time, save any page in the Wiki tab: GitHub creates the wiki repository only then). Then run the
    website's `npm run check-links`: README, package metadata and the CLI's messages link to these pages.
+10. Point the website at the release: in its `lib/site.ts`, the `version`, the `release` link and the first `news`
+    line.
 
 ### What gets built, signed and published
 
