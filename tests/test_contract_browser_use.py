@@ -1076,6 +1076,8 @@ class HarnessNames(unittest.TestCase):
     the installed REPL worker puts in its namespace and `from browser_harness.helpers import *` brings. Both are read
     from their source: importing the helpers loads the workspace's .env and agent_helpers.py."""
 
+    ADDED = {"rotate_proxy": "1.0.9"}   # a name in HARNESS_OWN that the worker binds only from this version on
+
     @staticmethod
     def tree(package, *path):
         with open(os.path.join(importlib.util.find_spec(package).submodule_search_locations[0], *path),
@@ -1112,10 +1114,14 @@ class HarnessNames(unittest.TestCase):
             elif isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "ns" \
                     and isinstance(node.value, ast.Dict):
                 own.update(k.value for k in node.value.keys)
-        installed = ", ".join(f"{p} {importlib.metadata.version(p)}" for p in ("browser-use", "browser-harness"))
-        why = f"source.py's list was read from browser-use 1.0.3 and browser-harness 0.1.13; installed: {installed}"
+        bu = importlib.metadata.version("browser-use")
+        installed = f"browser-use {bu}, browser-harness {importlib.metadata.version('browser-harness')}"
+        later = {n for n, since in self.ADDED.items() if tuple(map(int, since.split("."))) > tuple(
+            int(p) for p in re.findall(r"\d+", bu)[:3])}
+        why = (f"source.py's list was read from browser-use 1.0.3 to 1.0.9 and browser-harness 0.1.13 (ADDED: names "
+               f"the worker gained, by version); installed: {installed}")
         self.assertEqual(imports, source.HARNESS_IMPORTS, why)
-        self.assertEqual(own - set(dir(builtins)) - set(imports), source.HARNESS_OWN, why)
+        self.assertEqual(own - set(dir(builtins)) - set(imports), source.HARNESS_OWN - later, why)
 
 
 class VersionCheck(VersionCheckCases, unittest.TestCase):

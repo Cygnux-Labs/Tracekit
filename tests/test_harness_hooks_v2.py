@@ -3017,6 +3017,7 @@ class SlowSignerStart(HarnessCase):
         self.assertLess(time.monotonic() - begun, 14, err)
         self.assertEqual(code, CODEX_DENY)
 
+    @pytest.mark.serial   # waits on a deadline: in the parallel run a busy runner's signer start passed its 15 s
     def test_a_cline_hook_still_waits_for_an_approval_within_its_deadline(self):
         """Each signer call takes at most a quarter of what the hook has left, so a Cline hook's approval wait has the
         rest: a person who approves within it lets the call run."""

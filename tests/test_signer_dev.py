@@ -16,6 +16,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 from factories import wait_for
 from test_signer_service import SIGTERM_IN_WAIT
 from tracekit import __version__, cli
@@ -190,6 +192,23 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.assertIn("dev signer stopped (pid ", self.cli("down"))
         self.assertFalse(self.held())
 
+    @pytest.mark.serial
+    def test_down_waits_for_a_signer_slow_to_start(self):
+        """A signer can take longer to start than down's 10 s to stop one (1.8's packs on a loaded runner: `down`
+        right after `up` exited 1, Hung): down waits for one to publish as long as ensure() waits for a starting one."""
+        slow = os.path.join(self.dir, "slow")
+        os.makedirs(slow)
+        with open(os.path.join(slow, "sitecustomize.py"), "w") as f:
+            f.write("import sys, time\n"
+                    "if sys.argv[1:] == ['signer', 'serve', '--dev']:\n"
+                    "    from tracekit.signer import service\n"
+                    "    open_dev = service.open_dev\n"
+                    "    service.open_dev = lambda: time.sleep(12) or open_dev()\n")
+        os.environ["PYTHONPATH"] = os.pathsep.join((slow, ROOT))
+        self.assertIn("dev signer starting", self.cli("up"))
+        self.assertIn("dev signer stopped (pid ", self.cli("down"))
+        self.assertFalse(self.held())
+
     def test_a_signer_still_starting_reports_its_pid(self):
         """#769: a signer that holds the lock but has not published endpoint.json should report its actual PID."""
         os.makedirs(self.run_dir, 0o700, exist_ok=True)
@@ -228,6 +247,24 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.assertNotIn("pid None", message)
         self.assertIn("was still starting after 0.2s", message)
         self.assertIn(os.path.join(self.run_dir, autospawn.LOG), message)
+
+    def test_down_says_hung_for_a_signer_that_never_publishes(self):
+        """A lock holder that never publishes endpoint.json is reported once a start's wait (START_WAIT_S) is over, not
+        waited on for good."""
+        os.makedirs(self.run_dir, 0o700, exist_ok=True)
+        ready = os.path.join(self.run_dir, "ready")
+        child = ("import os, sys, time; from tracekit.locking import lock_file; d = sys.argv[1]; "
+                 "f = open(os.path.join(d, 'signer.lock'), 'a'); lock_file(f); "
+                 "open(os.path.join(d, 'ready'), 'w').close(); time.sleep(30)")
+        p = subprocess.Popen([sys.executable, "-c", child, self.run_dir])
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        wait_for(lambda: os.path.exists(ready), 10)
+        begun = time.monotonic()
+        with mock.patch.object(autospawn, "START_WAIT_S", 1), self.assertRaises(autospawn.Hung) as got:
+            autospawn.down(timeout=0.5, d=self.run_dir)
+        self.assertIn("never published endpoint.json", str(got.exception))
+        self.assertLess(time.monotonic() - begun, 5)
 
     def serving(self, child):
         """`python -c child` with self.run_dir as its argument, once it serves as the dev signer there. Its process."""

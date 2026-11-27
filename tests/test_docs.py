@@ -270,7 +270,7 @@ class PluginSkills(unittest.TestCase):
         main:skills/tracekit-setup/SKILL.md` in that repository."""
         data = read(os.path.join(ROOT, "plugin", "skills", "tracekit-setup", "SKILL.md")).encode("utf-8")
         self.assertEqual(hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest(),
-                         "a792c2ddc745f83318e438814e8dec430cf0c920")   # the plugin's skills, for every agent
+                         "279ea54126c2905a39eef902c5c603f53bb7b1a5")   # the plugin's skills, for every agent
 
 
 class DocTableCells(unittest.TestCase):
