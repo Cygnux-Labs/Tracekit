@@ -6915,9 +6915,10 @@
       }).join("") || `<div class="empty">No actions yet.</div>`);
       $("mixsum").textContent = `${counts.size} tools`;
     }
-    // a time axis: its step, at most `most` ticks (down to a millisecond in a v2 run), and a tick's words
+    // a time axis: its step, at most `most` ticks (down to a millisecond in a v2 run), and a tick's words (rounded to the
+    // millisecond first: a tick at 15.9999999 reads 16.000, not fmtT's floor with the rounded milliseconds, 15.000)
     const tickStep = (span, most = 10) => [...(V2 ? [.001, .002, .005, .01, .02, .05, .1, .2, .5] : []), 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600, 43200, 86400, 604800].find(s => span / s <= most) || 604800;
-    const tickText = (t, step) => step < 1 ? fmtT(t) + "." + String(Math.round(t * 1000) % 1000).padStart(3, "0") : fmtT(t);
+    const tickText = (t, step) => { const ms = Math.round(t * 1000); return fmtT(Math.floor(ms / 1000)) + (step < 1 ? "." + String(ms % 1000).padStart(3, "0") : ""); };
     let laneHits = [], laneKey = [], laneAt = 0;
     function renderLanes() {
       const cv = $("lanes"), wrap = $("lanewrap"), dpr = window.devicePixelRatio || 1, top = 16;

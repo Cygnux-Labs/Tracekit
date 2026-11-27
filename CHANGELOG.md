@@ -145,6 +145,8 @@ Rules by id. The packs are `coding` `2026.11-v2-112`, `dev` `2026.11-dev-14`, `s
   call. An OpenAI Agents run under `tracekit.instrument()` can resume a held call in the process that paused, and the
   docs have a `signer.yaml` recipe for your own policy on a laptop (#1156).
 - An unreachable signer's fail mode is read from the pack's tools map, so the hook keeps its deadline (#1157).
+- The DESK timeline's time axis carries a second when a tick's milliseconds round up: it read 18:10:15.900,
+  18:10:15.000, 18:10:16.100.
 - The v1 Claude Code hook keeps a payload's `agent_id` only when it is valid (#1130, by @MikeFTV).
 - jcode's hooks are taken out of a `config.toml` jcode re-saved (#1093, by @lyn1dev).
 - The reviewer remembers answered approval ids across a restart (#1046, by @tharunsridhar).

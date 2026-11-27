@@ -631,6 +631,19 @@ class Span(unittest.TestCase):
             process.stdout.write(JSON.stringify(seen));"""))
         self.assertEqual(out, ["240.0h", "17s"])
 
+    def test_a_lane_tick_carries_the_second_its_milliseconds_round_up_to(self):
+        """The DESK lane's axis read 18:10:15.900, 18:10:15.000, 18:10:16.100: a tick summed to 15.9999999 took fmtT's
+        floor, :15, with its milliseconds rounded, .000."""
+        needs_node(self)
+        out = json.loads(page_js(["tickText"], """
+            const fmtT = ts => new Date(ts * 1000).toISOString().slice(11, 19);
+            let t = 15.7; const seen = [];
+            for (let k = 0; k < 5; k++, t += .1) seen.push(tickText(t, .1));
+            seen.push(tickText(16.9999999, 1));
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out, ["00:00:15.700", "00:00:15.800", "00:00:15.900", "00:00:16.000", "00:00:16.100",
+                               "00:00:17"])
+
     def test_desk_counts_approved_as_approvals_does(self):
         """DESK said APPROVED 4 (approval answers) where APPROVALS said 3 approved: one of the four expired unused."""
         needs_node(self)
