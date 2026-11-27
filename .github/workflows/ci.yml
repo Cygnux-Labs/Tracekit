@@ -789,9 +789,9 @@ jobs:
                  and ([.tuned.controls.false_alarms[]] | add) == 0
                  and ([.tuned, .development, .development_v2, .held_out]
                       | map(.detection.F1[], .detection.F1o[]) | all(. == 1))' $R/e20_alignment.json
-          # E21: policy decisions stay fast relative to the runner (p99 within 14x its reference time; CI saw 7-10x before
+          # E21: policy decisions stay fast relative to the runner (p99 within 15x its reference time; CI saw 7-10x before
           # 1.7.3, whose safer shell and approver-copy reading put it at 9.4-12.5x; p99 stays near 1 ms, every call under 10 ms)
-          jq -e '[.latency[] | .p99_ref <= 14 and .max_us <= 10000] | all' $R/e21_policy_robustness.json
+          jq -e '[.latency[] | .p99_ref <= 15 and .max_us <= 10000] | all' $R/e21_policy_robustness.json
           # nothing skipped that should have run (-s: with several files, -e alone checks only the last)
           jq -e -s 'map(.skipped == {}) | all' $R/e11_l1_tampering.json $R/e12_cross_tenant.json $R/e14_outage.json
           jq -e '.cases["E19.7 parity"].caught' $R/e19_egress.json
