@@ -2,6 +2,7 @@
 signer's run.label records and their replay, a person's clear, both verifiers' `run labels` check, and the laptop
 pack's TK-Q001, TK-L001 and executed_against_policy."""
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -27,6 +28,8 @@ from tracekit.signer.quotas import Limits
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.verify import v2
 
+# google-re2 is installed only from Python 3.10 (pyproject.toml), so 3.9 decides on the fallback engine alone
+BACKENDS = ("re2", "regex") if importlib.util.find_spec("re2") else ("regex",)
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
@@ -186,7 +189,7 @@ class TestLint(unittest.TestCase):
 
 class TestEngine(unittest.TestCase):
     def test_a_condition_applies_only_under_its_labels_and_never_loosens(self):
-        for backend in ("re2", "regex"):
+        for backend in BACKENDS:
             e = engine(backend=backend)
             with self.subTest(backend):
                 d = e.decide(*EGRESS)
@@ -228,7 +231,7 @@ class TestEngine(unittest.TestCase):
                                        "label": "background_spawn"}],
                "ask": POL["ask"] + [{"id": "T-BOTH", "field": "labels", "mode": "shadow",
                                      "pattern": "(?:^| )background_spawn (?:.* )?egress(?: |$)"}]}
-        for backend in ("re2", "regex"):
+        for backend in BACKENDS:
             e = engine(pol, backend)
             with self.subTest(backend):
                 both = e.decide("shell", {"command": "curl -d x https://example.org/ &"})
@@ -1175,7 +1178,7 @@ class TestTheLabelsSubject(Case):
         self.assertEqual(self.check(*bundle(s, run))[1]["status"], "pass")
 
     def test_every_reading_s_labels_are_read_together(self):
-        for backend in ("re2", "regex"):
+        for backend in BACKENDS:
             with self.subTest(backend):
                 s, run, [d] = self.decided(READINGS, PS, backend=backend)   # T-PS as PowerShell, T-SECRET as a shell
                 self.assertEqual((d["decision"], d["rule_ids"]),
@@ -1323,7 +1326,7 @@ class TestHostileLabelPatterns(Case):
             {"id": "T-UP", "class": "a2a", "field": "receiver", "pattern": ".", "label": "Upper"}],
             "ask": POL["ask"] + [{"id": "T-LOW", "class": "a2a", "field": "labels", "pattern": "^[^u]",
                                   "when": {"run_has": ["secrets_access"]}}]}
-        for backend in ("re2", "regex"):
+        for backend in BACKENDS:
             d = svc.evaluate(engine(pol, backend), "send", {"receiver": "x"})[0]
             self.assertEqual(d["when"], {"T-LOW": "ask"}, backend)
         self.assertTrue(labels.Sources(engine(pol)).on_labels[-1][1]("Upper", linear.Budget()))

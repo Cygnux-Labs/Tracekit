@@ -1036,7 +1036,7 @@ class UnlessCli(unittest.TestCase):
     def test_gcloud_flags_between_its_group_and_its_command(self):
         # round 8's F4: gcloud reads a global flag anywhere along the command path; TK-A056 reads its command as
         # `gcloud run deploy …` (a --no-traffic deploy stays exempt)
-        e = self.engines[("dev", "re2")]
+        e = self.engines[("dev", BACKENDS[0])]
         for line in ("gcloud run --project p deploy svc", "gcloud functions --project=p deploy f",
                      "gcloud app --project p deploy", "gcloud run services --project p update svc --image x",
                      "gcloud beta run --format json deploy svc"):
@@ -1052,7 +1052,7 @@ class UnlessCli(unittest.TestCase):
         # round 9's F1: a global flag, its value in the next word or after `=`, before each word of a held command's
         # path, after a release track or inside a group the table doesn't name (app services): the flags every
         # command takes (grammar.subcommand_at, from the deepest path the table names)
-        e = self.engines[("dev", "re2")]
+        e = self.engines[("dev", BACKENDS[0])]
         paths = [(["app", "deploy"], []), (["app", "services", "set-traffic"], ["s", "--splits", "v=1"]),
                  (["app", "versions", "migrate"], ["v1"]), (["alpha", "app", "deploy"], []),
                  (["run", "deploy"], ["svc"]), (["beta", "run", "services", "update"], ["svc", "--image", "x"])]

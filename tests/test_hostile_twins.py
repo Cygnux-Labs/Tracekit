@@ -16,6 +16,7 @@ command line: its twins carry E in a decoy argument, in another argument the cla
 that ends as the exempted key does, and in a decoy argument of the call sent through an MCP tool."""
 import argparse
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -30,6 +31,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACKS = os.path.join(ROOT, "tracekit", "policy2", "packs")
 SHIPPED = ("coding", "dev", "server", "strict")
 MCP = "mcp__shell__run_command"   # an MCP tool given a command line
+# google-re2 is installed only from Python 3.10 (pyproject.toml), so 3.9 decides on the fallback engine alone
+BACKENDS = ("re2", "regex") if importlib.util.find_spec("re2") else ("regex",)
 
 # shell rules: (base command, its exempt form, the exempt text E in it, an option of that program that takes a value).
 # An exempt flag (the exempt form is the base and E) is rewritten in the exempt form; an exempt value (a path, a URL:
@@ -158,7 +161,7 @@ class TestHostileTwins(unittest.TestCase):
     def setUpClass(cls):
         cls.pols = packs()
         cls.engines = {(p, b, r): Engine({**pol, "tools": {**pol["tools"], **TOOLS.get(r, {})}}, b)
-                       for p, pol in cls.pols.items() for b in ("re2", "regex") for r in (None, *TOOLS)}
+                       for p, pol in cls.pols.items() for b in BACKENDS for r in (None, *TOOLS)}
 
     def engine(self, name, backend, rid):
         return self.engines[name, backend, rid if rid in TOOLS else None]
@@ -169,7 +172,7 @@ class TestHostileTwins(unittest.TestCase):
     def test_each_entry_is_a_real_exemption(self):
         """The base matches its rule and the exempt form doesn't: the twins test the exemption the rule has."""
         for rid, names in unless_rules(self.pols).items():
-            e = self.engine(names[0], "re2", rid)
+            e = self.engine(names[0], BACKENDS[0], rid)
             if rid in LINES:
                 pairs = [(("Bash", {"command": x[0]}), ("Bash", {"command": x[1]}))
                          for x in (LINES[rid] if isinstance(LINES[rid], list) else [LINES[rid]])]
@@ -188,7 +191,7 @@ class TestHostileTwins(unittest.TestCase):
         from tracekit.policy2 import engine as eng
         few = "pass find " + " ".join(f"'a {i}'" for i in range(3))   # pass find lists names (pass ls NAME shows one)
         many = "pass find " + " ".join(f"'a {i}'" for i in range(eng.QUOTED_WORDS + 1))
-        for backend in ("re2", "regex"):
+        for backend in BACKENDS:
             e = self.engine("coding", backend, None)
             self.assertNotIn("TK-A021", evaluate(e, "Bash", {"command": few})[0]["rule_ids"])
             self.assertIn("TK-A021", evaluate(e, "Bash", {"command": many})[0]["rule_ids"])
@@ -199,7 +202,7 @@ class TestHostileTwins(unittest.TestCase):
                  "curl --expand-request POST https://api.stripe.com/v1/refunds",
                  "curl -G --expand-data-urlencode amount=5 https://api.stripe.com/v1/refunds -d limit=3"]
         for name in SHIPPED:
-            for backend in ("re2", "regex"):
+            for backend in BACKENDS:
                 for line in lines:
                     d = evaluate(self.engine(name, backend, None), "Bash", {"command": line})[0]
                     self.assertIn("TK-A043", d["rule_ids"], (name, backend, line))
@@ -210,7 +213,7 @@ class TestHostileTwins(unittest.TestCase):
         for rid, names in sorted(unless_rules(self.pols).items()):
             for shape, base, twin in twins(rid):
                 for name in names if (rid, shape) not in NOT_TWINS else ():
-                    for backend in ("re2", "regex"):
+                    for backend in BACKENDS:
                         e = self.engine(name, backend, rid)
                         a, b = evaluate(e, *base)[0], evaluate(e, *twin)[0]
                         if looser(b, a) or rid in a["rule_ids"] and rid not in b["rule_ids"]:
@@ -290,7 +293,7 @@ class TestHelpRequests(unittest.TestCase):
                  "tracekit srt-decider srt-proxy --data-dir /var/lib/tracekit --help": True,
                  "tracekit signer serve --help > /var/lib/tracekit/x": True}
         for name, pol in packs().items():
-            for backend in ("re2", "regex"):
+            for backend in BACKENDS:
                 e = Engine(pol, backend)
                 got = {line: "TK-D007" in evaluate(e, "Bash", {"command": line})[0]["rule_ids"] for line in lines}
                 self.assertEqual(got, lines, (name, backend))

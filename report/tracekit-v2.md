@@ -404,7 +404,7 @@ cases a and b through the TypeScript client. Every store must pass `tracekit sig
 | Scenario | Passed | Measured |
 |---|---|---|
 | a fail closed | yes | blocked 20; calls while down 20 |
-| b fail open | yes | calls while down 20; ran 20; fsck problems 0 |
+| b fail open | yes | calls while down 20; ran 20; reported after recovery 20; fsck problems 0 |
 | c restart | yes | approval after restart approved; asked ask; decide after allow; decide before allow; completed; consumed; fsck problems 0 |
 | d partition | yes | client timeout ms 1000.0; fs ran unrecorded 20; shell blocked 20; fsck problems 0 |
 | e witness unreachable | yes | answered 40; calls while down 40; degraded unanchored gaps 1; witness failed gaps 2; cosigned after recovery; fsck problems 0 |
@@ -419,9 +419,9 @@ Latency of a tool call under the partition (scenario d):
 <!-- table e14-partition -->
 | Phase | Calls | p50 ms | p95 ms | added p50 ms | added p99 ms |
 |---|---|---|---|---|---|
-| baseline | 200 | 1.97 | 2.18 | - | - |
-| during | 40 | 1004.47 | 1006.13 | 1002.5 | 1005.35 |
-| after | 200 | 1.97 | 3.03 | 0.01 | 4.5 |
+| baseline | 200 | 2.11 | 2.87 | - | - |
+| during | 40 | 1003.75 | 1005.51 | 1001.64 | 1005.96 |
+| after | 200 | 2.12 | 3.39 | 0.01 | 5.55 |
 
 Client timeout: 1000.0 ms.
 <!-- /table -->
