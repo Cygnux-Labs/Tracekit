@@ -3229,6 +3229,213 @@
       margin: -4px 8px 2px
     }
 
+    /* INFLUENCE's card's WHY: the call's words, then its chain top to bottom (a thin hop per step), a solid line
+       from a step the signer traced an argument to (exact), a double one from a step a replay showed changed the call
+       (measured: a wide stroke with the panel's colour down its middle), a dashed hint only when asked for */
+    .iwhy .w {
+      font-size: 13px
+    }
+
+    /* INFLUENCE's card per call stopped or flagged: what happened and why in one line, the value's route below, how
+       it is known as a tag; the same call that ran with a trusted value beside it; the rest one quiet line */
+    .icards {
+      display: grid;
+      gap: 8px;
+      margin: 6px 0 4px
+    }
+
+    .icard {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      align-items: flex-start
+    }
+
+    .icard .main {
+      flex: 1 1 420px;
+      min-width: 0;
+      border-left: 3px solid var(--line2);
+      padding: 2px 0 4px 10px
+    }
+
+    .icard.c-blk .main {
+      border-left-color: var(--red)
+    }
+
+    .icard.c-held .main {
+      border-left-color: var(--amber)
+    }
+
+    .icard.c-flag .main {
+      border-left-color: var(--cyan)
+    }
+
+    .icard .ih {
+      font-size: 14px;
+      color: var(--text)
+    }
+
+    .icard .ih .vb,
+    .icard .itwin .vb {
+      font-weight: 700
+    }
+
+    .icard.c-blk .ih .vb {
+      color: var(--red)
+    }
+
+    .icard.c-held .ih .vb {
+      color: var(--amber)
+    }
+
+    .icard.c-flag .ih .vb {
+      color: var(--cyan)
+    }
+
+    .icard .ih .why {
+      color: var(--muted)
+    }
+
+    /* a value the agent's content chose, in a card's sentence: data, not our words */
+    .icard code.dv {
+      font: inherit;
+      color: var(--text);
+      background: var(--panel2);
+      border: 1px solid var(--line2);
+      border-radius: 3px;
+      padding: 0 3px
+    }
+
+    .ipath {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      margin: 4px 0;
+      font-size: 11px
+    }
+
+    .ipath .hop {
+      border: 1px solid var(--line2);
+      padding: 1px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 34ch
+    }
+
+    .ipath .hop.bad {
+      border-color: var(--red);
+      color: var(--red)
+    }
+
+    .ipath .hop.end {
+      color: var(--text);
+      border-color: var(--muted)
+    }
+
+    .ipath .ar {
+      color: var(--faint)
+    }
+
+    .ipath .ar.bad {
+      color: var(--red)
+    }
+
+    .icard .imeta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 2px
+    }
+
+    .icard .itwin {
+      flex: 0 1 260px;
+      border: 1px solid var(--line2);
+      border-left: 3px solid var(--green);
+      padding: 3px 8px;
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .icard .itwin .vb {
+      color: var(--green)
+    }
+
+    .icard .iwhy {
+      flex-basis: 100%;
+      margin: 2px 0 4px 13px
+    }
+
+    .iquiet {
+      margin: 4px 0;
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .iquiet div {
+      margin-left: 14px
+    }
+
+    .ichain {
+      display: block;
+      margin: 2px 0;
+      overflow: visible
+    }
+
+    .glegend .ichain {
+      display: inline-block;
+      vertical-align: middle
+    }
+
+    .ichain text {
+      fill: var(--text);
+      font-size: 11px
+    }
+
+    .ichain text.dim {
+      fill: var(--muted)
+    }
+
+    .ichain path {
+      fill: none
+    }
+
+    .ichain .hop {
+      stroke: var(--muted);
+      stroke-width: 1
+    }
+
+    .ichain .dot {
+      fill: var(--muted)
+    }
+
+    .ichain .dot.bad {
+      fill: var(--red)
+    }
+
+    .ichain .g-exact {
+      stroke: var(--amber);
+      stroke-width: 2
+    }
+
+    .ichain .g-measured {
+      stroke: var(--amber);
+      stroke-width: 5
+    }
+
+    .ichain .g-gap {
+      stroke: var(--panel2);
+      stroke-width: 1.6
+    }
+
+    .ichain .g-hint {
+      stroke: var(--muted);
+      stroke-width: 1;
+      stroke-dasharray: 3 3
+    }
+
     /* INFLUENCE's flow: each kind of content (left) to the tools called after it (right), as GRAPH draws inputs and
        tool calls; a line is coloured as its chip, a hovered or clicked one stays bright and the rest dim; a plain line
        shows only for the content or tool pointed at or clicked */
@@ -6708,9 +6915,10 @@
       }).join("") || `<div class="empty">No actions yet.</div>`);
       $("mixsum").textContent = `${counts.size} tools`;
     }
-    // a time axis: its step, at most `most` ticks (down to a millisecond in a v2 run), and a tick's words
+    // a time axis: its step, at most `most` ticks (down to a millisecond in a v2 run), and a tick's words (rounded to the
+    // millisecond first: a tick at 15.9999999 reads 16.000, not fmtT's floor with the rounded milliseconds, 15.000)
     const tickStep = (span, most = 10) => [...(V2 ? [.001, .002, .005, .01, .02, .05, .1, .2, .5] : []), 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600, 43200, 86400, 604800].find(s => span / s <= most) || 604800;
-    const tickText = (t, step) => step < 1 ? fmtT(t) + "." + String(Math.round(t * 1000) % 1000).padStart(3, "0") : fmtT(t);
+    const tickText = (t, step) => { const ms = Math.round(t * 1000); return fmtT(Math.floor(ms / 1000)) + (step < 1 ? "." + String(ms % 1000).padStart(3, "0") : ""); };
     let laneHits = [], laneKey = [], laneAt = 0;
     function renderLanes() {
       const cv = $("lanes"), wrap = $("lanewrap"), dpr = window.devicePixelRatio || 1, top = 16;
@@ -8369,11 +8577,11 @@
     const kindName = k => KIND[k] || (String(k).startsWith("tool:") ? "output of " + String(k).slice(5) : String(k));
     const many = (n, w) => Number(n).toLocaleString("en-US") + " " + w + (n === 1 ? "" : "s");
     // how a call content led to ended, worst first, and its chip's class
-    const ENDS = [["blocked", "blk"], ["held", "held"], ["flagged", "flag"]];
-    // a tool a row led to: {tool, runs, confirmed, tested, ruled_out, effect, ended: {blocked, held, flagged},
+    const ENDS = [["blocked", "blk"], ["rejected", "blk"], ["held", "held"], ["flagged", "flag"]];
+    // a tool a row led to: {tool, runs, confirmed, tested, ruled_out, effect, ended: {blocked, rejected, held, flagged},
     // stopped_runs}; a confirmed cause, or a call it led to that was blocked or held, is always shown (flagged ones are
     // common: they come first among the rest)
-    const stopped = t => t.confirmed || t.ended.blocked || t.ended.held;
+    const stopped = t => t.confirmed || t.ended.blocked || t.ended.rejected || t.ended.held;
     // a tool's class (its chip's, and its line's in the flow), how the calls ended, and all it says
     const tone = t => t.confirmed ? "deny" : ENDS.find(([k]) => t.ended[k])?.[1] || (t.tested && t.ruled_out ? "ruled" : "");
     const endWords = t => ENDS.filter(([k]) => t.ended[k]).map(([k]) => `${Number(t.ended[k]).toLocaleString("en-US")} ${k}`).join(" · ");
@@ -8408,24 +8616,138 @@
       const all = Object.values(T);
       return all.filter(t => t.marked).sort(order).concat(all.filter(t => !t.marked).sort((a, b) => b.runs - a.runs || a.tool.localeCompare(b.tool)));
     }
-    // The answer, first: the untrusted content that came before calls blocked or held, or that a replay confirmed caused
-    // calls, the worst INFLSAY (a confirmed cause, then the most calls stopped, the most runs), each opening its row as
-    // its line in the flow does (its data-* are indices into IFL.keys and IFL.tools, as the flow's)
-    const INFLSAY = 3;
-    function inflAnswer(groups, tools) {
-      const at = dict(tools.map((t, j) => [t.tool, j]));
-      const risky = groups.flatMap((g, k) => g.trust !== "untrusted" ? [] : g.reach.filter(stopped).map(t => ({ g, k, t, n: (t.ended.blocked || 0) + (t.ended.held || 0) })))
-        .sort((a, b) => b.t.confirmed - a.t.confirmed || b.n - a.n || (b.t.stopped_runs || 0) - (a.t.stopped_runs || 0) || a.t.tool.localeCompare(b.t.tool));
-      const line = ({ g, k, t, n: stopped }) => {
-        const name = kindName(g.kind), stops = ENDS.slice(0, 2).filter(([w]) => t.ended[w]).map(([w, c]) => `<b class="${esc(c)}">${esc(Number(t.ended[w]).toLocaleString("en-US") + " " + w)}</b>`).join(" and ");
-        const n = g.mine.filter(s => (s.confirmed_tools || []).includes(t.tool)).length, cause = `a replay confirmed ${n > 1 ? n : "one"} of these caused ${t.tool} calls`;
-        return `<div class="ans" role="button" tabindex="0" data-ifk="${esc(k)}" data-ift="${esc(at[t.tool])}"><b>${esc(name.charAt(0).toUpperCase() + name.slice(1))}</b> <span class="bad">(untrusted)</span>`
-          + (stops ? ` came before ${stops} ${esc(t.tool)} ${stopped === 1 ? "call" : "calls"}${t.stopped_runs ? esc(` in ${many(t.stopped_runs, "run")}`) : ""}` + (t.confirmed ? esc("; " + cause) : "") : esc(": " + cause))
-          + (t.confirmed ? ` <b class="blk">${esc(`(effect ${sgn(t.effect)})`)}</b>` : "") + `</div>`;
-      };
-      return `<div class="inans"><div class="q">DID SOMETHING YOUR AGENTS READ COME BEFORE A BLOCKED OR HELD CALL?</div>`
-        + (risky.some(x => x.n) ? "" : `<div class="none">Nothing untrusted came before a blocked or held call.</div>`) + risky.slice(0, INFLSAY).map(line).join("")
-        + (risky.length > INFLSAY ? `<div class="dim">${esc(`and ${risky.length - INFLSAY} more in the rows below`)}</div>` : "") + `</div>`;
+    // The answer, first: each risky call (stopped, flagged, or with an argument or cause from what the agents read), the
+    // ones that serve no step of the task first, in the server's words, then its chain drawn top to bottom: a thin hop
+    // per step (in a model call's context, or asked for by it), and from a step to the call a solid line where the
+    // signer's provenance traced an argument to it (exact) and a double line where a replay showed it changed the call
+    // (measured). Hints (text overlap) are never an influence: off unless asked for (IFL.hint), then dashed and listed.
+    // WHY opens the call in its run
+    const BASIS = { recorded: "the agent's runtime recorded its context", gateway: "the LLM gateway recorded the request sending it",
+                    reconstructed: "observed earlier in the run: the import reconstructs the context" };
+    function inflChain(c, W) {
+      // asked for, the hints off the chain are rows of their own below the call, each a dashed line up to it. A step's
+      // line to the call curves left of the dots, beside the steps it joins, each a little wider than the one below it
+      const on = new Set(c.chain.map(x => x.node)), more = (IFL.hint ? c.hints : []).filter(h => !on.has(h.src) && on.add(h.src));
+      const st = [...c.chain, ...more.map(h => ({ node: h.src, text: "read " + h.label, trust: h.trust, hint: true }))];
+      const RH = 24, DX = 40, last = c.chain.length - 1, f = x => x.toFixed(1), y = i => i * RH + RH / 2;
+      const hinted = new Set(IFL.hint ? c.hints.map(h => h.src) : []);
+      let s = `<svg class="ichain" width="${esc(W)}" height="${esc(st.length * RH)}" viewBox="${esc(`0 0 ${W} ${st.length * RH}`)}">`;
+      for (let i = 0; i < last; i++) s += `<path class="hop" d="${esc(`M${DX},${f(y(i) + 6)}V${f(y(i + 1) - 6)}`)}"/>`;
+      st.forEach((x, i) => {
+        const bend = f(Math.max(2, DX - 10 - 3 * Math.abs(i - last))), arc = `M${DX - 5},${f(y(i))} C${bend},${f(y(i))} ${bend},${f(y(last))} ${DX - 5},${f(y(last))}`;
+        if (i !== last && x.grade === "exact") s += `<path class="g-exact" d="${esc(arc)}"/>`;
+        else if (i !== last && x.grade === "measured") s += `<path class="g-measured" d="${esc(arc)}"/><path class="g-gap" d="${esc(arc)}"/>`;
+        else if (i !== last && hinted.has(x.node)) s += `<path class="g-hint" d="${esc(arc)}"/>`;
+        s += `<circle class="${esc(x.trust === "untrusted" ? "dot bad" : "dot")}" cx="${esc(DX)}" cy="${esc(f(y(i)))}" r="3.5"/>`
+          + `<text${x.hint ? ` class="dim"` : ""} x="${esc(DX + 12)}" y="${esc(f(y(i) + 4))}">${esc(fit(x.text + (x.how ? ` (${x.how})` : "") + (x.hint ? " (hint)" : ""), Math.floor((W - DX - 16) / 6.6)))}</text>`;
+      });
+      return s + `</svg>`;
+    }
+    // what a call's WHY shows: its words, its chain, and each link and replay in a line
+    function inflWhy(c, W) {
+      // an argument the signer traced twice (as an address and as a string, say) is one line
+      const by = g => c.edges.filter(e => e.grade === g), seen = by("seen");
+      const lines = [
+        ...by("exact").map(e => `exact: ${e.label} holds its \`${e.field}\`, and nothing the signer indexed as trusted does (the call's signed records, which this viewer verified${e.bound ? "" : "; the call's arguments here are the log's, not checked against them"})`),
+        ...by("claimed").map(e => e.basis === "local replay"
+          ? `claimed (local replay): the log's own test says a replay without ${e.label} changed it, effect ${sgn(e.effect)}; no signed replay this viewer verified backs it`
+          : `claimed by the log, not checked against the signer: its \`${e.field}\` from ${e.label}`),
+        ...by("measured").map(e => `measured: a replay without ${e.label} changed it, effect ${sgn(e.effect)}` + (e.ci ? ` [${sgn(e.ci[0])}, ${sgn(e.ci[1])}]` : "")),
+        c.seen ? `seen: ${plural(c.seen, "source")} in the context of the model call that asked for it (${[...new Set(seen.map(e => BASIS[e.basis] || e.basis))].join("; ")})` : "",
+        ...c.edges.filter(e => e.why).map(e => `${e.grade}: ${e.why}`),
+        c.ruled_out.length ? `a replay ruled out: ${c.ruled_out.join(", ")}` : "",
+        ...(IFL.hint ? c.hints.map(h => `hint, not an influence: ${h.basis === "value" ? `the value ${h.value} is in` : "its text overlaps"} ${h.label}`) : [])];
+      return `<div class="iwhy"><div class="w">${esc(c.words)}</div>` + (c.chain.length > 1 && W >= 360 ? inflChain(c, W) : "")
+        + [...new Set(lines.filter(Boolean))].map(l => `<div class="dim">${esc(l)}</div>`).join("")
+        + `<button type="button" class="cp" data-wwhy="${esc(c.node)}" data-wr="${esc(c.run)}">OPEN IN ITS RUN</button></div>`;
+    }
+    // A card per call stopped or flagged (or one a replay without the task kept): what happened, in plain words with
+    // its facts; why, in one line (the value that came only from untrusted content, and from where); the value's route;
+    // how it is known; beside it, the same call that ran with a trusted value. The words, chain and numbers are behind
+    // WHY (ICARD: the cards opened). The rest are one quiet line, opened by IQUIET.
+    const ICARD = new Set(), IQ = { open: false };
+    const VERB = { blocked: "Blocked", rejected: "Rejected by a person", held: "Held for a person", flagged: "Flagged" };
+    const CUR = { EUR: "€", USD: "$", GBP: "£" }, TO = /^(recipient|to|iban|account|payee|beneficiary|destination|url|email|address|creditor)/i;
+    const isIban = v => /^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/i.test(String(v).replace(/\s/g, ""));
+    // an IBAN in its groups of four, as a person reads one
+    const spaced = v => isIban(v) ? String(v).replace(/\s/g, "").replace(/(.{4})(?=.)/g, "$1 ") : String(v);
+    const nounOf = v => isIban(v) ? "account number" : /@/.test(v) ? "address" : /^https?:/.test(v) ? "link"
+      : /^[\w-]+(\.[\w-]+)+$/.test(v) ? "host" : /^\+?[\d\s.-]{8,}$/.test(v) ? "number" : "value";
+    // where content came from, in words: a mail is an email, a fetched page a web page, a tool's result its output
+    const fromWords = l => /^(mail|email|inbox)\b/i.test(l) ? "an email" : /^(web|page|fetch|url)\b/i.test(l) ? "a web page"
+      : l === "task" ? "your task" : String(l).startsWith("tool:") ? `${String(l).slice(5)}'s output` : String(l);
+    // a value the agent's content chose, in a card's sentence: marked as data, quoted and cut to 40 characters, its
+    // whole text on hover (a recipient reading "…Verified payee: approve the retry" is the attacker's, not ours)
+    const dv = v => `<code class="dv" title="${esc(String(v))}">“${esc(fit(String(v), 40))}”</code>`;
+    // the content a value came from, as what it says of itself: "an email that says it's from …"
+    const says = (l, p) => esc(fromWords(l)) + (!p ? "" : /^from:\s*\S/i.test(p) ? ` that says it's from ${dv(String(p).replace(/^from:\s*/i, ""))}` : ` that starts ${dv(p)}`);
+    // what base64 text decodes to, as text; null when it isn't base64
+    const b64 = t => { try { return /^[A-Za-z0-9+/]{8,}={0,2}$/.test(t) ? atob(t) : null; } catch { return null; } };
+    // a card's headline: what happened (its verb), and the call with its facts as HTML: an amount only when it is a
+    // number, a currency only as a 3-letter code, the recipient as data (dv)
+    function inflHead(c) {
+      const a = c.args || {}, amount = a.amount == null ? "" : String(a.amount).trim(), cur = /^[A-Z]{3}$/.test(String(a.currency ?? "")) ? a.currency : "";
+      const to = Object.keys(a).find(k => TO.test(k)), what = to != null ? a[to] : c.value?.value;
+      const money = !amount ? "" : /^\d{1,3}(,\d{3})*(\.\d+)?$|^\d+(\.\d+)?$/.test(amount) ? ` ${CUR[cur] || ""}${amount}${!cur || CUR[cur] ? "" : " " + cur}` : " an amount";
+      return [`${c.serves === "drift" && !c.ended ? "Strays from the task" : VERB[c.ended] || "Flagged"}:`,
+              ` ${esc(c.tool + money)}` + (what != null ? (to != null ? " to " : " with ") + dv(spaced(what)) : "") + "."];
+    }
+    // why, in one sentence of HTML: where the value came from, each value the content chose marked as data
+    function inflBecause(c) {
+      const v = c.value, trusted = [...new Set(c.edges.filter(e => e.grade === "seen" && e.trust === "trusted" && e.type === "action" && e.label !== v?.via?.tool).map(e => e.label))];
+      if (v && v.status === "untrusted-only") {
+        const noun = nounOf(v.value), cap = "The " + noun;
+        if (v.via) return `${cap} came from ${esc(v.via.tool)}, ${/look|search|find|get|query|crm|directory/i.test(v.via.tool) ? "looked up" : "called"} with ${dv(v.via.given)}${b64(v.via.given) === v.value ? ` (base64 of the ${isIban(v.value) ? "IBAN" : noun})` : ""}, which appeared only in ${says(v.via.origin[0] || v.via.from[0], v.preview)}.`;
+        return `${cap} came from ${says(v.from, v.preview)}, not from your task${trusted.length ? " or " + esc(trusted.join(", ")) : ""}.`;
+      }
+      if (c.serves === "drift") return "A replay without your task still made this call: it serves no step of the task.";
+      const u = c.untrusted;
+      if (u) return `Its ${u.field ? dv(u.field) : "argument"} came from ${esc(fromWords(u.label))} (${esc(u.grade)}).`;
+      return "Nothing it was given came only from untrusted content.";
+    }
+    // the value's route: the content it came from (untrusted marked), the call that turned it into the value, the value,
+    // the call
+    function inflPath(c) {
+      const v = c.value;
+      if (!v || v.status !== "untrusted-only") return "";
+      const hop = (t, bad) => `<span class="${esc(bad ? "hop bad" : "hop")}" title="${esc(t)}">${esc(t)}</span>`, arrow = bad => `<span class="${bad ? "ar bad" : "ar"}">→</span>`;
+      const origin = v.via ? v.via.origin[0] || v.via.from[0] : v.from;
+      const src = fromWords(origin).replace(/^an? /, "") + (v.preview ? ` “${v.preview}”` : "");
+      return `<div class="ipath">` + hop(src, true) + arrow(true)
+        + (v.via ? hop(`${v.via.tool}(${v.via.given})`, false) + arrow(false) : "")
+        + hop((isIban(v.value) ? "IBAN " : "") + spaced(v.value), false) + arrow(false) + `<span class="hop end">${esc(c.tool)}</span></div>`;
+    }
+    // how the card's answer is known, at its best: exact (the signer traced it), measured (a replay), seen (in context)
+    const GRADES = { exact: "the signer traced this argument to that content, in signed records this viewer verified",
+                     measured: "a replay without that content changed the call", claimed: "the log says so; nothing checked it against the signer",
+                     seen: "that content was in front of the model when it decided; nothing traced or replayed it further" };
+    const gradeOf = c => ["exact", "measured", "claimed"].find(g => c.edges.some(e => e.grade === g)) || "seen";
+    // the same call that ran with a value trusted content gave (the payment with the CRM's account number), if any
+    const twinOf = (c, all) => c.value?.status === "untrusted-only" && all.find(t => t !== c && !t.ended && t.tool === c.tool && t.value?.status === "trusted"
+      && JSON.stringify(t.args?.amount ?? null) === JSON.stringify(c.args?.amount ?? null));
+    function inflCard(c, all, W) {
+      const tw = twinOf(c, all), g = gradeOf(c), open = ICARD.has(c.node);
+      const cls = c.ended === "held" ? "c-held" : c.ended === "flagged" || !c.ended ? "c-flag" : "c-blk";
+      const [verb, head] = inflHead(c);
+      // head and inflBecause are HTML built of esc'd words and dv'd values
+      return `<div class="icard ${esc(cls)}"><div class="main"><div class="ih"><span class="vb">${esc(verb)}</span>` + head
+        + ` <span class="why">` + inflBecause(c) + `</span></div>` + inflPath(c)
+        + `<div class="imeta"><span class="tag" title="${esc(GRADES[g])}">${esc(g)}</span><button type="button" class="cp" data-icard="${esc(c.node)}">${open ? "WHY ▾" : "WHY ▸"}</button></div></div>`
+        + (tw ? `<div class="itwin"><span class="vb">Ran:</span> ${esc(`the same ${c.tool === "send_money" || /pay|transfer/i.test(c.tool) ? "payment" : "call"} with ${tw.value.from === "task" ? "the" : tw.value.from + "'s"} ${nounOf(tw.value.value)}` + (tw.value.from === "task" ? " your task gave." : "."))}</div>` : "")
+        + (open ? inflWhy(c, W) : "") + `</div>`;
+    }
+    function inflCalls(I, W) {
+      // a card: a call stopped, one a replay without the task kept, or one the signer or a replay tied to untrusted content
+      const calls = I.calls || [], cards = calls.filter(c => c.ended || c.serves === "drift" || c.untrusted), rest = calls.filter(c => !cards.includes(c));
+      const quiet = c => `${c.tool}` + (c.value?.status === "untrusted-only" ? `: called with ${fit(String(c.value.value), 40)}, from ${fromWords(c.value.from)}` : ": nothing untrusted in its arguments");
+      return `<div class="inans"><div class="q">WHAT WAS STOPPED OR FLAGGED, AND WHY</div>`
+        + (cards.length ? `<div class="icards">` + cards.map(c => inflCard(c, calls, W - 36)).join("") + `</div>`
+          : `<div class="none">No risky call: nothing was stopped or flagged, and no model call had untrusted content in front of it.</div>`)
+        + (rest.length ? `<div class="iquiet"><button type="button" class="cp" data-iquiet="">${esc(`${IQ.open ? "▾" : "▸"} ${many(rest.length, "other call")} ran without a stop or a flag`)}</button>`
+          + (IQ.open ? rest.map(c => `<div>${esc(quiet(c))}</div>`).join("") : "") + `</div>` : "")
+        + (I.calls_total > calls.length ? `<div class="dim">${esc(`and ${I.calls_total - calls.length} more`)}</div>` : "")
+        + (calls.some(c => c.hinted) || I.sources.length ? `<div class="wbar glegend"><span><button type="button" class="cp" data-inhint="">${esc(IFL.hint ? "hide hints" : "show hints")}</button></span></div>` : "")
+        + `</div>`;
     }
     // INFLUENCE's flow: a node per kind of content (the table's rows, in its order) and per tool, a line per kind and
     // tool it came before, as thick as its runs (log scale: one busy line leaves the rest readable), coloured as its
@@ -8433,10 +8755,10 @@
     // for the content or tool pointed at or clicked. The marked tools first (INFLTOOLS at most), then INFLQUIET quiet
     // ones, the rest one "+N more" node. Its data-* are indices into IFL.keys and IFL.tools ("+" for the rest), never a
     // name an agent chose. IFL.mark: the content, tool or line clicked ({key, tool}); IFL.go: the row to scroll to once
-    // drawn; IFL.hov: the node or line under the pointer
-    const INFLTOOLS = 16, INFLQUIET = 4, IFL = { keys: [], tools: [], mark: null, go: null, hov: null };
+    // drawn; IFL.hov: the node or line under the pointer; IFL.hint: the answers show their hints
+    const INFLTOOLS = 16, INFLQUIET = 4, IFL = { keys: [], tools: [], mark: null, go: null, hov: null, hint: false };
     // lean: every kind is a node (12 read well, past about 30 the flow grows tall); gather the rest as the tools are if a store has that many kinds
-    function inflFlow(groups, tools, W) {
+    function inflFlow(groups, tools, W, calls = []) {
       const name = g => kindName(g.kind), cl = (...c) => c.filter(Boolean).join(" "), nm = tools.filter(t => t.marked).length;
       let n = nm > INFLTOOLS ? INFLTOOLS : nm + INFLQUIET;
       if (tools.length - n <= 1) n = tools.length;   // never "+1 more" in place of the tool itself
@@ -8468,7 +8790,7 @@
       for (const l of [...L].sort((a, b) => RANK.indexOf(tone(a.t)) - RANK.indexOf(tone(b.t)))) {
         const mx = (KW + X2) / 2, d = `M${KW},${f(l.ky)} C${mx},${f(l.ky)} ${mx},${f(l.jy)} ${X2},${f(l.jy)}`, w = .8 + 3 * Math.log1p(l.t.runs) / big, g = groups[l.k];
         s += `<g class="${esc(cl("ln", tone(l.t) || "pl", lit(l) && "on"))}" data-ifk="${esc(l.k)}" data-ift="${esc(l.hid ? "+" : l.j)}"><path class="hit" d="${esc(d)}"/><path class="v" d="${esc(d)}" stroke-width="${esc(f(l.t.confirmed ? Math.max(4, w) : w))}"/>`
-          + (l.t.confirmed ? `<text class="fx" x="${esc(f(mx))}" y="${esc(f((l.ky + l.jy) / 2 - 5))}" text-anchor="middle">${esc(sgn(l.t.effect))}</text>` : "")
+          + (l.t.confirmed ? `<text class="fx" x="${esc(f(mx))}" y="${esc(f((l.ky + l.jy) / 2 - 5))}" text-anchor="middle">caused it<title>${esc(`a replay without it changed the call: effect ${sgn(l.t.effect)}`)}</title></text>` : "")
           + `<title>${esc(`${name(g)}: ` + (l.hid ? `came before calls to ${plural(l.hid.length, "tool")} not shown: ${l.hid.map(t => t.tool).join(", ")}` : said(l.t)))}</title></g>`;
       }
       groups.forEach((g, k) => {
@@ -8484,6 +8806,23 @@
       });
       if (rest.length) s += `<g class="${esc(cl("nd tl more", onJ.has(shown.length) && "on"))}" data-ift="+" transform="${esc(`translate(${X2},${f(ty(shown.length) - TH / 2)})`)}"><rect class="box" width="${esc(TW)}" height="${esc(TH)}" rx="6"/>`
         + `<text x="14" y="15">${esc(`+${rest.length} more`)}</text><title>${esc(`${plural(rest.length, "tool")} not shown: ${rest.map(t => t.tool).join(", ")}`)}</title></g>`;
+      // the value's route through a tool (mail → lookup_supplier → send_money): for each stopped call whose value a
+      // trusted call's answer gave, the content that call was given, the call, and the call it led to, in the middle
+      const V = [];
+      for (const c of calls) {
+        const v = c.value, k = v?.via ? groups.findIndex(g => g.kind === (v.via.origin[0] || v.via.from[0]) || g.mine.some(x => (x.labels || []).includes(v.via.origin[0] || v.via.from[0]))) : -1;
+        if (k < 0 || !(c.tool in at) || !(c.ended || c.serves === "drift") || V.some(x => x.k === k && x.via === v.via.tool && x.j === at[c.tool])) continue;
+        V.push({ k, via: v.via.tool, j: at[c.tool], c });
+      }
+      const VW = 150, VX = KW + (X2 - KW) * .3 - VW / 2;   // left of the middle, where a line's effect is said
+      V.forEach((x, i) => {
+        const y = HEAD + (i + .5) * (H - HEAD) / V.length, mx1 = (KW + VX) / 2, mx2 = (VX + VW + X2) / 2, y1 = ky(x.k), y2 = ty(x.j), v = x.c.value.via;
+        const d1 = `M${KW},${f(y1)} C${f(mx1)},${f(y1)} ${f(mx1)},${f(y)} ${f(VX)},${f(y)}`, d2 = `M${f(VX + VW)},${f(y)} C${f(mx2)},${f(y)} ${f(mx2)},${f(y2)} ${X2},${f(y2)}`;
+        const said2 = `${groups[x.k].kind} → ${x.via} (called with ${v.given}) → ${x.c.tool} (${x.c.ended || "flagged"}): the ${nounOf(x.c.value.value)} came from ${x.via}`;
+        s += `<g class="ln blk via"><path class="v" d="${esc(d1)}" stroke-width="2"/><path class="v" d="${esc(d2)}" stroke-width="2"/><title>${esc(said2)}</title></g>`
+          + `<g class="nd tl blk vt" transform="${esc(`translate(${f(VX)},${f(y - TH / 2)})`)}"><rect class="box" width="${esc(VW)}" height="${esc(TH)}" rx="6"/><rect class="bar" x="5" y="5" width="3" height="${esc(TH - 10)}" rx="1.5"/>`
+          + `<text x="14" y="15">${esc(fit(x.via, Math.floor((VW - 22) / 6.6)))}</text><title>${esc(said2)}</title></g>`;
+      });
       const plain = L.filter(l => !tone(l.t)).length;
       return s + `</svg>` + (plain ? `<p class="dim iflnote">${esc(`${many(plain, "grey line")} hidden: content before calls that ran with no flag. Point at content or a tool to see all its lines; click it to keep them.`)}</p>` : "");
     }
@@ -8501,7 +8840,7 @@
       const groups = (I.groups || []).map(g => {
         const key = g.kind + "|" + g.trust, tools = dict();
         // its sources: a confirmed cause first, then those that came before calls blocked or held, then the most cited
-        const stops = x => (bySrc.get(x.id) || []).reduce((n, e) => n + ((e.ended || {}).blocked || 0) + ((e.ended || {}).held || 0), 0);
+        const stops = x => (bySrc.get(x.id) || []).reduce((n, e) => n + ((e.ended || {}).blocked || 0) + ((e.ended || {}).rejected || 0) + ((e.ended || {}).held || 0), 0);
         const mine = S2.filter(s => s.kind === g.kind && s.trust === g.trust)
           .sort((a, b) => b.confirmed_tools.length - a.confirmed_tools.length || (stops(b) > 0) - (stops(a) > 0) || b.cited_by - a.cited_by);
         for (const t of Object.keys(g.reach)) tools[t] = { tool: t, runs: g.reach[t], confirmed: false, tested: false, ruled_out: true, effect: null, ended: (g.ended || {})[t] || {}, stopped_runs: (g.stopped_runs || {})[t] || 0 };
@@ -8521,24 +8860,24 @@
       const where = (o, n) => `<div>${esc(`${o.agent || "agent"} · run ${String(o.run).slice(0, n)}` + (o.seq != null ? ` · record ${o.seq}` : o.pos != null ? ` · event ${o.pos}` : ""))}`
         + `<br><span class="dim">${esc(Date.parse(o.ts) ? `read ${fmtD(Date.parse(o.ts) / 1000)} ${fmtT(Date.parse(o.ts) / 1000)} ${TZ}` : "")}</span> `
         + (o.seq != null && RUNS.has(o.run) ? `<button type="button" class="cp" data-orun="${esc(o.run)}" data-oseq="${esc(o.seq)}">OPEN</button>` : `<button type="button" class="cp" data-wgo="${esc(o.run)}">OPEN</button>`) + `</div>`;
-      // in front of the agent for how many decisions (a phone's card, which has no column names, says what the number is)
-      const front = n => `<span class="ph">in front of the agent </span>${esc("for " + many(n, "decision"))}`;
+      // read before how many decisions (a phone's card, which has no column names, says what the number is)
+      const front = n => `<span class="ph">read before </span>${esc(many(n, "decision"))}`;
       const src = (x, n, mark) => `<tr class="insrc"><td>` + (x.seen || []).map(o => where(o, n)).join("") + (x.runs > (x.seen || []).length ? `<div class="dim">${esc(`and ${x.runs - x.seen.length} more`)}</div>` : "")
         + (x.preview ? `<div class="dim">${esc(String(x.preview).slice(0, 110))}</div>` : "") + `</td><td class="${x.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(x.trust)}</td><td></td><td>${esc(many(x.runs, "run"))}</td><td>` + front(x.cited_by) + `</td>`
         + `<td class="reach">` + chips((bySrc.get(x.id) || []).map(link), x.id, mark) + `</td></tr>`;
       // the tool marked in a row's chips: the one clicked in the flow or the answer, in its kind's row (a tool: in every row)
       const M = IFL.mark, markOf = key => M && (M.key == null || M.key === key) ? M.tool : null;
       // the flow, from a panel 600 px wide (a phone has the answer and each kind as a card); its line in each item of the key
-      const flow = S2.length && el.clientWidth >= 600 ? inflFlow(groups, tools, el.clientWidth - 16) : "";
+      const flow = S2.length && el.clientWidth >= 600 ? inflFlow(groups, tools, el.clientWidth - 16, I.calls || []) : "";
       const sw = cls => flow ? `<svg class="ifl" width="22" height="8"><g class="${esc(cls ? "ln " + cls : "ln")}"><path class="v" d="M0,4H22" stroke-width="${esc(cls === "deny" ? 3.5 : 2)}"/></g></svg>` : "";
-      put("whyv", !S2.length ? `<div class="empty">Nothing yet: no model call in these runs had content the agents read in front of it, so there is nothing to show. Runs that record their model calls show here what the agents read before each tool call.</div>`
-        : inflAnswer(groups, tools)
-          + `<p class="dim" style="padding:0 8px">${esc(`${WHY.runs.length === 1 ? "In this run" : `Across all ${many(WHY.runs.length, "run")}`}: what the agents read, and the tools they called after it. Content in front of an agent when it decided came before that call; only a replay can show it caused one.`)}</p>`
-          + flow + `<div class="wbar glegend"><span>` + sw("") + `<span class="tag">tool N</span> came before its calls in N runs${flow ? ", the more the thicker" : ""}</span><span>` + sw("blk") + `<span class="tag blk">tool N blocked</span> calls blocked</span>`
+      const answers = S2.length || I.calls_total ? inflCalls(I, el.clientWidth) : "";
+      put("whyv", !S2.length ? answers || `<div class="empty">Nothing yet: no model call in these runs had content the agents read in front of it, so there is nothing to show. Runs that record their model calls show here what the agents read before each tool call.</div>`
+        : answers + `<p class="dim" style="padding:0 8px">What the agents read, and the calls that followed. Red lines led to a stopped call.</p>`
+          + flow + (!IFL.hint ? "" : `<div class="wbar glegend"><span>` + sw("") + `<span class="tag">tool N</span> came before its calls in N runs${flow ? ", the more the thicker" : ""}</span><span>` + sw("blk") + `<span class="tag blk">tool N blocked</span> calls blocked</span>`
           + `<span>` + sw("held") + `<span class="tag held">tool N held</span> held for a person</span><span>` + sw("flag") + `<span class="tag flag">tool N flagged</span> flagged</span>`
           + `<span>` + sw("deny") + `<span class="tag deny">tool +effect</span> a replay confirmed it caused them</span><span>` + sw("ruled") + `<span class="tag ruled">tool N</span> a replay ruled it out</span>`
-          + `<span><span class="s-deny">untrusted</span> by the harness's word</span><span>a row opens to its sources</span></div>`
-          + `<table class="wt infl"><thead><tr><th>CONTENT</th><th>TRUST</th><th>SOURCES</th><th>RUNS</th><th>IN FRONT OF THE AGENT</th><th>LED TO</th></tr></thead><tbody>`
+          + `<span><span class="s-deny">untrusted</span> by the harness's word</span><span>a row opens to its sources</span></div>`)
+          + `<table class="wt infl"><thead><tr><th>CONTENT</th><th>TRUST</th><th>SOURCES</th><th>RUNS</th><th>READ BEFORE</th><th>LED TO</th></tr></thead><tbody>`
           + groups.map(g => `<tr class="row ingrp${M && M.key === g.key ? " on" : ""}" data-ingrp="${esc(g.key)}" tabindex="0"><td>${esc(INFL.has(g.key) ? "▾ " : "▸ ")}<b>${esc(kindName(g.kind))}</b>${kindName(g.kind) !== g.kind ? ` <span class="dim">(${esc(g.kind)})</span>` : ""}</td>`
             + `<td class="${g.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(g.trust)}</td><td>${esc(Number(g.mine.length).toLocaleString("en-US"))}<span class="ph">${esc(g.mine.length === 1 ? " source" : " sources")}</span></td><td>${esc(many(g.runs, "run"))}</td><td>` + front(g.cited) + `</td><td class="reach">` + chips(g.reach, g.key, markOf(g.key)) + `</td></tr>`
             + (INFL.has(g.key) ? (g.mine.some(x => !x.preview) ? `<tr class="insrc"><td colspan="6" class="dim">${esc("Content not in the log: a signed run's record holds only its hash, so each source is named by where it was read.")}</td></tr>` : "")
@@ -8549,7 +8888,7 @@
       $("wvsum").textContent = [many(groups.length, "kind") + " of content", many(S2.length, "source"), many(T.length, "tool")].join(" · ");
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-wfby],[data-wfs],[data-wfc],[data-wft],[data-wfx],[data-wfclr],[data-wfnew],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-ifk],[data-ift],[data-ifl],[data-tipsre],[data-lrec]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-wfby],[data-wfs],[data-wfc],[data-wft],[data-wfx],[data-wfclr],[data-wfnew],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-inhint],[data-icard],[data-iquiet],[data-ifk],[data-ift],[data-ifl],[data-tipsre],[data-lrec]"); if (!t) return;
       e.preventDefault();
       // INFLUENCE's flow and answer: content, a line or an answer opens its row and marks it (a line to "+N more": every
       // tool in the row), a tool is marked in every row, and empty space clears the mark
@@ -8559,6 +8898,9 @@
         if (key != null) { INFL.add(key); IFL.go = key; if (t.dataset.ift === "+") INFLMORE.add(key); }
         wvKey = ""; return schedule();
       }
+      if (t.dataset.inhint !== undefined) { IFL.hint = !IFL.hint; wvKey = ""; return schedule(); }
+      if (t.dataset.icard) { ICARD.has(t.dataset.icard) ? ICARD.delete(t.dataset.icard) : ICARD.add(t.dataset.icard); wvKey = ""; return schedule(); }
+      if (t.dataset.iquiet !== undefined) { IQ.open = !IQ.open; wvKey = ""; return schedule(); }
       if (t.dataset.inmore) { INFLMORE.has(t.dataset.inmore) ? INFLMORE.delete(t.dataset.inmore) : INFLMORE.add(t.dataset.inmore); wvKey = ""; return schedule(); }
       if (t.dataset.ingrp) { INFL.has(t.dataset.ingrp) ? INFL.delete(t.dataset.ingrp) : INFL.add(t.dataset.ingrp); wvKey = ""; return schedule(); }
       if (t.dataset.page) { show(t.dataset.page); wvKey = ""; return schedule(); }

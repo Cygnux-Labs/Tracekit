@@ -4,7 +4,8 @@ It detects the setup: v1 system mode (/etc/tracekit/client.json names a socket),
 the v2 dev signer (no system config), or the signer.yaml given with --config. Every check has a stable id and gives
 ok, warn or fail; docs/doctor.md lists them. Exit 1 when any fails, else 0: a warning is advice, not a failure.
 Run it as root for system mode: it then probes the files as the agent's user, in a forked child that dropped to it.
-`--k8s` checks the pod it runs in, or the manifests under `--manifests DIR`, instead.
+`--k8s` checks the pod it runs in, or the manifests under `--manifests DIR`, instead; `--reviewer reviewer.yaml`, run
+as the AI reviewer's user, checks that reviewer (reviewer_checks).
 
 Doctor output is advice, not evidence: it reads the host as it is now, and nothing it prints is signed or verified.
 """
@@ -51,6 +52,8 @@ REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 
           f"{shlex.quote(_PY)} -m tracekit init --v2 --user <agent-user>"
           + (" --experimental-macos" if sys.platform == "darwin" else ""))
 V2_FLAGS = "--approver, --policy, --harness, --egress, --project DIR, --managed-only"   # some of what init --v2 records
+# the environment names that move where the dev hook finds its signer and data, or the Python it runs (D-HOOK-ENV)
+_HOOK_ENV = ("HOME", "XDG_DATA_HOME", "TRACEKIT_PYTHON", "TRACEKIT_SIGNER")
 DEV_INFO = {"D-WITNESS-CONFIGURED"}   # info in the dev profile, not a warning: the dev signer uses the public
 # witness by default, and has none only until a release names it or after --no-witness
 ROOT_DOCTOR = "run doctor as root (system mode: sudo /opt/tracekit/bin/python -I -m tracekit doctor)"
@@ -123,7 +126,32 @@ def _google_re2_wheel_expected():
     return True
 
 
-def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None):
+def reviewer_checks(path):
+    """The AI reviewer's own checks of its reviewer.yaml `path`, as the user doctor runs as (the reviewer's: docs/
+    approvals.md#the-ai-approver): D-REVIEWER-CONFIG, it loads, and it, its folder, `state_file` and `key_file` are that
+    user's or root's and not writable by group or others (reviewer.load); D-REVIEWER-MODEL, a model server on this
+    machine's loopback listens as that user or root (reviewer.endpoint_problem)."""
+    from . import reviewer
+    try:
+        cfg = reviewer.load(path)
+    except (OSError, ValueError) as e:
+        return [result("D-REVIEWER-CONFIG", FAIL, str(e), "run doctor as the reviewer's user (sudo -u <reviewer> "
+                       "/opt/tracekit/bin/python -m tracekit doctor --reviewer PATH); give reviewer.yaml, its folder, "
+                       "state_file and key_file to that user and chmod go-w them")]
+    target = cfg.get("url") or cfg["gateway"]
+    why = reviewer.endpoint_problem(target)
+    return [result("D-REVIEWER-CONFIG", OK, f"{path} loads, and it and the files it names are this user's or root's, "
+                   "not writable by group or others"),
+            result("D-REVIEWER-MODEL", OK if not why else FAIL, why or (
+                f"{target} listens as this user or root" if reviewer.loopback(target) else
+                f"{target} is off this machine, called over https with a key or token"),
+                "run the model server as the reviewer's user, its model files owned by that user; or use an endpoint "
+                "off this machine with a key")]
+
+
+def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None, reviewer=None):
+    if reviewer:
+        return report(reviewer_checks(reviewer), as_json)
     if not (k8s or manifests):
         rows = collect(config, issuer_key)
         code = report(rows, as_json)
@@ -243,7 +271,8 @@ def collect(config=None, issuer_key=None):
 def _signer_answers(signer, wait=10.0):
     """D-SIGNER-ANSWERS: the system signer answers a status call on its socket (none when client.json names none).
     The call runs on a thread doctor stops waiting for after `wait` seconds, so a signer that trickles bytes can't hang
-    it; a refused call reads as refused."""
+    it; a refused call reads as refused; a signer that answers another protocol is said so (an older one still runs
+    after an upgrade: restart it; a newer one: upgrade this venv)."""
     if not signer:
         return []
     import threading
@@ -258,8 +287,7 @@ def _signer_answers(signer, wait=10.0):
     def ask():
         c = sdk_client.Client(signer, timeout=5)
         try:
-            c.status({})
-            outcome.append(None)
+            outcome.append(c.status({})["signer"]["version"])
         except (sdk_client.SignerUnavailable, sdk_client.Incompatible, RPCError, OSError) as e:
             outcome.append(e)
         finally:
@@ -268,15 +296,24 @@ def _signer_answers(signer, wait=10.0):
     t = threading.Thread(target=ask, daemon=True)
     t.start()
     t.join(wait)
-    if outcome and outcome[0] is None:
-        return [result("D-SIGNER-ANSWERS", OK, f"the signer answers on {signer}")]
     e = outcome[0] if outcome else None
-    detail = (f"the signer on {signer} refused a status call: {str(e)[:200]}" if isinstance(e, RPCError) else
-              f"the signer does not answer on {signer}: {str(e)[:200]}" if e else
-              f"the signer on {signer} did not answer within {wait:g} s")
-    return [result("D-SIGNER-ANSWERS", FAIL, detail,
-                   f"read what the signer says: {service_log}; fix it and start it again (re-running init keeps what "
-                   "you added to signer.yaml where it can, and rewrites the service file)")]
+    if outcome and not isinstance(e, Exception):
+        return [result("D-SIGNER-ANSWERS", OK, f"the signer at {signer} answers (Tracekit {e})")]
+    start = (f"read what the signer says: {service_log}; fix it and start it again (re-running init keeps what "
+             "you added to signer.yaml where it can, and rewrites the service file)")
+    fix = start
+    if isinstance(e, sdk_client.Incompatible):
+        detail = (f"an older signer still runs at {signer}, from before the upgrade ({e})" if e.older else
+                  f"the signer at {signer} runs a newer Tracekit than this doctor ({e})")
+        fix = (f"restart it (Linux: sudo systemctl restart {install.V2_UNIT}; macOS: sudo launchctl kickstart -k "
+               f"system/{install.V2_LABEL})" if e.older else f"upgrade {install.OPT} to the signer's release: {REINIT}")
+    elif isinstance(e, RPCError):
+        detail = f"the signer at {signer} answers, but refused this identity's status call ({str(e)[:200]})"
+        fix = "run doctor as root, or as a user signer.yaml's tenants or authorize let call status"
+    else:
+        detail = (f"the signer does not answer on {signer}: {str(e)[:200]}" if e else
+                  f"the signer on {signer} did not answer within {wait:g} s")
+    return [result("D-SIGNER-ANSWERS", FAIL, detail, fix)]
 
 
 def _managed():
@@ -1522,6 +1559,29 @@ def _acl_perms(out, uid):
     return named if named is not None else other or ""
 
 
+def _hook_decided():
+    """The calls the v2 hooks decided themselves while the signer was down (claude_code.HOOK_DECIDED), oldest first,
+    over every session whose state the runtime dir keeps (none when there is no runtime dir: doctor creates nothing).
+    The files are the agent's to write: an entry that isn't an object is skipped, and one whose ts is no number sorts
+    first."""
+    import glob
+    import hashlib
+    from .integrations import claude_code
+    from .sdk import autospawn
+    try:
+        run = autospawn.runtime_dir(create=False)
+    except OSError:
+        return []
+    tag = hashlib.sha256(claude_code.HOOK_DECIDED.encode()).hexdigest()   # (as claude_code._state names its file)
+    out = []
+    for f in glob.glob(os.path.join(glob.escape(run), f"claude-code-*.{tag}.json")):
+        try:
+            out += [x for x in read_json(f) if isinstance(x, dict)]
+        except (OSError, ValueError, TypeError):
+            continue
+    return sorted(out, key=lambda x: x["ts"] if type(x.get("ts")) in (int, float) and x["ts"] == x["ts"] else 0)
+
+
 def _tailer_checks(add, client_json, agent):
     """D-TAILER-*: what system init sets up for a Claude Code agent's transcript tailer (install._tailer_acl,
     install._tailer_sudo, client.json's `tailer` key). Without it each session records a tailer_lost gap, whose signed
@@ -1651,6 +1711,19 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "runs" if listed else f"{agent.pw_name} is not in analyzers",
             "remove the agent's uid from analyzers in signer.yaml; run tracekit analyze --v2 as an operator identity",
             bad=WARN)
+    # lean: the agent's uid only; which other identities registered runs is in the signer's records alone, a read of the
+    # whole log on every doctor run (the signer treats each as an agent's itself: SignerService._agent_session); read
+    # them if an operator lists approvers that also run agents on servers
+    if prod and agent:   # the uid whose sessions register the runs, answering approvals as a person
+        a = cfg.get("approvals") or {}
+        listed = [k for k in ("approvers", "break_glass") if f"uid:{agent.pw_uid}" in (a.get(k) or ())]
+        add("D-APPROVER-AGENT", not listed, f"approvals.{' and approvals.'.join(listed)} list uid:{agent.pw_uid}, the "
+            f"agent's user {agent.pw_name}, whose sessions register the runs: it answers approvals as a person (the "
+            "signer refuses its changes to the AI reviewer and its take-backs, and records its answers as no precedent, "
+            "as an identity an agent session ran as)"
+            if listed else f"no approver is {agent.pw_name}, the agent's user",
+            "list a person's own user in approvals.approvers, another than the agent's (init's --approver), and take the "
+            "agent's uid out")
     try:
         owner = os.stat(data).st_uid
     except OSError as e:
@@ -1664,6 +1737,23 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     else:
         add("D-PROCESS-BOUNDARY", False, install.DEV_MODE_LINE,
             "use system mode where the agent must not reach the signer: " + REINIT, bad=WARN)
+    agents = (cfg.get("approvals") or {}).get("agents") or ()
+    if owner is not None and any(str(a).startswith("uid:") for a in agents):   # an AI approver on this machine
+        why = service.agent_key_access(agents, data, owner)
+        uids = sorted(str(a) for a in agents if re.fullmatch(r"uid:[0-9]{1,10}", str(a))) if pwd and not why else []
+        for a in uids:   # and as the reviewer's own uid when doctor can act as it (root), as D-AGENT-PROBE does
+            try:
+                rpw = pwd.getpwuid(int(a[4:]))
+                listed = sorted(os.listdir(keys)) if os.path.isdir(keys) else []
+            except (KeyError, OSError):   # no such user here: nothing runs as it
+                continue
+            hits = agent_access(rpw, [[data, "read"], [keys, "read"]] + [[os.path.join(keys, n), "read"] for n in listed])
+            if hits:
+                why = f"approvals.agents: {a} can read " + ", ".join(p for p, _ in hits)
+                break
+        add("D-REVIEWER-USER", not why, why or "the agent approvers that are local users can't read the signer's keys",
+            "run the reviewer as a user of its own, listed as uid:<its uid> in approvals.agents, and keep the keys "
+            "readable by the signer's user alone (docs/approvals.md#the-ai-approver)")
 
     acl = "Windows controls access with ACLs, which doctor doesn't read: check that only the signer's user can read it"
     try:
@@ -1918,6 +2008,14 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 add("D-SIGNER-ENV", env in (None, signer), f"TRACEKIT_SIGNER is {str(env)[:256]!r}, not {signer}" if env not in
                     (None, signer) else "TRACEKIT_SIGNER names the system socket or is unset",
                     f"remove env.TRACEKIT_SIGNER from {settings} (the hook refuses it and blocks every call)")
+    if not prod and (settings or active_plugin):
+        # Claude Code gives the hooks its settings' `env`: one that sets where the dev signer and its data are, or the
+        # Python the hook runs, sends the hook's calls elsewhere (a later layer wins; any layer that sets one is named)
+        moved = [f"{p} sets {', '.join(n for n in _HOOK_ENV if n in e)}" for p in layers
+                 if isinstance(e := _setting(p, "env"), dict) and any(n in e for n in _HOOK_ENV)]
+        add("D-HOOK-ENV", not moved, "; ".join(moved) or "no settings file sets the hook's HOME, XDG_DATA_HOME, "
+            "TRACEKIT_PYTHON or TRACEKIT_SIGNER", "remove those names from each file's env, unless you set them yourself",
+            bad=WARN)
 
     sandbox = _sandbox(sandbox_settings)
     if sandbox.get("enabled") is True:
@@ -2003,6 +2101,14 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         )
         add("D-POLICY-ENGINE", using_re2, detail, fix,
             bad=WARN if wheel_expected else INFO)
+        wants = service.wants_agents(loaded)
+        if wants or agents:   # without one, the signer refuses to start (SignerService)
+            add("D-AGENT-APPROVERS", not wants or bool(agents), f"approvals.agents names {len(agents)}; " + (
+                f"{policy} lets agent approvers answer" if wants else "the policy lets none answer yet")
+                if agents else f"{policy} lets agent approvers answer (approval_agent or a rule's approval.agent), "
+                "but signer.yaml's approvals.agents names none: the signer refuses to start",
+                "add the reviewer's identity to approvals.agents in signer.yaml, merged into init's approvals section "
+                "(docs/approvals.md#the-ai-approver), or take approval_agent out of the policy; then restart the signer")
     except ImportError as e:
         add("D-POLICY-ENGINE", False, f"no regex engine: {e}", "pip install tracekit-ai (a --no-deps install leaves the engine out)")
     except (OSError, ValueError) as e:
@@ -2018,9 +2124,20 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             open_.append(f"{client_json} fail_mode")
     except (OSError, ValueError):
         pass
-    add("D-FAIL-MODES", not open_, f"fail-open: {', '.join(open_)}" if open_ else "every class fails closed",
+    add("D-FAIL-MODES", not open_, f"fail-open: {', '.join(open_)} (the coding-agent hooks still block secrets, "
+                                    "deploys, payments and pushes to main; the SDK and framework integrations fail "
+                                    "open by class alone)" if open_ else "every class fails closed",
         "set fail_modes to closed in signer.yaml (and fail_mode in client.json) unless an outage must not stop the agent",
         bad=WARN)
+    if not prod:   # (a system-mode hook fails closed with no signer answering: it decides nothing itself)
+        decided = _hook_decided()
+        add("D-HOOK-DECIDED", not decided, "no call decided by the hook while the signer was down" if not decided else
+            f"{len(decided)} call(s) decided by the hook while the signer was down "
+            f"({sum(x.get('decision') == 'allowed' for x in decided)} allowed, which ran unchecked; "
+            f"{sum(not x.get('sent') for x in decided)} not yet sent to the signer); the latest: "
+            f"{decided[-1].get('decision')} {decided[-1].get('tool')} ({decided[-1].get('why') or 'fail-open'})",
+            "find out why the signer was down, and review each allowed call in tracekit view (THE AGENT-SIDE HOOK "
+            "REPORTS, after the signer's client_counter_gap for it)", bad=WARN)
     if prod and client_json:
         _tailer_checks(add, client_json, agent)
 

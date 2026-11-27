@@ -16,7 +16,9 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    (`VERSION`, which the verifier reports, and `READS`, the newest format it reads: the release, or the newest
    `VERSIONS` row in `tracekit/bundle_v2.py` when later; `tests/test_ts_verifier.py` checks both), in `docs/deploy-container.md`'s build example and `docs/deploy.md`'s
    clone example (the tag and the directory), in `server.json` and
-   `plugin/.claude-plugin/plugin.json` (`version`), in both Helm charts (`appVersion` in `deploy/helm/*/Chart.yaml`
+   the plugin's manifests (`version` in `plugin/.claude-plugin/plugin.json`, `plugin/.codex-plugin/plugin.json`,
+   `plugin/.github/plugin/plugin.json` and `plugin/.cursor-plugin/plugin.json`; `tests/test_portability.py` checks they
+   agree), in both Helm charts (`appVersion` in `deploy/helm/*/Chart.yaml`
    and the image tag in `deploy/helm/*/values.yaml`, both `v<version>`) and in the README's licence line ("Version
    <version>") and its CI example (`uses: Cygnux-Labs/Tracekit@v<version>`; `tests/test_version.py` checks both).
    Pin it in the plugin's install lines, `tracekit-ai==<version>` in `plugin/scripts/tracekit-hook` and
@@ -52,10 +54,16 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    `mcp-publisher login github --token <token>`, then `mcp-publisher publish` (it reads `server.json`), then delete the
    token. The release workflow doesn't run this step.
 7. If the release changed `plugin/`, copy it to
-   [Cygnux-Labs/tracekit-claude-plugin](https://github.com/Cygnux-Labs/tracekit-claude-plugin), the source of the
-   Claude Code plugin directory's listing (this repository is over the directory's 50 MiB limit). From the tagged
-   checkout, `rsync -a --delete --exclude .git --exclude LICENSE plugin/ <clone>/` (the clone keeps its own
+   [Cygnux-Labs/tracekit-plugin](https://github.com/Cygnux-Labs/tracekit-plugin) (named tracekit-claude-plugin until
+   1.8.0; GitHub redirects the old name), the source of the
+   Claude Code plugin directory's listing (this repository is over the directory's 50 MiB limit) and the marketplace
+   Claude Code, Codex, Copilot CLI and Cursor install the plugin from (its dot-folders hold each one's manifest). From
+   the tagged checkout, `rsync -a --delete --exclude .git --exclude LICENSE plugin/ <clone>/` (the clone keeps its own
    `LICENSE`), then commit and push there; change nothing else. The directory picks up new commits about every 6 hours.
+   If the release changed `plugin/skills/`, copy them to
+   [Cygnux-Labs/tracekit-skills](https://github.com/Cygnux-Labs/tracekit-skills) too (`rsync -a plugin/skills/
+   <clone>/skills/`), the source `npx skills add` installs for agents without the plugin; `tests/test_docs.py` pins
+   the setup skill to that repository's copy.
 8. Host the browser verifier. The verifiers' upgrade lines send people with a bundle too new for theirs to
    https://cygnux-labs.github.io/Tracekit/verify/, so publish the release's `verify.html` there, as the latest, and at
    `verify/<v>/` for good: check the downloaded file (`gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`),
@@ -65,6 +73,8 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    v<v>`, replace everything but `.git` in a clone of `Cygnux-Labs/Tracekit.wiki.git` with `/tmp/wiki`, commit and push
    (the first time, save any page in the Wiki tab: GitHub creates the wiki repository only then). Then run the
    website's `npm run check-links`: README, package metadata and the CLI's messages link to these pages.
+10. Point the website at the release: in its `lib/site.ts`, the `version`, the `release` link and the first `news`
+    line.
 
 ### What gets built, signed and published
 

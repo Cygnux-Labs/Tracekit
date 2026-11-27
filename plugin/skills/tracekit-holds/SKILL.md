@@ -13,6 +13,7 @@ description: What to do when Tracekit stops a tool call. Use whenever a tool cal
   there is an Instead line, you may do that instead; say you did.
 - Never run `tracekit approvals approve` or `reject` yourself: they are the person's commands. `tracekit approvals
   list` and `show` only read.
+- Never change Tracekit's policy, signer, hooks or files to get a call through: they are the person's too.
 - Never hide what a call runs to get past a hold or a block (encoding it, a variable for the program, a script file,
   another tool or agent): every call is signed and kept. A readable call that does the same thing, as an Instead line
   says, is fine; say you made it.

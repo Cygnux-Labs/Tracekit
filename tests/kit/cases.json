@@ -2,9 +2,9 @@
  "format": "tracekit.bundle.v2",
  "spec": "docs/format-v2.md",
  "files": {
-  "../sdk/typescript/src/verify/sample/sample-tampered.tkb": "3d859a130c114862d4b7fde6176a588c28898180cbaffb6dac05021a6db815a7",
-  "../sdk/typescript/src/verify/sample/sample.tkb": "066455e63cf8667d11d944f74b95ab8c3c697093c0fd98e2a789ddaf600205f3",
-  "../sdk/typescript/src/verify/sample/sample.trust.json": "6c86658c88b8076cf3a9f6d6e06e42d6ca9eab7f8b0298d3eb8be6bf806ba2ed",
+  "../sdk/typescript/src/verify/sample/sample-tampered.tkb": "59b10a8d41001d7d0633aa8b289ba0e77e757d2e6a6a081d3f71cf867bcdd46b",
+  "../sdk/typescript/src/verify/sample/sample.tkb": "7d65963a728c46c10b8282b83aede948166d8a11644d6677276785ad3df76b27",
+  "../sdk/typescript/src/verify/sample/sample.trust.json": "6951972304542dd7dfe98ec3b24094d488a0a23d4ca4aaafa1bc04ee0f4d04c7",
   "golden/negative/checkpoint-body-edited.tkb": "5b69e6ef7955d869f2d70fd42021fa68240da372e1a41e825a4e21c0378d98dd",
   "golden/negative/checkpoint-wrong-origin.tkb": "35c02d6c18d66fe28ee03e06bcdcb262da07a6a96f78779d57335109b137def8",
   "golden/negative/extra-trust-file.tkb": "7f7af1c8a3c359320dd0b3fee365a5edd95ec0f49c09e8d725a854f6b76f476c",
@@ -74,6 +74,26 @@
   "golden/v2/trust.json": "dd13dfc84f8d3f13b70efa4ccd9e479c43e0e5078464cbd252c2c282e6bff699",
   "kit/vectors/a-signature-in-non-canonical-base64.tkb": "ace93af22162d21fc637e5562c84e2b53706f07505ed8026ca2d1a3dcd670c0b",
   "kit/vectors/agent-approval.tkb": "33b05cfd78dad2fd12eaf22c88cfeebd32c77b210c18c3d9e73b2543535cbd20",
+  "kit/vectors/ai-approval-30-day-precedent.tkb": "89232f69ef0479a2702b2be03ce3bde9fe3681d4a4067faa63a804437ea6e788",
+  "kit/vectors/ai-approval-answered-unclean.tkb": "1f33dcf1d647a76022234329fb95e43e74393d1350c9fb51cb772ea6cf93643d",
+  "kit/vectors/ai-approval-break-glass.tkb": "768f250d81ff1cff278c90254c571636b2571ed499ec9bbf165ac8706e0d4387",
+  "kit/vectors/ai-approval-label-before-consume.tkb": "cc76a9ecb8d1155aef6379b3058b2e9ece385f8feb4669b57340ea4d014b2506",
+  "kit/vectors/ai-approval-label-cleared.tkb": "feca7c2e58c992d552ca5a51cd60c630634bf4893cf10aacf83fcda8d2086c19",
+  "kit/vectors/ai-approval-listed.tkb": "aa41e79cdcebe309be18fff9b82df5232be48e20fa7f7c07833e3fc8303574f9",
+  "kit/vectors/ai-approval-old-precedent.tkb": "8d433c24e89025c54990277c174cb75ee87161e2e4090e8eb3cf81882100c22c",
+  "kit/vectors/ai-approval-one-key.tkb": "526f5ceb3f9281285e892b23c62354d6ba1516fb7badac7219a5bc2e277a8dc0",
+  "kit/vectors/ai-approval-other-kind.tkb": "458a6f96b6ef4c9134a368446838e5df33e65b540c343c3dd64efe0cf5e37a5e",
+  "kit/vectors/ai-approval-other-policy.tkb": "07bbedd69bafb5d23b4873d2a0e0dbe1bcede820e3ec44a0b4097a15a64412dc",
+  "kit/vectors/ai-approval-recorded-label.tkb": "ed2c8791d24aa1b20d0abe357cfff2f9f5905a484ea39c6f21ba8cd033cf8f04",
+  "kit/vectors/ai-approval-revoked-rejection.tkb": "e997cb108d15256b7b174e00e7ad51924f1a834140999292944ceb468ca83e2b",
+  "kit/vectors/ai-approval-run-bound-no-snapshot.tkb": "998a12fcb45f4aae40b66e448e14711e6871352b31187feabc3323939c172ba5",
+  "kit/vectors/ai-approval-run-bound.tkb": "6687d4a5b97fdb16debf4c2578ad906aaadd9f0ae96782ce69c48a997a959a58",
+  "kit/vectors/ai-approval-run-null.tkb": "92911dde9fa61f7f9cac0d6eb277b9aaa7d22a21fc9092c42b3be2053bbfd1ba",
+  "kit/vectors/ai-approval-unlisted.tkb": "62fff4b52af04a27923cd190ab79d0a0ef06817ed337897fc36e632ce86365d2",
+  "kit/vectors/ai-approval-unnamed-rejection.tkb": "dbf2069631f0598a8a7e7e4fcd3763f219c6068df402e76d6bcee211925f13bf",
+  "kit/vectors/ai-approval.tkb": "b79a10b1050956041440e0a0c73b8f635f9c76ee76e0c16216fe6a2890733f6c",
+  "kit/vectors/ai-approver-lessons.tkb": "5158577002a4e8e1ecd544dea94df3ad1f82a27e0be6b178751aa7f47b22f759",
+  "kit/vectors/ai-approver-switched.tkb": "5bb51f5ca28c1cc8d33539555dd6d1bf784748937a8bbf8fbefb6d067ef4a023",
   "kit/vectors/an-inclusion-proof-node-in-non-canonical-base64.tkb": "932fd32cc5fdb9235b0ca83ac4275b03c1193c830931d3658e71711ada79ce49",
   "kit/vectors/approval-decision.tkb": "605df592bf58b063ea89f2820c1c89e70fedf6e9f080804eb11dca9320e52212",
   "kit/vectors/certified-key.tkb": "76c543c7d7cb77357974a451df22802683b29ecd6ab9dbabe6fa8faaa2625858",
@@ -95,8 +115,24 @@
   "kit/vectors/retire-self-signed.tkb": "c33f9ed5549c282c2f5fddb0ac8177497e44b4621890371a1f1e735a77db89f5",
   "kit/vectors/review-outside-findings-run.tkb": "ce516ebc20da616e35560775bbf86a1cac8ef16cad20e82e67b8ae3d553a2d8e",
   "kit/vectors/rotated.tkb": "d2c0a1877a943d67206f753e1cfd0f33e4698699602450681df002ae88a37a7c",
+  "kit/vectors/run-label-caller-cleared.tkb": "7f867d51df182c4a2b1946781160bb9fbd32e20411e802ede5a6825ac5674825",
+  "kit/vectors/run-label-ended-cleared.tkb": "4ad22aa6bfc5782ecdc5a96acb89e33f67a42b47a69baf54b2d3484a0c5a18a9",
+  "kit/vectors/run-label-inherited-untracked.tkb": "76ccb51e1a19666d7c774a9c259b4656f796260a0cd59e8ffded16181a568225",
+  "kit/vectors/run-label-inherited.tkb": "b8b80a42b4425a806ee846c72c4b8775d4d15668eb121b4c5a890802780f3d33",
+  "kit/vectors/run-label-lost-unnamed.tkb": "3cfabf7322235c1efb7cc50fcde0fdc39fd1e8411ccee09c917804d89425ea62",
+  "kit/vectors/run-label-lost.tkb": "2dc64c505be2f7f9894b4430d9cf976a6a029dd222b0f5e60d7d4136d6ffc892",
+  "kit/vectors/run-label-omitted-trusted.tkb": "3d1a7fb5d26bc2de890cb1f43f1083833f1225f2f747f8200dc869d3579817c2",
+  "kit/vectors/run-label-omitted.tkb": "3d1a7fb5d26bc2de890cb1f43f1083833f1225f2f747f8200dc869d3579817c2",
+  "kit/vectors/run-label-owner-cleared.tkb": "94233a7354003e8300aef55cea801ebb49f67d2ae4e87d8e1969e66d184ed899",
+  "kit/vectors/run-label-self-cleared.tkb": "ee87b8372e9fc966d0252723ee41bc0c661c7e478fd9526ea72d600d9286bbd9",
+  "kit/vectors/run-label-two-policies-omitted.tkb": "433b1c5ff5f1d873e603dfab8c03e884339a87cf605803fc92b2bab317889393",
+  "kit/vectors/run-label-two-policies.tkb": "483dbf07d7b27b70993cef425d6a3512754d639eb54209a8c1d1bbf15ecb0543",
+  "kit/vectors/run-label-unset.tkb": "3568120c790ea55ac856cf81c8146cb7e425a18a7089e94c3184d0dcfae91f77",
+  "kit/vectors/run-label-writer-cleared.tkb": "94d7b8c9e1613113cfcaed10efff8d52eb8dd3c36a60ec8c3e0865ba34317262",
+  "kit/vectors/run-label.tkb": "b7ec4eea11d8522f58d17b14fb1ebe253f4dbc242911c9d0cf7107adf6a76536",
   "kit/vectors/run-seq-written-0.tkb": "85a6cacbf2346cc88fb4154e20a1d6dbc5fd171f01f559b9550d73d3bb5eba9f",
   "kit/vectors/run-set-open-only.tkb": "e61809464ed089a0f749735c5fd7db4343e28ccf9f5652b1695b6a30f8a0e6ad",
+  "kit/vectors/run-writer.tkb": "cc8db9af4a77e04393f6b41bc5871176146aee1a3382f254d1ec28f00826e692",
   "kit/vectors/signature-s-plus-l.tkb": "9be85507ea5c6b888dee292c426eda0509a3d519b0be3d84e976918265ac7464",
   "kit/vectors/signer-run.tkb": "57f724ec696e3fc69b8d398e4c291236ccb374e8f1b723bab827aecedc4d402c",
   "kit/vectors/tree-size-written-4-0.tkb": "3d9b4d9b331642d691a7738b4fbff6a059ecb78c00aa1d7fdc27f73825765595",
@@ -105,6 +141,7 @@
   "kit/vectors/trust-extra-alg.json": "763c87a01b841f4aa710c3a7f00ff6335669b303fc91a31cdf427af4943fbf18",
   "kit/vectors/trust-issuer.json": "85f21c05ee39114c3ff342d93014e5629869de1fbfb3e4cd25cae5156ec29145",
   "kit/vectors/trust-other-alg.json": "d24aadaee508480b7c2f258bbae19b4839ebaa9f680fcbccd4cb07673b8ad244",
+  "kit/vectors/trust-policy.json": "5e0b92af019a05334652046951780548b47ec95b08aeafebf6f80dc474146eb6",
   "kit/vectors/trust-two-logs.json": "830edf08998c5e9844de6f799ef3c26f4180d2c239567a462d39bef14791c93e",
   "kit/vectors/trust.json": "b0c81d58854284eaca0e2cec37846b53fd0beecb37f541ef2176566a7f1302de",
   "kit/vectors/v-float.tkb": "85a7dc87f46994a42c41510e438d2ff72f34ab723a6a6e12ea0a841d466943bd"
@@ -1088,6 +1125,216 @@
    "addon": "containment"
   },
   {
+   "name": "a run label, its policy not in the bundle",
+   "input": "kit/vectors/run-label.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a run label its cited record doesn't set",
+   "input": "kit/vectors/run-label-unset.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: a record sets the labels of a call it lets run), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label its record sets, no run.label adds",
+   "input": "kit/vectors/run-label-omitted.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: added before the run's next decision), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label left out, its policy only in the trust config",
+   "input": "kit/vectors/run-label-omitted-trusted.tkb",
+   "trust": "kit/vectors/trust-policy.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§10 (a trust config's policies: known by their hash), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label inherited from another run of the requester",
+   "input": "kit/vectors/run-label-inherited.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels: a requester's, signer-asserted), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an inherited label no run condition reads",
+   "input": "kit/vectors/run-label-inherited-untracked.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: only those the policy reads), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label its run's own owner cleared on a dev signer",
+   "input": "kit/vectors/run-label-self-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "dev",
+   "failed_check": null,
+   "decided_by": "§3 (run labels: a dev signer's self_cleared, assurance dev), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label its run's own owner cleared, not self_cleared",
+   "input": "kit/vectors/run-label-owner-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: never the run's owner, but a dev signer's self_cleared), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a run decided under two policies, its labels added",
+   "input": "kit/vectors/run-label-two-policies.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels), §11 step 9 (each record under the policy its decision names)",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label a lost call sets, and the send after it",
+   "input": "kit/vectors/run-label-lost.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels: a call the signer never decided sets every label the policy reads), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a send after a lost call that doesn't name its run condition",
+   "input": "kit/vectors/run-label-lost-unnamed.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels), §11 step 9 (a run condition on the labels field, replayed from the rule ids)",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label a gateway's caller cleared",
+   "input": "kit/vectors/run-label-caller-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: never a requester of the run, but a dev signer's self_cleared), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a clear of an ended run's label, in another run",
+   "input": "kit/vectors/run-label-ended-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels: a clear of a run that has ended names it, run_id, in its tenant's signer run)",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a run's writer, recorded",
+   "input": "kit/vectors/run-writer.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels: a run's requesters)",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label a run's writer cleared",
+   "input": "kit/vectors/run-label-writer-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: never a requester of the run, but a dev signer's self_cleared), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label left out in a run decided under two policies",
+   "input": "kit/vectors/run-label-two-policies-omitted.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels), §11 step 9 (each record under the policy its decision names)",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
    "name": "an agent's approval",
    "input": "kit/vectors/agent-approval.tkb",
    "trust": "kit/vectors/trust.json",
@@ -1097,6 +1344,272 @@
    "failed_check": null,
    "decided_by": "§11 step 9 (approvals by agents: without the policy snapshot, a warning)",
    "addon": "agent approvals"
+  },
+  {
+   "name": "an AI approver's yes on a person's precedent in the run",
+   "input": "kit/vectors/ai-approval.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0: an AI yes carries two answers that approve and a person's precedent)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes with one answer",
+   "input": "kit/vectors/ai-approval-one-key.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a yes needs two answers that approve)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes on a precedent of another kind of call",
+   "input": "kit/vectors/ai-approval-other-kind.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a precedent is a person's approval of a request with the same digest)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes, its rule listed in the policy snapshot",
+   "input": "kit/vectors/ai-approval-listed.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0), §11 step 9 (a rule the snapshot's approval_agent lists permits agents)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes, its rule not listed in the policy snapshot",
+   "input": "kit/vectors/ai-approval-unlisted.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "approvals by agents"
+   ],
+   "decided_by": "§11 step 9 (a rule neither with approval.agent nor listed by approval_agent doesn't permit agents)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes in a run carrying a label of the snapshot's run bound",
+   "input": "kit/vectors/ai-approval-run-bound.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI run bound"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: none of an AI yes's run labels is one the policy's run bound names)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes in a labelled run, its policy snapshot left out of the bundle",
+   "input": "kit/vectors/ai-approval-run-bound-no-snapshot.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI run bound"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: an AI yes in a labelled run needs the snapshot of the policy it cites)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a person's switch of the AI approver",
+   "input": "kit/vectors/ai-approver-switched.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0: approver.switched, a person's switch)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a lesson drafted from a disagreement, accepted, and another dropped",
+   "input": "kit/vectors/ai-approver-lessons.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0: playbook.entry accepts or drops a lesson L-, with its evidence)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes after a signed label of the run bound it left out",
+   "input": "kit/vectors/ai-approval-recorded-label.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI run bound"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: the labels an AI yes's run records hold at the yes, replayed)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes after a label of the run bound a person cleared",
+   "input": "kit/vectors/ai-approval-label-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0: the run's run.label records replayed in order, a clear ends a label)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes consumed after a signed label of the run bound",
+   "input": "kit/vectors/ai-approval-label-before-consume.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI run bound"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: and at its consume)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes citing another policy than its request's",
+   "input": "kit/vectors/ai-approval-other-policy.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: relied_on.policy_hash is its request's)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes in a labelled run, its policy's approval_agent.run null",
+   "input": "kit/vectors/ai-approval-run-null.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI run bound"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a snapshot whose run bound can't be read fails the line)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes on a precedent more than 30 days older",
+   "input": "kit/vectors/ai-approval-old-precedent.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a precedent is at most 30 days older than the answer)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes on a precedent exactly 30 days older",
+   "input": "kit/vectors/ai-approval-30-day-precedent.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0: a precedent is at most 30 days older than the answer)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes on a break-glass answer",
+   "input": "kit/vectors/ai-approval-break-glass.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a break-glass answer is no precedent)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes on an answer made once the run wasn't clean",
+   "input": "kit/vectors/ai-approval-answered-unclean.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a precedent is an answer made in a run clean when it was answered)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes with a person's rejection of a call like it in the bundle",
+   "input": "kit/vectors/ai-approval-unnamed-rejection.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: no rejection of a call like it counts when the AI says yes)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes after a person's rejection of a call like it was revoked as a precedent",
+   "input": "kit/vectors/ai-approval-revoked-rejection.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0: a precedent revoked before the answer doesn't count, a rejection too)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
   },
   {
    "name": "a signed finding outside a findings run",

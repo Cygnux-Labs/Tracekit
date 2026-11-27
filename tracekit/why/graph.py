@@ -11,7 +11,7 @@ import re
 from collections import deque
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
-from .core import COMMITTED, Ref, Run, ablation_matches, canonical
+from .core import COMMITTED, Ref, Run, ablation_matches, canonical, chain_hash
 
 EVIDENCE = ("observed", "inferred", "tested")
 
@@ -205,7 +205,7 @@ def build_graph(run: Run, *, infer: bool = True, infer_threshold: float = 0.3, m
         elif t in ("action", "message"):
             if ev.get("decision"):
                 g.add_edge("ev:" + ev["decision"], nid, "invoked" if t == "action" else "sent", "observed")
-            for p in ev.get("provenance") or []:  # the signer's: this argument's value came only from that record
+            for p in ev.get("provenance") or []:  # the signer's: that record holds the value, nothing trusted does
                 if p.get("from_event"):
                     g.add_edge("ev:" + p["from_event"], nid, f"argument {p['field']} ({p['kind']}), untrusted",
                                "observed")
@@ -295,7 +295,13 @@ def nodes_matching(g: Graph, spec: str) -> List[str]:
 
 
 def _attach_tests(g: Graph, run: Run) -> None:
-    for t in run.tests:
+    """A tested edge per test of one item, to the one call its target matches in the run: a target several calls match
+    (`tool=send_email` of a run with two emails) measured whether any of them happened, which says nothing about each.
+    Of several tests of the same item and call, the graph keeps one edge: a test the code holding the run vouches for
+    (Run.replayed: `replayed` on the edge) before the log's own, then the strongest (the most replays, then the
+    largest effect), as candidates() reads them."""
+    vouched = {id(t) for t in run.tests if chain_hash(t) in run.replayed}
+    for t in sorted(run.tests, key=lambda t: (id(t) not in vouched, -t["n"], -abs(t["effect"]))):
         if t.get("group"):
             continue  # removing several items at once says nothing about any one of them
         if t.get("scope") == "decision":
@@ -307,13 +313,14 @@ def _attach_tests(g: Graph, run: Run) -> None:
         else:
             srcs = nodes_matching(g, t["intervention"])
             try:
-                dsts = ["ev:" + e["id"] for e in target_hits(run, t["target"])]
+                hits = target_hits(run, t["target"])
             except ValueError:
-                dsts = []
+                hits = []
+            dsts = ["ev:" + hits[0]["id"]] if len(hits) == 1 else []
         for s in srcs:
             for d in dsts:
                 g.add_edge(s, d, "causal", "tested", effect=t["effect"], ci=t["ci"], n=t["n"],
-                           verdict=t["verdict"], target=t["target"])
+                           verdict=t["verdict"], target=t["target"], replayed=id(t) in vouched)
 
 
 # --------------------------------------------------------------------------- taint / blast radius

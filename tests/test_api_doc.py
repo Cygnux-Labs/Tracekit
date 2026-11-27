@@ -59,6 +59,9 @@ class Tables(unittest.TestCase):
         self.assertIn("(when `executed_by` is `\"client\"`: requires `args_source` and `args_digest`)",
                       self.row(schema, "tool_uses")[3])
 
+    def test_a_null_in_an_enum_reads_as_json_null(self):
+        self.assertEqual(self.api_doc.kind({"enum": ["enforce", None]}), "one of `enforce`, `null`")
+
     def test_the_limits_of_a_schema_are_in_the_notes(self):
         notes = self.api_doc.notes
         self.assertEqual(notes({"type": "array", "minItems": 2, "maxItems": 2}), "exactly 2 items")

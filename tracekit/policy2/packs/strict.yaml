@@ -8,7 +8,7 @@
 # docs/evaluation.md#e21-policy-robustness gives the false-positive rate measured on E17's and E21's benign calls.
 
 extends: server.yaml
-version: '2026.11-strict-17'
+version: '2026.11-strict-18'
 description: server-hosted agents where installs, pushes, network commands, uploads and environment changes wait for a person
 on_parse_error: deny
 
@@ -16,7 +16,7 @@ ask:
   - id: TK-F004
     class: shell
     field: line
-    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|npm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add|pu(b(li?)?)?)|(pnpm|yarn|bun)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add)|(uv|poetry|cargo)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){1,8}?\s+publish|pip[0-9.]*\s+install|uv(\s+--(cache-dir|python-preference|python-fetch|color|allow-insecure-host|trusted-host|directory|project|config-file|preview-features?)\s+[^\s]+|\s+-[^\s]+){0,8}?\s+(add|sync|publish|(tool|pip)(\s+--(cache-dir|python-preference|python-fetch|color|allow-insecure-host|trusted-host|directory|project|config-file|preview-features?)\s+[^\s]+|\s+-[^\s]+){0,8}?\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
+    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|npm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add|pu(b(l(is?)?)?)?)|(pnpm|yarn|bun)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add)|(uv|poetry|cargo)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){1,8}?\s+publish|pip[0-9.]*\s+install|uv(\s+--(cache-dir|python-preference|python-fetch|color|allow-insecure-host|trusted-host|directory|project|config-file|preview-features?)\s+[^\s]+|\s+-[^\s]+){0,8}?\s+(add|sync|publish|(tool|pip)(\s+--(cache-dir|python-preference|python-fetch|color|allow-insecure-host|trusted-host|directory|project|config-file|preview-features?)\s+[^\s]+|\s+-[^\s]+){0,8}?\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|(kubectl|oc)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
     label: side_effect
     reason: a push, publish, install or apply
     remedy: Have a person approve the held call; the strict profile holds every change that leaves the workspace.
@@ -46,6 +46,29 @@ ask:
     label: egress
     reason: an upload tool sending a file off the machine
     remedy: Have a person approve the held call, or keep the file in the workspace.
+  - id: TK-F030
+    class: shell
+    field: publish
+    pattern: '^PUSH:(?:release|image|subtree|config|verb|tag) |^(?:gh|hub)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} release create(?: |$)'
+    label: side_effect
+    reason: a release created or published, an image pushed, a tag made through the API, a subtree push or a change to where pushes go
+    remedy: Have a person approve the held call; the strict profile holds every change that leaves the workspace.
+  - id: TK-F048
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)([^/]*\.git/(modules/([^/]+/){1,8}|worktrees/[^/]+/)?config(\.worktree)?|([^/.]*[.-])?git(config|alias(es)?)([.-][^/]*)?|git/config|\.?cargo/config(\.toml)?|(bin|scripts)/activate(\.[a-z0-9]+)?)$'
+    label: side_effect
+    reason: writing a Git or cargo config file or a virtualenv's activate script, which can change where a push goes or what a command publishes
+    remedy: Have a person approve the held call, or set the one setting the task needs with `git config` or on the command line.
+  - id: TK-F049
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: git_config
+    pattern: '(?:^|\n)[ \t\f\v\r]*\[[ \t]*(?:[Aa][Ll][Ii][Aa][Ss][ \t]*\]|(?:[Rr][Ee][Mm][Oo][Tt][Ee]|[Uu][Rr][Ll]|[Ii][Nn][Cc][Ll][Uu][Dd][Ee][Ii][Ff])[ \t]+"|[Ii][Nn][Cc][Ll][Uu][Dd][Ee][ \t]*\])'
+    label: side_effect
+    reason: writing a Git config section (an alias, a remote, a URL rewrite or an include) into a file a Git config may include
+    remedy: Have a person approve the held call, or set the one setting the task needs with `git config` or on the command line.
   - id: TK-F029
     tool: '^(?:artifact_create|artifact_update)$'
     pattern: '^'

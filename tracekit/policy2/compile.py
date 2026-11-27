@@ -5,6 +5,7 @@ so a decision does not depend on which engine made it. `build` returns every lin
 """
 import functools
 import hashlib
+import collections
 import itertools
 import json
 import ntpath
@@ -19,9 +20,18 @@ from ..wiki import wiki_url
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
-            "explains", "on_parse_error", "oversize", *SECTIONS, *DETECT}
-RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from",
-             "remedy"}
+            "explains", "on_parse_error", "oversize", "label_inherit_s", "approval_agent", *SECTIONS, *DETECT}
+RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "unless_cli", "reason", "rationale", "label", "approval",
+             "from", "remedy", "when", "mode"}
+CLI_KEYS = {"command", "flag", "without", "alone", "required"}   # an unless_cli entry's (_lint_cli)
+_FLAG = re.compile(r"--?[A-Za-z0-9][\w.-]*")
+# the labels a run can carry (docs/policy-v2.md#run-conditions): a closed set. The signer sets one when a call that
+# runs matches a rule whose `label` it is (secrets_access: a read of a secret, dev.yaml's TK-F033), and
+# untrusted_content also when a tool the policy's `untrusted` list names runs or an input is observed as untrusted; a
+# person may clear one
+RUN_LABELS = ("secrets_access", "untrusted_content")
+# a rule's field: the labels of the rules the call matched, sorted and joined by a space (labels_subject)
+LABELS_FIELD = "labels"
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-SOURCE-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR",
@@ -122,11 +132,19 @@ RESPOND_MORE = {"denied_calls": {"max", "window", "scope"}, "refusal_burst": {"m
 AGENT_KEYS, BOUND_KEYS, BUDGET_KEYS = {"mode", "allow", "budget", "veto_s"}, {"type", "min", "max", "enum", "pattern"}, \
     {"count", "sum", "window", "scope"}
 BOUND_TYPES = {"integer": int, "string": str, "boolean": bool}
+# the AI approver (docs/approvals.md#the-ai-approver): the rules an operator's `approval_agent` may list, reviewed like
+# any policy change. An allowlist: each has its precedent target in engine.Engine.target, and people answer every other
+APPROVER_RULES = ("TK-SHELL-PARSE", "TK-A062", "TK-A025")
+APPROVER_KEYS, APPROVER_LABELS = {"mode", "rules", "run", "veto_s"}, ("untrusted_content", "secrets_access")
+# rules Tracekit fixes as never an AI approver's, by what they guard (lint names it)
+NEVER_APPROVER = {**dict.fromkeys(("TK-A020", "TK-A021", "TK-A035", "TK-A036", "TK-A037", "TK-A038", "TK-A052",
+                                   "TK-A053"), "a credential or secret read"),
+                  **dict.fromkeys(("TK-A033", "TK-A056"), "a push or merge to main or master")}
 MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent approvals this long
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access",
-                     "tracekit", "push", "harness_launch", "environment", "gh_runs"},
-           "fs": {"path", "op", "content_digest", "ci_workflow", "agent_skill"},
+                     "tracekit", "push", "publish", "requests", "harness_launch", "environment", "gh_runs"},
+           "fs": {"path", "op", "content_digest", "ci_workflow", "agent_skill", "git_config"},
            "http": {"method", "url", "host", "internal", "sends_to", "link"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
            "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args", "run"},
@@ -138,11 +156,11 @@ for _fields in CLASSES.values():
     _fields.add("target")
 MAX_REPEAT = 1000   # RE2's limit for {n,m}
 WS = "\\t\\n\\f\\r "   # RE2's \s; Python's also has \v
-_ESCAPES = set("dDwWsSbBAntrfv")
+_ESCAPES = set("dDwWsSbAntrfv")   # not \B: RE2 also finds one between the bytes of a character
 _CLASS_ESCAPES = set("dDwWsntrfv")
 _OPS = {_sre_c.LITERAL, _sre_c.NOT_LITERAL, _sre_c.ANY, _sre_c.IN, _sre_c.BRANCH, _sre_c.SUBPATTERN,
         _sre_c.MAX_REPEAT, _sre_c.MIN_REPEAT, _sre_c.AT}
-_ATS = {_sre_c.AT_BEGINNING, _sre_c.AT_END, _sre_c.AT_BOUNDARY, _sre_c.AT_NON_BOUNDARY, _sre_c.AT_BEGINNING_STRING}
+_ATS = {_sre_c.AT_BEGINNING, _sre_c.AT_END, _sre_c.AT_BOUNDARY, _sre_c.AT_BEGINNING_STRING}
 
 
 def canonical(pol):
@@ -152,6 +170,30 @@ def canonical(pol):
 
 def policy_hash(pol):
     return "sha256:" + hashlib.sha256(canonical(pol).encode("utf-8")).hexdigest()
+
+
+def subject_labels(pol):
+    """{rule id: label} of the rules whose labels a rule on LABELS_FIELD reads: each rule's non-empty label, but a run
+    condition rule's (`when`) and another LABELS_FIELD rule's, which wait on the subject or follow from it. The
+    engine and both verifiers read the subject by this (labels_subject; sdk/typescript/src/verify/labels.ts follows
+    it, docs/format-v2.md's run labels)."""
+    return {r["id"]: r["label"] for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r.get("label"), str)
+            and r["label"] and "when" not in r and r.get("field") != LABELS_FIELD}
+
+
+def labels_subject(rule_ids, labels):
+    """The subject a rule on LABELS_FIELD reads of a decision naming `rule_ids`: the labels `labels` (subject_labels')
+    gives them, each once, sorted by code point and joined by a space (`background_spawn egress`), so one pattern can
+    name two of them; "" when none has one, which no such rule reads."""
+    return " ".join(sorted({labels[i] for i in rule_ids if i in labels}))
+
+
+def anycase(rule):
+    """Whether the engine matches a rule's pattern and unless in any case: an a2a rule's (the names it reads are
+    lower-cased, classes.a2a_fields) and one's on the `tracekit` field (casefolded as a path is), never one's on
+    LABELS_FIELD, which reads the policy's own labels as written. Lint keeps them ASCII: RE2 and the fallback engine
+    fold other letters apart."""
+    return rule.get("field") != LABELS_FIELD and (rule.get("class") == "a2a" or rule.get("field") == "tracekit")
 
 
 def translate(pattern):
@@ -210,6 +252,13 @@ def _walk(items, room=MAX_REPEAT):
         elif op == _sre_c.BRANCH:
             for b in av[1]:
                 _walk(b, room)
+        elif op == _sre_c.IN and av[:1] == [(_sre_c.NEGATE, None)] and any(
+                {(_sre_c.CATEGORY, a), (_sre_c.CATEGORY, b)} <= set(av) for a, b in _COMPLEMENTS):
+            raise PolicyError("a negated class of an escape and its complement ([^\\w\\W]) matches nothing, and the "
+                              "fallback engine reads it as any character")
+
+
+_COMPLEMENTS = ((_sre_c.CATEGORY_DIGIT, _sre_c.CATEGORY_NOT_DIGIT), (_sre_c.CATEGORY_WORD, _sre_c.CATEGORY_NOT_WORD))
 
 
 # cached: a pure check, and most of a build's time, which checks every pattern of a pack and of the packs it extends
@@ -225,6 +274,28 @@ def check_pattern(pattern):
     _walk(_sre_p.parse(pattern))
 
 
+@functools.lru_cache(maxsize=4096)
+def _lint_pattern(pattern, labels=False):
+    """check_pattern, and that the engines compile `pattern`: the fallback (the regex module, as engine._backend
+    compiles it) as written and in any case, as it raises on some RE2 and sre take (an any-case class of every
+    character, `[^\\w\\W]`: AttributeError), which would stop a signer on it; with `labels` (a rule on LABELS_FIELD),
+    the verifiers' linear search too (linear.Pattern: its program's size), so the signer refuses what they would."""
+    check_pattern(pattern)
+    try:
+        import regex
+    except ImportError:   # no fallback engine here to run it
+        regex = None
+    for flags in (0, regex.IGNORECASE) if regex else ():
+        try:
+            regex.compile(translate(pattern), regex.ASCII | regex.V0 | flags)
+        except Exception as e:
+            raise PolicyError(f"the fallback engine can't compile it{' in any case' * bool(flags)} "
+                              f"({type(e).__name__})") from None
+    if labels:
+        from . import linear
+        linear.Pattern(pattern)
+
+
 MAX_EXACT = 64   # strings an exact set of the literal walk may hold before it gives up on exactness
 
 
@@ -234,11 +305,82 @@ def literals(pattern):
     pattern has no such set. Case variants fold (`[Mm][Ee]` is "me"); a class of more than eight characters, an
     optional or repeated part and any non-ASCII character end a literal run. A string holding another of the set is
     left out: the shorter one is in every subject the longer one is."""
-    exact, req = _seq(_sre_p.parse(pattern))
+    items = _sre_p.parse(pattern)
+    exact, req = _seq(items)
     req = exact if exact is not None else req
     if not req or min(map(len, req)) < 2:
         return None
+    if (after := _after_prefix(items)) is not None and all(any(s in p for p in after[0]) for s in req):
+        req = after[1]   # (every string was the start the engine already checks: what the matches hold past it)
     return tuple(sorted(s for s in req if not any(t != s and t in s for t in req)))
+
+
+def _after_prefix(items):
+    """(the strings every match of a pattern anchored at its start begins with, a set one string of which every match
+    holds past them: _seq's choice for each alternative of its top level, joined), or None when an alternative isn't
+    anchored (`^`) or holds nothing of two characters or more past its start."""
+    alts = items[0][1][1] if len(items) == 1 and items[0][0] == _sre_c.BRANCH else [items]
+    starts, held = set(), set()
+    for alt in alts:
+        alt = list(alt)
+        if not alt or alt[0] != (_sre_c.AT, _sre_c.AT_BEGINNING):
+            return None
+        start, k = {""}, 1
+        while k < len(alt) and (ex := _node(*alt[k])[0]) is not None and len(prod := {a + b for a in start for b in ex}) <= PREFIX_MAX:
+            start, k = prod, k + 1
+        exact, found = _found(alt[k:])
+        sets = [s for s in ([exact] if exact is not None else found) if s and min(map(len, s)) >= 2]
+        if not sets:
+            return None
+        starts |= start
+        held |= max(sets, key=lambda s: (min(map(len, s)), -len(s)))
+    return starts, held
+
+
+PREFIX_MAX = 256   # the most strings compile.prefixes gives a pattern (str.startswith reads them in one call)
+
+
+def prefixes(pattern):
+    """The lower-case strings every match of a checked pattern starts with: a tuple, one of which starts each subject
+    it matches (`^(?:curl|wget)( |$)` gives curl and wget), or None when an alternative of its top level isn't anchored
+    (`^`) and then exact for a character or more, or they are over PREFIX_MAX. The engine searches a rule only in a
+    subject that starts with one (Engine.decide), a look at its first characters."""
+    items = list(_sre_p.parse(pattern))
+    alts = items[0][1][1] if len(items) == 1 and items[0][0] == _sre_c.BRANCH else [items]
+    out = set()
+    for alt in alts:
+        alt = list(alt)
+        if not alt or alt[0] != (_sre_c.AT, _sre_c.AT_BEGINNING):
+            return None
+        out |= _prefix(alt[1:])[0]
+        if "" in out or len(out) > PREFIX_MAX:
+            return None
+    return tuple(sorted(s for s in out if not any(t != s and s.startswith(t) for t in out)))
+
+
+def _prefix(items):
+    """(strings, whole) of a sequence: every match starts with one of `strings` (lower case), and with `whole` is one."""
+    run = {""}
+    for op, av in items:
+        if op == _sre_c.AT:   # zero width
+            continue
+        if op == _sre_c.SUBPATTERN:
+            ex, whole = _prefix(list(av[-1]))
+        elif op == _sre_c.BRANCH:
+            parts = [_prefix(list(b)) for b in av[1]]
+            ex, whole = set().union(*(p for p, _ in parts)), all(w for _, w in parts)
+        else:
+            ex, _ = _node(op, av)
+            whole = ex is not None
+        if ex is None:
+            return run, False
+        prod = {a + b for a in run for b in ex}
+        if len(prod) > PREFIX_MAX:
+            return run, False
+        run = prod
+        if not whole:
+            return run, False
+    return run, True
 
 
 def requirements(pattern):
@@ -293,6 +435,20 @@ def _found(items):
     return None, found
 
 
+def _shared(cands):
+    """One set of each alternative's candidates (`cands`: per alternative, the sets one string of each of which its
+    every match holds), joined: per alternative the set most alternatives have too, then _seq's choice (the longest
+    shortest string, then the fewest strings), so a group whose alternatives name the same strings gets those once.
+    None when an alternative has no set without the empty string."""
+    cands = [[frozenset(c) for c in alt if c and "" not in c] for alt in cands]
+    if not all(cands):
+        return None
+    # a set of a string under two characters is no prefilter (literals): shared or not, it is chosen last
+    shared = collections.Counter(c for alt in cands for c in set(alt) if min(map(len, c)) >= 2)
+    return set().union(*(max(alt, key=lambda c: (min(map(len, c)) >= 2, shared[c], min(map(len, c)), -len(c)))
+                         for alt in cands))
+
+
 def _node(op, av):
     if op == _sre_c.LITERAL:
         return ({chr(av).lower()}, None) if av < 128 else (None, None)
@@ -311,11 +467,10 @@ def _node(op, av):
     if op == _sre_c.SUBPATTERN:
         return _seq(av[-1])
     if op == _sre_c.BRANCH:
-        parts = [_seq(b) for b in av[1]]
+        parts = [_found(b) for b in av[1]]
         if all(ex is not None for ex, _ in parts) and len(set().union(*(ex for ex, _ in parts))) <= MAX_EXACT:
             return set().union(*(ex for ex, _ in parts)), None
-        reqs = [ex if ex is not None else req for ex, req in parts]
-        return None, (None if any(r is None or "" in r for r in reqs) else set().union(*reqs))
+        return None, _shared([[ex] if ex is not None else found for ex, found in parts])
     if op in (_sre_c.MAX_REPEAT, _sre_c.MIN_REPEAT):
         lo, hi, items = av
         ex, req = _seq(items)
@@ -442,6 +597,9 @@ def _lint(pol, path):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
         errors.append(f"{path}: on_parse_error must be ask or deny")
+    if "label_inherit_s" in pol and not _int(pol["label_inherit_s"], 0, MAX_WINDOW):   # (labels.labels_for)
+        errors.append(f"{path}: label_inherit_s must be whole seconds from 0 to {MAX_WINDOW}: how long a run's labels "
+                      "stay with its requester after it ends")
     if pol.get("oversize", "deny") not in ("ask", "deny"):   # (deny, or left out: TK-OVERSIZE takes its rule's section)
         errors.append(f"{path}: oversize must be ask or deny")
     for sec in SECTIONS:
@@ -451,8 +609,15 @@ def _lint(pol, path):
                 continue
             where = f"{path}: {sec} rule {r['id']}"
             errors += [f"{where}: unknown key {k!r}" for k in sorted(set(r) - RULE_KEYS)]
-            errors += [f"{where}: {k} must be a string" for k in sorted(set(r) & RULE_KEYS - {"approval"})
-                       if not isinstance(r[k], str)]
+            errors += [f"{where}: {k} must be a string"
+                       for k in sorted(set(r) & RULE_KEYS - {"approval", "unless_cli", "when"}) if not isinstance(r[k], str)]
+            if "unless_cli" in r:
+                errors += [f"{where}: unless_cli: {e}" for e in _lint_cli(r)]
+            if "when" in r:
+                errors += [f"{where}: {e}" for e in _lint_when(r, sec, pol)]
+            if "mode" in r and not (sec == "ask" and r["mode"] in ("shadow", "enforce")):
+                errors.append(f"{where}: mode is shadow or enforce, on an ask rule (shadow: it records the calls it "
+                              "would hold, as a flag, and holds none)")
             if r.get("from", "untrusted") != "untrusted":
                 errors.append(f"{where}: from must be untrusted")
             if isinstance(r.get("remedy"), str):
@@ -476,15 +641,18 @@ def _lint(pol, path):
             for key in ("pattern", "unless", "tool"):
                 try:
                     if isinstance(r.get(key), str):
-                        check_pattern(r[key])
+                        _lint_pattern(r[key], key != "tool" and r.get("field") == LABELS_FIELD)
                         if key == "unless" and all(re.search(translate(r[key]), s, re.ASCII) for s in ("", "\0\n")):
                             errors.append(f"{where}: can never fire: unless matches every subject")
+                        if key != "tool" and anycase(r) and not r[key].isascii():
+                            errors.append(f"{where}: {key}: it is matched in any case, where RE2 and the fallback "
+                                          "engine fold letters outside ASCII apart: spell it in ASCII")
                 except PolicyError as e:
                     errors.append(f"{where}: {key}: {e}")
             cls, field = r.get("class"), r.get("field")
             if cls is not None and cls not in CLASSES:
                 errors.append(f"{where}: unknown class {cls!r}")
-            elif cls is not None and field is not None and field not in CLASSES[cls]:
+            elif cls is not None and field not in (None, LABELS_FIELD) and field not in CLASSES[cls]:
                 errors.append(f"{where}: can never fire: class {cls} has no field {field!r}")
             elif cls not in (None, "unknown") and cls not in tools.values():
                 errors.append(f"{where}: can never fire: no tool maps to class {cls}")
@@ -493,7 +661,118 @@ def _lint(pol, path):
         if "label" in x and x["label"] not in labels:
             errors.append(f"{path}: explains {x['label']!r}: no rule has this label")
         errors += [f"{path}: explains host {h!r} is too loose: {why}" for h in x["hosts"] if (why := _loose_host(h))]
-    return errors + _lint_detect(pol, path)
+    return errors + _lint_detect(pol, path) + _lint_approver(pol, path)
+
+
+def _lint_approver(pol, path):
+    """The errors of `approval_agent: {mode, rules, run: {clean}, veto_s?}`: the operator's opt-in to the AI approver,
+    rule by rule from APPROVER_RULES, each an ask rule here that nothing else makes a person's (_never_approver)."""
+    a = pol.get("approval_agent")
+    if a is None:
+        return []
+    where = f"{path}: approval_agent"
+    if not isinstance(a, dict) or not set(a) <= APPROVER_KEYS:
+        return [f"{where} takes {sorted(APPROVER_KEYS)}"]
+    errors = [f"{where}: {e}" for bad, e in (
+        (a.get("mode") not in ("shadow", "enforce"), "mode must be shadow or enforce"),
+        ("veto_s" in a and not _int(a["veto_s"], 1), "veto_s must be a positive integer (seconds)"),
+        (not (isinstance(a.get("run"), dict) and set(a["run"]) == {"clean"} and isinstance(a["run"]["clean"], list)
+              and a["run"]["clean"] and len(set(map(str, a["run"]["clean"]))) == len(a["run"]["clean"])
+              and set(a["run"]["clean"]) <= set(APPROVER_LABELS)),
+         f"run must be {{clean: [{', '.join(APPROVER_LABELS)}]}}: the run labels under which people answer every "
+         "hold"),
+        (not (isinstance(a.get("rules"), list) and a["rules"] and all(isinstance(i, str) for i in a["rules"])),
+         "rules must list rule ids")) if bad]
+    rules = {r["id"]: (sec, r) for sec in SECTIONS for r in pol.get(sec, [])
+             if isinstance(r, dict) and isinstance(r.get("id"), str)}
+    for i in a.get("rules") if isinstance(a.get("rules"), list) else ():
+        why = isinstance(i, str) and _never_approver(i, *rules.get(i, (None, None)), pol)
+        if why:
+            errors.append(f"{where}: {i}: {why}: people answer it")
+    return errors
+
+
+def _never_approver(rid, sec, rule, pol):
+    """Why rule `rid` (in section `sec` of `pol`, None when not a rule of it) can't be an AI approver's, or None."""
+    rule, approval = rule or {}, (rule or {}).get("approval") or {}
+    return ("a deny rule: no one approves its calls" if sec == "deny" else
+            "a `from: untrusted` rule" if "from" in rule else
+            NEVER_APPROVER.get(rid) or
+            ("a payment rule" if _money(rule, pol) else
+             "one of Tracekit's own guardrails" if rule.get("field") == "tracekit" else
+             "a push" if rule.get("field") == "push" else
+             "a passkey rule" if approval.get("passkey") else
+             "it has an approval.agent of its own: bound it there or here, not both" if "agent" in approval else
+             f"not on the reviewed list of rules an AI approver may answer ({', '.join(APPROVER_RULES)})"
+             if rid not in APPROVER_RULES else
+             ("on_parse_error denies it in this policy" if pol.get("on_parse_error", "ask") != "ask" else None)
+             if rid == "TK-SHELL-PARSE" else
+             "not an ask rule of this policy" if sec != "ask" else None))
+
+
+def _money(rule, pol):
+    """Whether `rule` moves money: class payment, or no class and a tool the policy maps to payment."""
+    if rule.get("class") == "payment":
+        return True
+    try:
+        return "class" not in rule and "tool" in rule and any(
+            re.fullmatch(rule["tool"], t) for t, c in pol.get("tools", {}).items() if c == "payment")
+    except (re.error, TypeError):
+        return False
+
+
+def _lint_cli(rule):
+    """The errors of a shell rule's unless_cli: a list of {command, flag?, without?, alone?, required?}; `command` a
+    pattern whose first word names a program (one with no grammar in policy2/grammars is a warning: its commands read
+    as text), matched against the whole `program subcommand ...`; `required` true: a command of that program the
+    grammar can't read is never exempt."""
+    from .grammar import program_of
+    if rule.get("class") != "shell" or rule.get("field") not in (None, "argv", "push", "publish"):
+        return ["reads a shell command's words: class shell, field argv (or none), push or publish"]
+    entries = rule["unless_cli"]
+    if not isinstance(entries, list) or not entries:
+        return ["must list {command, flag?, without?, alone?, required?}"]
+    errors = []
+    for e in entries:
+        if not isinstance(e, dict) or not set(e) <= CLI_KEYS or not isinstance(e.get("command"), str):
+            errors.append(f"{e!r}: takes command (a string), flag, without, alone and required")
+            continue
+        if not program_of(e["command"]):
+            errors.append(f"{e['command']!r}: its first word names no program")
+        try:
+            _lint_pattern(e["command"])
+        except PolicyError as x:
+            errors.append(f"{e['command']!r}: {x}")
+        if "flag" in e and not (isinstance(e["flag"], str) and _FLAG.fullmatch(e["flag"])):
+            errors.append(f"{e['command']!r}: flag must be one flag's name (--draft)")
+        if "without" in e and not (isinstance(e["without"], list) and all(isinstance(x, str) and _FLAG.fullmatch(x)
+                                                                          for x in e["without"])):
+            errors.append(f"{e['command']!r}: without must list flags' names")
+        if e.get("alone", True) is not True:
+            errors.append(f"{e['command']!r}: alone is true or left out")
+        if e.get("required", True) is not True:
+            errors.append(f"{e['command']!r}: required is true or left out")
+        if "flag" not in e and "without" not in e and not e.get("alone"):
+            errors.append(f"{e['command']!r}: exempts every use of the command: name a flag, without or alone")
+    return errors
+
+
+def _lint_when(rule, sec, pol):
+    """The errors of a rule's run condition, `when: {run_has: [label, ...]}`: on an ask or flag rule, labels of
+    RUN_LABELS, each once, each one a source in the policy can set; a rule with one carries no run label itself."""
+    w, errors = rule["when"], []
+    if sec == "deny":
+        errors.append("when is for ask and flag rules: a deny rule applies always")
+    if not (isinstance(w, dict) and set(w) == {"run_has"} and isinstance(w["run_has"], list) and w["run_has"]
+            and all(isinstance(x, str) and x in RUN_LABELS for x in w["run_has"])
+            and len(set(w["run_has"])) == len(w["run_has"])):
+        return errors + [f"when must be {{run_has: [label, ...]}}, each label once, of {', '.join(RUN_LABELS)}"]
+    live = {r.get("label") for s in ("ask", "flag") for r in pol.get(s, []) if isinstance(r, dict)}
+    errors += [f"when: {x} can never be set: no ask or flag rule has `label: {x}`" for x in w["run_has"]
+               if x != "untrusted_content" and x not in live]
+    if rule.get("label") in RUN_LABELS:
+        errors.append(f"a rule with when can't have label {rule['label']}: it would set what it reads")
+    return errors
 
 
 def _lint_remedy(text, sec):
@@ -670,7 +949,7 @@ def _lint_agent(rule):
             try:
                 if typ is not str or not isinstance(b["pattern"], str):
                     raise PolicyError("a pattern is a string, on a string field")
-                check_pattern(b["pattern"])
+                _lint_pattern(b["pattern"])
             except PolicyError as e:
                 errors.append(f"field {name}: pattern: {e}")
     budget = a.get("budget")
@@ -702,25 +981,33 @@ def _unfiltered(pattern):
 def warnings(pol):
     """What lint lets through but a person should know: a tool mapped to class unknown (what every unmapped tool is, so
     unknown_tools still decides it; a 1.1 policy may do it, so it isn't an error), a rule the prefilter can't skip
-    (`_unfiltered`), and an agent approver on a money-moving rule (class payment, or a tool the policy maps to payment)
-    without executor t2 binds the approval, not what runs."""
-    payments = [t for t, c in pol.get("tools", {}).items() if c == "payment"]
-
-    def money(r):
-        if r.get("class") == "payment":
-            return True
-        try:
-            return "class" not in r and "tool" in r and any(re.fullmatch(r["tool"], t) for t in payments)
-        except re.error:
-            return False
+    (`_unfiltered`), an agent approver on a money-moving rule (class payment, or a tool the policy maps to payment)
+    without executor t2 binds the approval, not what runs, an AI approver whose run bound leaves a label out, and an
+    unless_cli entry whose program has no grammar table (missing, or never generated), whose commands then read as
+    text."""
+    from .grammar import PROGRAMS, program_of
     return [f"tool {t!r} maps to class 'unknown', which unknown_tools decides like any unmapped tool: map an "
             "application's own tool to class app (known, no class fields)"
             for t, c in pol.get("tools", {}).items() if c == "unknown"] + [
         f"{sec} rule {r['id']}: no literal of two or more characters is in every match, so the rule is searched on "
         "every call its class and tool reach; name the text it looks for (a command, a key name, a path part)"
         for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict) and _unfiltered(r.get("pattern"))] + [
-        f"ask rule {r['id']}: approval.agent on a payment tool without executor t2: the agent's approval binds the "
-        "arguments the agent reported, not what its process runs; add executor: t2"
-        for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)
-        and "agent" in r["approval"] and money(r) and r["approval"].get("executor") != "t2"]
+        f"ask rule {i}: approval.agent on a payment tool without executor t2: the agent's approval binds the "
+        "arguments the agent reported, not what its process runs; add executor: t2" for i in unbound_payments(pol)] + [
+        f"approval_agent: run.clean leaves out {label}: a run that carries it still gets AI answers"
+        for label in APPROVER_LABELS if isinstance(pol.get("approval_agent"), dict)
+        and isinstance(pol["approval_agent"].get("run"), dict)
+        and label not in (pol["approval_agent"]["run"].get("clean") or ())] + [
+        f"{sec} rule {r['id']}: unless_cli {e['command']!r}: no grammar table for {program_of(e['command'])!r} "
+        "(policy2/grammars), so its commands read as text"
+        for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict) and isinstance(r.get("unless_cli"), list)
+        for e in r["unless_cli"] if isinstance(e, dict) and isinstance(e.get("command"), str)
+        and program_of(e["command"]) not in PROGRAMS]
+
+
+def unbound_payments(pol):
+    """The ids of the ask rules with approval.agent on a money-moving tool without executor t2 (a warning; on a laptop,
+    where the agent approver is a uid, the signer refuses to start with one)."""
+    return [r["id"] for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)
+            and "agent" in r["approval"] and _money(r, pol) and r["approval"].get("executor") != "t2"]
 

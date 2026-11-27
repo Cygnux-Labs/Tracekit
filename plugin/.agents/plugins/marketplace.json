@@ -1,0 +1,20 @@
+{
+  "name": "tracekit",
+  "interface": {
+    "displayName": "Tracekit"
+  },
+  "plugins": [
+    {
+      "name": "tracekit",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    }
+  ]
+}

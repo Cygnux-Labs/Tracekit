@@ -34,7 +34,10 @@ NOT_CONTENT = {"/properties/prev_hash", "/properties/run_prev_hash", "/$defs/run
                # policy text, and an agent approver's own word for its prompt
                "/$defs/approval_request/properties/agent/properties/conditions_hash",
                "/$defs/approval/properties/asserted/properties/prompt_hash",
-               "/$defs/approval_suggested/properties/asserted/properties/prompt_hash"}
+               "/$defs/approval_suggested/properties/asserted/properties/prompt_hash",
+               # the AI approver's: the policy an answer was bounded by, and the playbook the signed records hold
+               "/$defs/approver_answer/properties/policy_hash",
+               "/$defs/approver_answer/properties/playbook/properties/digest"}
 
 
 class SignerPrivacy(Harness, unittest.TestCase):
@@ -426,6 +429,32 @@ class HeldCopies(ApproverCopy, unittest.TestCase):
                 for secret in ("Zq8", "MIIBOg"):
                     self.assertNotIn(secret, shown)
                 self.assertIn(kept, shown)
+
+    def test_a_password_with_a_blank_in_its_quotes_is_asked_with_it_hidden(self):
+        """sec11 round 7's honest commands were denied once their password was hidden, as a blank in a hidden value
+        made the copy unclean: a credential option's value in its own quotes, which the line's command gives the
+        program it names, is asked with the value hidden. Its look-alikes are denied: a `;` in the value, code as the
+        value, a value sh -c reads again, one outside quotes, one a wrapper may join into a line. The password never
+        reaches the copy."""
+        self.register()
+        hidden = "[REDACTED:assignment]"
+        for i, (command, shown) in enumerate((
+                ("mysql -p'Zq8 pass' app", f"mysql -p'{hidden}' app"),
+                ("mysql --password='Zq8 pass' app", f"mysql --password='{hidden}' app"),
+                ("redis-cli -a 'Zq8 pass' ping", f"redis-cli -a '{hidden}' ping"),
+                ("redis-cli -h cache -a 'Zq8 pass' --no-auth-warning ping",
+                 f"redis-cli -h cache -a '{hidden}' --no-auth-warning ping"),
+                ("gh secret set API_TOKEN --body 'Zq8a 1234'", f"gh secret set API_TOKEN --body '{hidden}'"),
+                ("mysql --password='Zq8;pass' app", DENIED),
+                ('mysql -p"$(cat Zq8)" app', DENIED),
+                ("sh -c \"mysql --password='Zq8 pass' app\"", DENIED),
+                ("mysql --password=Zq8\\ pass app", DENIED),
+                ("watchexec -- sshpass -p 'Zq8 ssh h reboot'", DENIED))):
+            with self.subTest(command=command):
+                got = self.held({"command": command}, tcid=f"tc-{i}")
+                copy = svc._shown("Bash", {"command": command}, False) if got == DENIED else got["args"]
+                self.assertEqual(got if got == DENIED else copy["command"].splitlines()[-1], shown)
+                self.assertNotIn("Zq8", json.dumps(copy))
 
     def test_a_env_files_contents_in_a_result_are_redacted_line_by_line(self):
         self.register()

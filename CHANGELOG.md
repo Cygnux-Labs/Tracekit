@@ -2,6 +2,172 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.8.0 (2026-11-27) — an AI approver for routine holds, run conditions, argument-aware rules for ten CLIs, the plugin for Codex, Copilot CLI and Cursor, a network-panel timeline, and a faster hook
+
+A feature release. A new, optional AI approver can answer some of your coding agent's routine holds in seconds, but only
+for kinds of call a person already approved; it is off until you turn it on, and in system mode only. Policy rules can
+now depend on what a run has already done (a send that is routine in a clean run waits for a person in a run that read
+a secret), and ten CLIs are read by their own grammar, so `unless` exemptions follow the CLI's real arguments. The
+Claude Code plugin also installs in Codex, GitHub Copilot CLI and Cursor, and the run page's TIMELINE is a table in the
+style of a browser's network panel. The shipped packs change (`coding` is `2026.11-v2-112`, `dev` is `2026.11-dev-14`,
+`server` is `2026.11-server-21`, `strict` is `2026.11-strict-18`), so a run's policy hash changes and some calls that
+were allowed are now held. The signer protocol goes from 26 to 29, so upgrade the signer first; the bundle
+format gets a 1.8.0 row, and a bundle that carries its records says `verifier_min_version` 1.8.0.
+
+### Breaking
+- A `signer.yaml` that grants one identity both `register_run` and `approval_decide_on_behalf` no longer starts: one
+  identity can't both run agents and decide approvals on someone's behalf. The error says what to change: remove
+  `register_run` from that entry, or give `approval_decide_on_behalf` to an identity of its own (the bridge's). The
+  signer also checks an identity's combined grants at decision time, because an OIDC identity's grants add up from its
+  `oidc:`, `person:` and `group:` entries. A deployment whose bridge or viewer identity also runs agents needs the
+  split before upgrading ([api](docs/api.md)) (#1156).
+
+### Added
+- **The AI approver** (system mode; off until `tracekit reviewer on`). You list the rules it may answer (an install from
+  a package index you chose, a line the policy can't read, an unmapped tool given a command line). For a call held by
+  one of them it looks for a call like it that a person approved in the last 30 days, and approves only when two model
+  answers both say yes. It never answers in a session that read a secret, a call like one a person rejected, or a call
+  another rule also holds. `tracekit approvals show` and `list` say what it did or why it won't answer, and a person can
+  take an approval back with `tracekit approvals revoke apr-… --reason …` before the call runs.
+- **It learns from you, and you decide what it learns.** When a person goes against it, the signer drafts a lesson in
+  plain words with the records it comes from (`tracekit reviewer lessons`); only a lesson a person accepts counts. An
+  accepted lesson that says people said no to a kind of call binds: the signer holds every call like it for a person,
+  in any project, and asks no model. A lesson that says people approved is advice and never widens a bound. A person
+  can retire a lesson with a verified disproving record (`--because RUN:SEQ`, #931, by @kushaldave002).
+- **Run conditions.** A rule with `when: {run_has: [label, ...]}` applies only once the run carries every label it
+  names (`secrets_access`, `untrusted_content`, `egress`, `harness_config`, `side_effect`, `background_spawn` and
+  others). `dev` reads a secret or untrusted content, then a send or a background send, and records it (`TK-Q001`,
+  `TK-Q002`, in shadow in 1.8: each such call is recorded and nothing is blocked). A decision records the labels that
+  made a condition apply, and both verifiers replay a run's labels from its records. A person ends a label with
+  `run_label_clear`.
+- **CLI grammars.** git, gh, aws, gcloud, kubectl, docker, npm, pip, terraform and curl are read by their own grammar,
+  generated from each CLI's definition at a pinned release, so a flag inside a quoted word or another flag's value no
+  longer reads as the flag itself. A table that is missing reads its commands as text.
+- **The plugin installs in Codex, GitHub Copilot CLI and Cursor** as well as Claude Code (experimental), with a manifest
+  and hook file for each, and on native Windows without Git Bash the hooks run in PowerShell (#1119, by @mwc0).
+- **The run TIMELINE as a network-panel table** (`tracekit view`): chips with counts, an overview strip you can drag to
+  zoom, one row per call with a bar on a shared axis (a held call's wait hatched), and a drawer per call with its
+  request, response, timing, decision and evidence (#1153).
+- **INFLUENCE grades each link into a risky call** by how it is known: exact from the signer's records, claimed by the
+  log, measured by a replay, seen in the model's context, or a hint (`docs/why.md`).
+- `approval.consumed` records the decision an approval was used for (#793, by @Ashitaka-Laputa-IV); the signer signs a
+  sub-agent's calls with its `agent_id` (#1105, by @seung-waedet).
+- `tracekit signer serve --log-level` (#1069, by @NguyenDinhKhoi213); an uninstall for v1 system mode (#1060, by
+  @pm25coder); TypeScript `RunHandle.transfer`, as Python has (#1058, by @NarenDawar); Inspect AI runs one run per
+  sample with `per_sample=True` (#1070, by @aryankalantri).
+- `tracekit doctor` reads Claude Code's `managed-settings.d` drop-ins (#1098, by @pm25coder), CodeBuddy's own hook
+  switches (#1145, by @pm25coder), and Codex's sandbox and approval settings (#1114, by @AnvitDevadiga); in system
+  mode it checks that the signer answers and that an AI approver has `approvals.agents`; a Postgres signer role without
+  the content vault grants fails (#923, by @costajohnt).
+- Qwen Code records what its model said, from its chat file (#1079, by @AnvitDevadiga); Browser Use 1.x calls named in
+  a cell or delivery are read (#889, by @Koloyaaa); Strands Agents is tested on 1.66 (#1121, by @costajohnt); the
+  LangChain integration classifies Deep Agents' filesystem tools (#1148, by @Riyanshverma).
+
+### Faster
+Measured, not estimated.
+- The Claude Code hook imports the policy parser, asyncio and TLS only where a call uses them. On an Apple-silicon Mac
+  with Python 3.11.15, importing the hook module went from 84 ms to 49 ms (median of 15 runs), and a Read call's hook
+  events from 86 ms and 99 ms to 52 ms and 67 ms (PreToolUse and PostToolUse; 15 runs, scratch signer). A Bash call's
+  hook is unchanged at about 85 ms and 100 ms (#1162).
+- The policy packs load about 2.3x faster where PyYAML isn't installed (the signer container): a line with no `#`
+  skips the comment scan (#1155, by @dexhunter).
+- The TIPS page parses only what a transcript gained since its last read. On synthetic transcripts (a 1 GB folder,
+  Intel i7, Python 3.11, CPU seconds), a refresh after 10 files gained 76 KB took 1.33 s where it took 14.2 s; the first
+  read costs more (17.2 s against 14.2 s) because it keeps the parsed records (#1120, by @seung-waedet).
+
+### Policy
+Rules by id. The packs are `coding` `2026.11-v2-112`, `dev` `2026.11-dev-14`, `server` `2026.11-server-21` and `strict`
+`2026.11-strict-18` (`server-core` `2026.11-server-core-4`).
+- `TK-A093` (new): CLI credential reads (`gh auth token`, `pass`, `security find-*-password`, `kubectl config view
+  --raw` and the rest) through an MCP command-runner tool are held (#1160, by @embrace897).
+- `TK-A097` and `TK-A094` (new): writing curl's config file is held. `TK-A095` (new) reads curl's money-moving
+  requests by curl's grammar; `TK-A043` lets a curl GET to a payment API run only when `-q` comes first.
+- `TK-A088` to `TK-A092` (new): PowerShell writes of harness settings are held, and its credential reads are denied
+  (#1029, by @costajohnt). `TK-A096` (new): what may take the place of the Python the plugin's hook runs.
+- `TK-A052` and `TK-A053` widened: kubectl run as `microk8s` or `minikube` runs it, an output option before `get`, and
+  Vault's logins and token reads (#1167, by @pm25coder); `TK-A052` holds `kubectl get --raw` of a secrets path
+  (by @aryankalantri).
+- `TK-F029` (new, dev, server and strict): publishing an artifact sends its files off the machine; OpenCode's artifact
+  tools are decided by what they send (#1154, by @pm25coder).
+- `TK-F030`, `TK-F048` and `TK-F049` (new): a release, image push, tag made through the API or subtree push; writing a
+  Git or cargo config file or a virtualenv's activate script; a Git config section written into an includable file.
+- `TK-S007` (new, `server-core`): reading or touching a credentials file.
+- `TK-A021`: `pass ls NAME` and `pass list NAME` are held as `pass show NAME` is (password-store runs them as show); a
+  bare `pass ls` still lists names.
+- `TK-A021`: `gh auth git-credential get` (#1021), `aws configure get` of a secret field (#1078), `glab config get
+  token` and `glab auth status -t` (#1116), `kubectl` and `oc config view --raw` (#1138) and `gcloud auth
+  print-access-token` and `print-identity-token` (#1141), all by @Seyamalam.
+- `TK-A042`: `netlify sites:delete` and `DELETE /api/v1/sites/<id>` (#1144) and `wrangler delete` and `wrangler pages
+  project delete` (#1146), by @Seyamalam.
+- `TK-A056`: `jj git push -r` and `sl push --to=refs/heads/main` (#1084, by @samueladebisi-dev), `hatch` and `flit`
+  publish (by @aryankalantri), `lerna`, `changeset` and `bun pm publish` (#1137, by @pm25coder); `hatch env run` is
+  read as the runner it is (#1035, by @pm25coder).
+- `TK-A085`: a `` !`cmd` `` line written into the instruction files OpenHands runs as skills (#1088, by @munjikesh).
+- `TK-A078`: a heredoc body written to a startup file; `TK-D012` computes a `${VAR#…}` or `${VAR%…}` removal of a literal value; Python,
+  bun and deno file writes and `xargs` fed by a group or subshell are read; curl's options through 8.22.0 (all by
+  @aryankalantri).
+- `TK-A062` reads SQL behind `EXPLAIN ANALYZE` or a leading `(`, and under `sql_query` or `stmt` (#1015, by
+  @X6M-Work); `TK-A039` and `TK-A040` read psql's and mysql's long options by a unique prefix, a `#` comment line
+  before the keyword and a flush printed through `printf '%s'` (#1026, #1027, #1028, by @Jainil-devaliya28).
+- `TK-A054` holds `claude plugin marketplace remove` and normalized pip package names (#1009), `TK-A079` and
+  `TK-A080` block-device wiping tools and disk partition paths (#1010), `TK-A070` the `@kilocode/cli` harness through
+  `npx`, `bunx` and `pnpm dlx` (#1013), `TK-A072` `DOCKER_HOST` after env options and `timeout` (#1014), all by
+  @60507. `TK-A070` also holds jcode, kiro-cli and interpreter (#1115, by @Hoaiduc195) and jcode's whole hook family
+  (#1117, by @pm25coder).
+- `TK-A058` and `TK-A059` hold more weights formats and deletes (#1022), `TK-A075` macOS's account tools and
+  `TK-A077` more capabilities (#1030), and Kilo and OpenCode decide `browser_open`, `repo_clone`, `kilo_memory_save`
+  and http(s) images by what they do (#1036), all by @costajohnt.
+- `TK-F004` holds an npm, pnpm, yarn or bun install after options (strict, #1056, by @seung-waedet).
+- A demo of a psql schema drop that waits for a person (#1042, by @Gennifer-Dominic). Corpus cases from contributors
+  (#932 by @kausthubhk; #1149, #1151, #1158, #1159, #1165 and #1169 by @Seyamalam);
+  `TK-X113` covers twelve more source file extensions and `TK-X120` compares deletes by path (#1132, #1133, by
+  @kunaltaydetayde7552-ship-it).
+
+### Security
+- Policy hardening.
+- Approver-copy hardening.
+
+### Changed
+- `tracekit audit --share` folds day lines into weeks over 28 days (#1143, by @kunaltaydetayde7552-ship-it).
+- TIPS checks the store against the signer's checkpoint before placing runs (#1112, by @nabeelbaghoor).
+- The SDKs say a write "may not have been recorded" when the signer's reply was lost, through one helper (#1104, by
+  @Afrid-21).
+- `tracekit feedback` reads the selected signer store, as `report` does (#1142, by @Riyanshverma).
+- CI shards the Linux test jobs and runs macOS and Windows nightly (#1055, #1086).
+- The docs were checked against the code page by page, and about 40 statements that had drifted were corrected;
+  tests now keep the agent lists, the fields kept in clear, the rule wording (flagged, held, denied) and the
+  field-report agent names in step with the code (#1161).
+
+### Fixed
+- Re-running `tracekit init` in system mode keeps the `signer.yaml` keys init doesn't write, and no longer needs
+  third-party imports on a bare system Python (#1074, #1156). With the plugin enabled and Tracekit only in a venv,
+  `tracekit init` exits 1 and `tracekit doctor` fails `D-HOOKS-PYTHON` where the plugin's hook would have blocked every
+  call. An OpenAI Agents run under `tracekit.instrument()` can resume a held call in the process that paused, and the
+  docs have a `signer.yaml` recipe for your own policy on a laptop (#1156).
+- An unreachable signer's fail mode is read from the pack's tools map, so the hook keeps its deadline (#1157).
+- The Claude Code plugin's hooks other than the pre-tool one exit 1 when they can't read the hook script: under
+  Linux's `/bin/sh` (dash) they exited 2, which kept Claude from stopping and dropped each prompt.
+- The DESK timeline's time axis carries a second when a tick's milliseconds round up: it read 18:10:15.900,
+  18:10:15.000, 18:10:16.100.
+- The v1 Claude Code hook keeps a payload's `agent_id` only when it is valid (#1130, by @MikeFTV).
+- jcode's hooks are taken out of a `config.toml` jcode re-saved (#1093, by @lyn1dev).
+- The reviewer remembers answered approval ids across a restart (#1046, by @tharunsridhar).
+- The Go verifier refuses a mismatched key-derived log origin (#1094, by @kausthubhk).
+- The signer client closes the connections of ended threads (#1087); the transcript reader no longer collects garbage
+  while parsing a line nested to the recursion limit (#1150); an open run whose only call is held shows its own why
+  import in the viewer (#1164).
+- Tests: speed checks measure without loaded-runner flakes (#1134, by @kunaltaydetayde7552-ship-it).
+- `tracekit init --dev --v2` refuses a runtime folder that isn't private, before it writes any hook, and says how to
+  fix it (each hook would otherwise block every call); from a venv install it notes that only the plugin's hook
+  needs a uv tool or pipx install, after the line naming the hooks it wrote. The viewer shows a blocked call as one
+  alert, not once from its signed record and again from its why import.
+
+### Contributors
+@pm25coder, @Seyamalam, @aryankalantri, @costajohnt, @60507, @seung-waedet, @kunaltaydetayde7552-ship-it,
+@Jainil-devaliya28, @AnvitDevadiga, @Riyanshverma, @kausthubhk, @NarenDawar, @kushaldave002, @samueladebisi-dev,
+@X6M-Work, @Koloyaaa, @Ashitaka-Laputa-IV, @NguyenDinhKhoi213, @munjikesh, @lyn1dev, @Afrid-21, @nabeelbaghoor,
+@Hoaiduc195, @mwc0, @MikeFTV, @embrace897, @tharunsridhar, @Gennifer-Dominic and @dexhunter. Thank you.
+
 ## 1.7.3 (2026-11-23) — policy and approver-copy hardening, the LangSmith Tool Gateway, and fixes from contributors
 
 A security and maintenance release: everything merged since 1.7.2, plus policy and approver-copy hardening. The shipped
