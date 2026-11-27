@@ -23,8 +23,11 @@ help:
 install:
 	$(PY) -m pip install -e ".[dev]"
 
+# in parallel, then the tests marked serial alone, as CI runs them: in one process 1.8's suite passed the release
+# workflow's 120 minutes (1.7.3's took 72)
 test:
-	$(PY) -m pytest -q
+	$(PY) -m pytest -q -n auto -m "not serial"
+	$(PY) -m pytest -q -m serial
 
 quickstart:
 	TRACEKIT_QUICKSTART=1 $(PY) -m pytest -q -s -m quickstart tests/test_quickstart.py
