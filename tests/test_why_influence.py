@@ -539,9 +539,10 @@ class Serves(unittest.TestCase):
         self.assertLess(took(2000), 8 * took(500))   # 4x the context: about 4x the time; 16x before
 
     @factories.serial
-    def test_influence_over_a_long_run_is_well_under_a_second(self):
+    def test_influence_over_a_long_run_takes_seconds_not_minutes(self):
         """Each call's chain walked everything its sources' content reached: 151 s for INFLUENCE over 800 calls whose
-        every model call sees everything before it (the review's p10)."""
+        every model call sees everything before it (the review's p10). Now about 0.5 s of CPU on a laptop and 1.1 s on
+        CI's runners, so 2.5 s leaves a slow runner room and still fails that walk sixty times over."""
         rt = Runtime({"m": lambda ctx, **k: "x"}, {"send_email": lambda **a: {"ok": True}}, task="Answer the inbox",
                      signer=False)
         a = rt.agent("agent")
@@ -562,7 +563,7 @@ class Serves(unittest.TestCase):
             best = min(best, time.process_time() - start)
         self.assertEqual(got["calls_total"], 800)
         self.assertEqual(sum(e["grade"] == "exact" for c in got["calls"] for e in c["edges"]), len(got["calls"]))
-        self.assertLess(best, 1.0)
+        self.assertLess(best, 2.5)
 
     def test_a_long_chain_is_cut_and_says_so(self):
         rt = Runtime({"m": lambda ctx, **k: "x"}, {"send_email": lambda **a: "ok"}, task=TASK, signer=False)
