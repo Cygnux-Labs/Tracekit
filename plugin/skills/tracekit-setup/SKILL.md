@@ -66,8 +66,10 @@ Use the agent you are running in; you know it from your own instructions. If you
 
 Names: `codex`, `copilot` (GitHub Copilot CLI), `cursor`, `gemini` (Gemini CLI), `opencode`, `kilo` (Kilo Code),
 `goose`, `qwen` (Qwen Code), `droid` (Factory Droid), `antigravity` (Antigravity CLI), `crush`, `cline`, `devin`,
-`openhands`, `codebuddy`, `kiro`, `gptme`, `jcode`, `interpreter` (Open Interpreter). For an agent not on this list,
-say Tracekit doesn't hook it yet; don't adapt another agent's hooks.
+`openhands`, `codebuddy`, `kiro`, `gptme`, `jcode`, `interpreter` (Open Interpreter 0.0.x, the Rust CLI). The Python
+Open Interpreter (`pip install open-interpreter`, 0.4.x) also installs an `interpreter` command but runs no hooks,
+so Tracekit can't record it. For an agent not on this list, say Tracekit doesn't hook it yet; don't adapt another
+agent's hooks.
 
 You came from the Tracekit plugin only if, two folders up from this skill's folder, both the plugin's
 `hooks/<agent>.json` (`claude.json`, `codex.json`, `copilot.json` or `cursor.json`) and `scripts/tracekit-hook` are
@@ -86,6 +88,8 @@ trusted), so it holds your own `tracekit init` (TK-A057). That's expected: give 
 Claude Code they type it in this session with a leading `! `; elsewhere they run it in their own terminal.
 
 Codex runs new hooks only once a person trusts them: ask them to run `codex`, type `/hooks` and trust Tracekit's.
+Open Interpreter does the same: ask them to run `interpreter`, type `/hooks` and trust Tracekit's. Until then
+`interpreter exec` runs none of them, and `tracekit doctor` warns (`D-INTERPRETER-HOOK-TRUST`).
 
 ## 4. Check
 

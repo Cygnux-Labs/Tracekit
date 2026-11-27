@@ -34,7 +34,7 @@ from tracekit.verify import v2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RELEASED = ["v1.2.0", "v1.2.3", "v1.3.0", "v1.4.0", "v1.4.1", "v1.4.2", "v1.5.0", "v1.5.1", "v1.5.2", "v1.5.3",
-            "v1.6.0", "v1.7.2", "v1.7.3"]   # add each release's tag
+            "v1.6.0", "v1.7.2", "v1.7.3", "v1.8.0"]   # add each release's tag
 SENSOR = CallerIdentity("mtls", "spiffe://acme/tetragon", True)
 OPENSHELL = CallerIdentity("mtls", "spiffe://acme/openshell", True)   # a configured gateway
 VERIFY = ("import json, sys, tracekit\nfrom tracekit.verify import v2\nrep, code = v2.verify(sys.argv[1], sys.argv[2])\n"
@@ -207,12 +207,13 @@ class Released(Signed):
                     if v2._version(need) <= v2._version(tag[1:]):
                         self.assertEqual((old["code"], old["integrity"]), (0, "VERIFIED"), old["checks"])
                         # the run in parts carries no policy (its file is over the lowered limit): today's verifier
-                        # says it can't replay its labels, a 1.8 line no released verifier has
+                        # says it can't replay its labels, a 1.8 line no verifier before 1.8.0 has
                         self.assertEqual([(c["check"], c["status"]) for c in old["checks"]],
                                          [("not interpreted", "warn") if c["check"] in read_from
                                           and v2._version(tag[1:]) < v2._version(read_from[c["check"]])
                                           else (c["check"], c["status"]) for c in rep.checks
-                                          if c["check"] != "label policies" or name != "a run in parts"])
+                                          if c["check"] != "label policies" or name != "a run in parts"
+                                          or v2._version(tag[1:]) >= v2._version("1.8.0")])
                     else:
                         self.assertEqual((old["code"], old["integrity"]), (2, f"UNVERIFIABLE (needs tracekit >= {need})"))
 
