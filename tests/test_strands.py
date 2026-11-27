@@ -703,7 +703,7 @@ class ShellLists(unittest.TestCase):
                          [("deny", "coerced")] * 4 + [("allow", "coerced")] * 2)
         self.assertIn((got["s6"]["data"]["decision"], got["s6"]["args_source"]),
                       [("ask", "coerced"), ("deny", "coerced")])
-        self.assertEqual(ran, [["ls", "pwd"], "ls"])
+        self.assertCountEqual(ran, [["ls", "pwd"], "ls"])   # Strands may run the two at once
 
     def test_only_what_strands_tools_shell_reads_is_decided(self):
         """A JSON array's entries alone (every version parses it: read as written too, a 40 KiB one was over the

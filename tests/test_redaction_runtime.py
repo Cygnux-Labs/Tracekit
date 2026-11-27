@@ -13,7 +13,8 @@ import pytest
 from tracekit import privacy
 
 SIZE = 256 * 1024
-BOUND = 0.5  # CPU seconds per input, the best of three runs; generous for slow CI runners
+BOUND = 1.0  # CPU seconds per input, the best of three runs: 0.17 on a laptop, up to 0.53 on CI's runners; the
+# quadratic reading it guards took 18.5
 
 ADVERSARIAL = {
     "private_key": ["-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n", "-----BEGIN "],  # agent-flow:allow-secret
