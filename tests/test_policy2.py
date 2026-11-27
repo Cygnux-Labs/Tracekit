@@ -885,9 +885,11 @@ class Speed(unittest.TestCase):
     # (nondeterministic). RE2, the default engine, is linear; they are held to the generic fillers here. Upgrade:
     # structural pipeline and argv rules
     RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D011", "TK-DB003", "TK-C010", "TK-A032"}
-    # TK-M003 reads a recipient list forward to a whole-company address: ~12 ms on an M-series Mac. Read greedily and
-    # backed off over, 64 KiB of a list took 78 ms there and 152-221 ms on CI's macOS runners (#481)
-    RULE_BUDGET_S = {"TK-M003": 0.06}
+    # TK-M003 reads a recipient list forward to a whole-company address. Read greedily and backed off over, 64 KiB of a
+    # list took 78 ms on an M-series Mac and 152-221 ms on CI's macOS runners (#481); read a character at a time and
+    # from every repeated key, ~37 ms there and 104 ms on CI (#1127); a string read in runs and the list stopped at one
+    # not followed by `,`, `:` or `}`, 0.4x that side by side (~15 ms there; `"to":",,,,…` is now the slowest filler)
+    RULE_BUDGET_S = {"TK-M003": 0.03}
     # every budget is for the M-series Mac it was set on, where machine_scale's reference search takes REF_S; another
     # machine's budgets are scaled by how much slower it runs that search (#517: TK-A040, ~75 ms there, reads eight
     # options after each redis-cli and took 152-261 ms on CI's Linux runners, over a fixed budget)
