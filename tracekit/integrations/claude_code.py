@@ -40,10 +40,10 @@ of the run checks that its tailer still holds the run's tailer lock, and starts 
 got when it doesn't (_restart): after a signed tailer_lost gap when it stopped without a word, at most RESTARTS times a
 run; with none when it parked itself (idle). A new session's run
 reads it from its first line; a later run of the session (after an idle close) has its tailer start where the hook last
-saw the transcripts while the earlier run was open (_seen), and a resumed session's first run, or one a session with no
-state left starts (Claude Code went on after a SessionEnd with no SessionStart), where its transcript ended then: the
-lines before are an earlier run's. Each such later run is registered with `continues`: the model may still hold what an
-earlier run read, so the signer starts the run's provenance index `partial` (a fresh session's starts `complete`).
+saw the transcripts while the earlier run was open (_seen). A resumed session starts where its transcript ends at
+registration. A session that goes on without a SessionStart can use the offsets saved at SessionEnd for the same
+transcript. Each such later run is registered with `continues`: the model may still hold what an earlier run read, so the
+signer starts the run's provenance index `partial` (a fresh session's starts `complete`).
 
 At UserPromptSubmit, the typed part of the harness's prompt is recorded (`observe`, source <agent>:UserPromptSubmit,
 trusted; <agent>:sdk:UserPromptSubmit for a prompt Claude Code's payload says a program sent through its SDK, its
@@ -380,9 +380,9 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
     run is marked ended instead, and the session's next event that registers starts the new one). `transcript` (the
     payload's): kept in the session state; each run of the session gets a tailer on it, which starts at the first line
     of a new session's (`start`, a SessionStart's source: startup or clear; "" for none, None when the event is no
-    SessionStart), at where it ends at registration for a resumed or forked session or one with no state left, else
-    where the session's earlier run was last seen open (_seen; _tail for a run registered before its transcript was
-    known).
+    SessionStart), at a matching ENDED marker for an implicit continuation with no state, at registration for a resumed,
+    forked or otherwise unknown session, or where the session's earlier run was last seen open (_seen; _tail for a run
+    registered before its transcript was known).
     `stated`: the constraints a prompt states, kept in the session state; each run gets the session's (_constrain).
     `skip`: client_seq values left unsent before `send` (_send)."""
     path = _state(sid)
@@ -394,10 +394,17 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
             # and that no SessionEnd of the same session came before (ENDED): any other first event (a resume or fork,
             # a compaction, an event after a SessionEnd, state pruned or deleted) is of a session whose model may hold
             # earlier runs' content
-            fresh = st is None and start in (*FRESH, "") and not os.path.exists(_state(sid, ENDED))
+            marker = _state(sid, ENDED)
+            fresh = st is None and start in (*FRESH, "") and not os.path.exists(marker)
             # where its tailer starts, kept in the state so a retried start (_tail) reads from the same place
-            st = _register(client, path, st, {transcript: 0} if transcript and st is None and start in FRESH else
-                           _seen(transcript) if st is None or start in RESUMED else None, continues=not fresh)
+            offsets = None
+            if transcript and st is None and start in FRESH:
+                offsets = {transcript: 0}
+            elif st is None or start in RESUMED:
+                if st is None and start is None:
+                    offsets = _ended_offsets(marker, transcript)
+                offsets = offsets or _seen(transcript)
+            st = _register(client, path, st, offsets, continues=not fresh)
         if st and transcript:
             st["transcript"] = transcript
         if st and stated:
@@ -563,6 +570,18 @@ def _end(path):
     return 0
 
 
+def _ended_offsets(marker, transcript):
+    """Read the matching SessionEnd offsets. The marker belongs to the agent's user, like the session state."""
+    if AGENT != "claude-code" or not transcript or os.name == "nt":
+        return None
+    with contextlib.suppress(OSError, ValueError):
+        seen = _load(marker)
+        offset = seen.get(transcript) if isinstance(seen, dict) else None
+        if type(offset) is int and offset >= 0:
+            return seen
+    return None
+
+
 def _seen(transcript):
     """{path: _end(path)} of the session's transcript and its subagents' (a workflow's agents' too) as they are now,
     which the tailer of the session's next run (after an idle close) starts from: their lines so far are the earlier
@@ -678,10 +697,6 @@ def _tail(client, path, st):
     if st.get("tailer") == st["run_id"]:
         _restart(client, path, st)
         return
-    # lean: a run a session goes on with after a SessionEnd (no SessionStart: a message to the session, a usage limit's
-    # reset) starts where the transcripts end at its first event; what Claude Code wrote between the SessionEnd and
-    # then (the new prompt, the first call's tool use: then a fabricated gap) is read by no run, as the earlier run's
-    # tailer stopped at the SessionEnd; keep the transcript's end in the state at SessionEnd if sessions often go on
     if not st.get("offsets"):
         st["offsets"] = _seen(st["transcript"])
         files.write_json(path, st)
@@ -1350,10 +1365,13 @@ def _handle(client, p, event, sid, tid, end=None):
         except RPCError as e:
             if e.code not in GONE:   # closed already (idle), or a signer reset: only the state is left
                 raise
+        transcript = (run.registered.get("transcript") if run else None) or _transcript(p)
+        marker = _state(sid, ENDED)
+        files.write_json(marker, _seen(transcript) or {})  # the next hook can see the marker as soon as state is gone
         for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
-            with contextlib.suppress(FileNotFoundError):   # a tailer that ended removes its own lock and log
-                os.remove(f)
-        files.write_json(_state(sid, ENDED), {})   # the session's next run, if it goes on, continues it (_run)
+            if f != marker:
+                with contextlib.suppress(FileNotFoundError):   # a tailer that ended removes its own lock and log
+                    os.remove(f)
         return 0
     transcript, prompt = _transcript(p), p.get("prompt") if event == "UserPromptSubmit" else None
     if event == "Stop":   # the harness says the model ended its turn: a signed end-of-turn marker (not SubagentStop)
