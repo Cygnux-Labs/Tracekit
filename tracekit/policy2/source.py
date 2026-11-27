@@ -87,7 +87,7 @@ INERT_DATA = frozenset().union(
 # clause, `isinstance`), never called or handed on
 INERT_TYPES = frozenset({"json.JSONDecodeError", "json.JSONDecoder", "json.JSONEncoder"})
 
-# What a Browser Use 1.x cell finds bound before it runs, read from browser-use 1.0.3's REPL worker
+# What a Browser Use 1.x cell finds bound before it runs, read from browser-use 1.0.3 to 1.0.9's REPL worker
 # (browser_use/repl/worker.py) and `from browser_harness.helpers import *` in browser-harness 0.1.13; a test checks it
 # against the installed harness. A cell may not rebind any of these. The names the harness imported read as if the
 # cell had imported them:
@@ -106,8 +106,8 @@ HARNESS_OWN = frozenset({
     "goto_url", "http_get", "iframe_target", "js", "list_tabs", "new_tab", "page_info", "press_key", "scroll",
     "switch_tab", "type_text", "upload_file", "wait", "wait_for_element", "wait_for_load", "wait_for_network_idle",
     # browser_use/repl/worker.py
-    "__bu_display", "bu", "checkpoint", "downloads", "report_issue", "screenshot", "search", "secret_names",
-    "show_image", "solve_captcha", "type_secret"})
+    "__bu_display", "bu", "checkpoint", "downloads", "report_issue", "rotate_proxy", "screenshot", "search",
+    "secret_names", "show_image", "solve_captcha", "type_secret"})
 # the modules a cell reaches by name: the harness's imports, and those read only through their command and helper
 # calls (SHELL, SHELL_ARGV, HELPERS), which an earlier cell may have imported
 _TRUSTED_MODULES = {**HARNESS_IMPORTS, "helpers": "browser_harness.helpers", "browser_harness": "browser_harness",
