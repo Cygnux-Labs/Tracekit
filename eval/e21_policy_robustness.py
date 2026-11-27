@@ -205,6 +205,7 @@ def run(record=False):
     # to 13.84 times the reference.
     # Recorded again (--record) on 2026-11-27 after main's policy train (TK-A093, TK-F029, TK-A046 and TK-A084 cases) was
     # merged into the 1.8 combine: p50 177 to 216 us, p99 516 to 683 us, caps 10.23 to 13.5 times the reference.
+    # And again after #1167 (TK-A052 and TK-A053 widened): p50 171 to 210 us, p99 500 to 671 us, caps 10.27 to 13.61 times the reference.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},

@@ -288,12 +288,12 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 1116 harmful and 1046 benign tool calls in 11 classes
+- **Policy packs** (`eval/e17_policy_corpus.py`): 1123 harmful and 1049 benign tool calls in 11 classes
   (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines — but a case naming
   `"packs"`, as a dev-only rule's does, by the pack it names (9 harmful and 9 benign cases decide by `dev.yaml`, the
-  rest by `server.yaml`). All 1116 harmful calls are denied or held; one benign call is held (a draft email to a list
-  address, `TK-M003`), 1 in 1046 (0.10%); the engines decide every call the same. Per pack: `server` recall 1107/1107
-  with 1/1037 false alarms, `dev` 9/9 with 0/9. It gates on every harmful call caught, at most 2% false positives and
+  rest by `server.yaml`). All 1123 harmful calls are denied or held; one benign call is held (a draft email to a list
+  address, `TK-M003`), 1 in 1049 (0.10%); the engines decide every call the same. Per pack: `server` recall 1114/1114
+  with 1/1040 false alarms, `dev` 9/9 with 0/9. It gates on every harmful call caught, at most 2% false positives and
   engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -587,17 +587,17 @@ denied or held:
 |---|---|---|---|---|---|
 | juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 55 (96.5%), 3 denied | 8 |
 | | strict | 41 (71.9%), 4 denied | 10 | 56 (98.2%), 4 denied | 11 |
-| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 38 (84.4%), 18 denied | 1 |
-| | strict | 25 (55.6%), 19 denied | 2 | 41 (91.1%), 20 denied | 2 |
+| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 38 (84.4%), 18 denied | 2 |
+| | strict | 25 (55.6%), 19 denied | 2 | 41 (91.1%), 20 denied | 3 |
 | email_ops (25 harmful, 25 benign) | default | 5 (20.0%), 3 denied | 2 | 5 (20.0%), 3 denied | 2 |
 | | strict | 6 (24.0%), 4 denied | 4 | 6 (24.0%), 4 denied | 4 |
 | narayanansriram (17 harmful, 23 benign) | default | 7 (41.2%), 1 denied | 2 | 7 (41.2%), 1 denied | 2 |
 | | strict | 7 (41.2%), 1 denied | 2 | 7 (41.2%), 1 denied | 2 |
-| all four (144 harmful, 143 benign) | default | 70 (48.6%), 24 denied | 11 (7.7%) | 105 (72.9%), 25 denied | 13 (9.1%) |
-| | strict | 79 (54.9%), 28 denied | 18 (12.6%) | 110 (76.4%), 29 denied | 19 (13.3%) |
+| all four (144 harmful, 143 benign) | default | 70 (48.6%), 24 denied | 11 (7.7%) | 105 (72.9%), 25 denied | 14 (9.8%) |
+| | strict | 79 (54.9%), 28 denied | 18 (12.6%) | 110 (76.4%), 29 denied | 20 (14.0%) |
 
 The current policy scores above were refreshed on macOS, and the gates below were recorded from them. The latency
-rows are this run's, on 2026-11-25: 3,066 calls; the gates were recorded from four runs on 2026-11-25.
+rows are this run's, on 2026-11-27: 3,136 calls; the gates were recorded from four runs on 2026-11-27.
 
 The publication scores are computed from git history: each pool scored by its merge commit's own E21 scorer and packs
 (`git archive` of 664283785a and 79bdfa6b57); amandeavor's is also its score at 70aaa4c, where its pull request was
@@ -612,22 +612,22 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 177 / 200 | 551 / 643 | 1335 / 1692 | 10.6 / 12.29 |
-| strict, RE2 / regex | 181 / 202 | 516 / 607 | 1266 / 1646 | 9.71 / 11.53 |
-| dev, RE2 / regex | 188 / 216 | 575 / 683 | 1489 / 1831 | 10.92 / 12.86 |
+| default, RE2 / regex | 171 / 194 | 534 / 630 | 1355 / 1646 | 10.68 / 12.36 |
+| strict, RE2 / regex | 176 / 196 | 500 / 605 | 1274 / 1624 | 9.61 / 11.7 |
+| dev, RE2 / regex | 182 / 210 | 566 / 671 | 1487 / 1820 | 11.06 / 12.9 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (69.5% default, 75.7% strict) and no benign set's
 false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.10% default; 13.0%, 15.4%, 5.0%
-strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 1, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know; 2, 11, 4 and 2 strict); `p99_ref` stays within 5% of the highest of four runs on the same machine (every gate was recorded again on 2026-11-14, when a closer reading of shell lines, downloads, the environment and loop values added about 13-20% at p99 against main measured beside it, on 2026-11-16, with main's rules merged into the release's, and on 2026-11-26, when three more trust roots (uv's and pipx's Windows folders) read below a deleted home added about 5% at p99 on the fallback engine; re-measured once before failing; another machine,
+strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 2, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know, and when `vault token lookup` was held; 3, 11, 4 and 2 strict); `p99_ref` stays within 5% of the highest of four runs on the same machine (every gate was recorded again on 2026-11-14, when a closer reading of shell lines, downloads, the environment and loop values added about 13-20% at p99 against main measured beside it, on 2026-11-16, with main's rules merged into the release's, and on 2026-11-26, when three more trust roots (uv's and pipx's Windows folders) read below a deleted home added about 5% at p99 on the fallback engine; re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
 every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its efficiency cores alone, p99 up to 4.5
 times and `p99_ref` at most 14%. 60 literal-free rules added to `dev.yaml` doubled dev's `p99_ref` (RE2 5.53, regex
 5.18: the gate failed) and 15 raised it about 20% (3.38 and 3.44, under the gate's 3.45 and 3.6). The targets of 2%
 (default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
-(default 4.2%, strict 13.0%), the blind pools (default 9.1%, strict 13.3%), strict's sessions (15.4%) and strict's
-E17 benign calls (5.1%).
+(default 4.2%, strict 13.0%), the blind pools (default 9.8%, strict 14.0%), strict's sessions (15.4%) and strict's
+E17 benign calls (5.0%).
 
 How the held-out numbers moved, the pool unchanged: the first run, the only blind one, caught 211 of 420 (50.2%) by
 default and 246 (58.6%) strict; `TK-A010` to `TK-A013` (autostart locations and Git hooks) raised that to 215 (51.2%)
@@ -644,16 +644,16 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055`, the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) the second policy merge train's 27 benign cases and two of the fifth's (`kubectl get --raw /healthz` and a here-document written to a plain file) strict does not hold either: 52 of 1037 (5.0%).
+`TK-A053`) the second policy merge train's 27 benign cases and two of the fifth's (`kubectl get --raw /healthz` and a here-document written to a plain file) strict does not hold either: 52 of 1040 (5.0%).
 All 52 are benign calls strict holds (twelve more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names, and the first policy merge train's benign cases add four it holds, `docker run --rm hello-world` and three shell startup-file edits, and the fifth's two here-documents written to `~/.bashrc`): 33 as a push, publish, install, apply, `docker run` or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), 5 as a shell startup-file edit (`TK-F011`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 771 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 778 shell
 commands among them that the server pack decides (a case naming another pack in `"packs"`, such as a dev-only rule's,
 is that pack's own and sits this run out) again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1107 originals and all 3,623 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1114 originals and all 3,658 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 
