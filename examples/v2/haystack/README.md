@@ -11,7 +11,7 @@ decides each call before it runs; at `after_tool` it records the outcome
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install tracekit-ai "haystack-ai>=3.4,<4"   # from a checkout: pip install .
+pip install tracekit-ai "haystack-ai>=3.5,<4"   # from a checkout: pip install .
 python examples/v2/haystack/agent.py --scripted
 ```
 

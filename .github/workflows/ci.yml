@@ -511,7 +511,7 @@ jobs:
       - run: python -m pytest -q tests/test_examples_v2.py -k test_google_adk
 
   haystack-latest:
-    # the newest Haystack 3.x the docs' install line allows (haystack-ai>=3.4,<4), tested as the floor the dev extra pins is
+    # the newest Haystack 3.x the docs' install line allows (haystack-ai>=3.5,<4), tested as the floor the dev extra pins is
     name: "Haystack integration, newest (own environment)"
     runs-on: ubuntu-latest
     timeout-minutes: 15
