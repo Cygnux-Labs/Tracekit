@@ -1,7 +1,7 @@
 ---
 description: Export this session's evidence bundle and verify it offline
 ---
-Export and verify this session's run with one Bash tool command (a private directory, not a fixed `/tmp` path):
+Export and verify this session's run with one shell command (a private directory, not a fixed `/tmp` path):
 
 `d=$(mktemp -d) && tracekit last --open -o "$d/latest.tkb"; rm -rf "$d"`
 

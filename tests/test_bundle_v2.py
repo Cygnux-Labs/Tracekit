@@ -18,7 +18,7 @@ import zipfile
 from unittest import mock
 
 
-from factories import damage_crc, overinflate, patch_env, rewrite_bundle, unverified_bundles
+from factories import damage_crc, overinflate, patch_env, rewrite_bundle, serial, unverified_bundles
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, bundle, export, needs, run_name
 from tracekit.demo_server import tamper
@@ -161,6 +161,29 @@ def ext_bundle(log, out, field=NOTE, record=("acme.note", {"detail": {"k": "v"}}
     log.final()
     export(log.store, "acme", "run-a", log.note(), out)
     return out
+
+
+def approval_decision_bundle(log, out, name="d1", decision_tcid="t1", decision_attempt=0, consume_tcid="t1",
+                             consume_attempt=0, after=False):
+    """Export to `out` a run whose held decision d1 (`decision_tcid`, `decision_attempt`) an approval.consumed
+    (`consume_tcid`, `consume_attempt`, `after` it or before) names in ext.approval.decision as `name`."""
+    log.epoch(KEY1)
+    log.register()
+    decision = ("policy.decision", {"tool_use_id": decision_tcid, "decision": "ask", "rule_ids": ["PAY"],
+                                    "decision_id": "d1"}, {"tool_call_id": decision_tcid, "attempt": decision_attempt})
+    consume = ("approval.consumed", {"approval_id": "apr-1"}, {"tool_call_id": consume_tcid, "attempt": consume_attempt,
+                                                               "ext": {"approval.decision": name}})
+    for typ, data, fields in ([consume, decision] if after else [decision, consume]):
+        log.add(typ, data, **fields)
+    log.final()
+    export(log.store, "acme", "run-a", log.note(), out)
+    return out
+
+
+# the approval decision line of approval_decision_bundle's: passes as the signer writes it, else a warning
+APPROVAL_DECISIONS = {"the call's decision before it": {}, "no such decision": {"name": "d2"},
+                      "another tool call id": {"consume_tcid": "t2"}, "another attempt": {"consume_attempt": 1},
+                      "after the consume": {"after": True}, "not a string": {"name": 1}}
 
 
 class Case(unittest.TestCase):
@@ -828,6 +851,7 @@ class TestVerifyV2(Case):
         _, out = self.honest()
         self.assert_fails(self.mutate(out, edit=lambda files, m: files.update({"policies/x.json": b"{}"})), "manifest")
 
+    @serial
     def test_a_run_of_tiny_lines_is_refused_before_it_is_parsed(self):
         _, out = self.honest()
 
@@ -1355,13 +1379,13 @@ class TestAgentApprovals(Case):
         code, lines = self.lines(answer={"approver_kind": None})   # without agent approvals, the report as before
         self.assertFalse({"approvals by people", "approvals by agents"} & set(lines))
 
-    def test_a_bundle_holds_only_the_snapshots_its_agent_approvals_cite(self):
-        for kw, want in (({}, True), ({"answer": {"approver_kind": None}}, False),
-                         ({"answer": {"decision": "reject"}}, False)):
+    def test_a_bundle_holds_the_snapshot_of_each_policy_its_decisions_name(self):
+        # whoever answered: the run's labels are replayed under it (a person's approval and a rejection too)
+        for kw in ({}, {"answer": {"approver_kind": None}}, {"answer": {"decision": "reject"}}):
             with self.subTest(kw):
                 name = f"cited-{len(os.listdir(self.d))}"
                 out = agent_bundle(self.log(name), os.path.join(self.d, f"{name}.tkb"), **kw)
-                self.assertEqual(any(n.startswith("policies/") for n in v2.read_zip(out)), want)
+                self.assertEqual(len([n for n in v2.read_zip(out) if n.startswith("policies/")]), 1)
 
     def test_without_the_snapshot_the_bounds_are_unchecked(self):
         code, lines = self.lines(snapshot=False)
@@ -1409,6 +1433,12 @@ EFFECT = {"observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443, "
           "attribution": "token"}
 UNEXPLAINED = {"layers": ["L6"], "observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443}
 MATRIX = {k: {"status": "none", "layers": []} for k in ("model_calls", "tool_calls", "network", "processes", "services")}
+AI_ASKED = {"key": {"rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": ["https://pypi.internal/simple"]},
+                    "project": "api (17978b62)"}, "digest": "hmac-sha256:" + "0" * 64, "labels": [], "clean": True,
+            "precedents": {"approve": ["apr-0"], "reject": []}}
+RELIED_ON = {"precedents": {"approve": ["apr-0"], "reject": []}, "playbook": {"version": 0, "digest": H},
+             "policy_hash": H, "labels": [], "view": "hmac-sha256:" + "7" * 64, "mode": "enforce",
+             "answers": [{"model": "m", "decision": "approve"}, {"model": "m", "decision": "approve"}]}
 # per VERSIONS entry ("type" or "type.field"), records that use it
 ENTRIES = {
     "input.observed": [registered(), ("input.observed", OBSERVED, "run-a")],
@@ -1454,6 +1484,8 @@ ENTRIES = {
     "approval.escalated": [registered(), ("approval.escalated", {"approval_id": "apr-1", "by": "signer",
                                                                  "reason": "no agent answered"}, "run-a")],
     "approval.revoked": [registered(), ("approval.revoked", {"approval_id": "apr-1", "by": "uid:1"}, "run-a")],
+    "approval.revoked.person": [registered(), ("approval.revoked", {"approval_id": "apr-1", "by": "uid:1",
+                                                                    "person": "alice"}, "run-a")],
     "approval.suggested": [registered(), ("approval.suggested", {
         "tool_use_id": "t1", "approval_id": "apr-1", "decision": "approve", "approver": "token:reviewer",
         "approver_identity": AGENT, "channel": "rpc", "approver_kind": "agent"}, "run-a")],
@@ -1508,6 +1540,30 @@ ENTRIES = {
                                                           "checks": {}}, "cites": []}, "run-f")],
     # a grant the run's own user issued: a self-approval, which a verifier before 1.6.0 can't see (assurance dev)
     "ext.self_approved=True": [registered(), ("ext", {"name": "intent.grant", "self_approved": True}, "run-a")],
+    # run labels (docs/policy-v2.md#run-conditions): without the run's policy in the bundle, signer-asserted
+    "run.label": [registered(), ("run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                                               "source": 0}, "run-a")],
+    "policy.decision.run_labels": [registered(), decision(run_labels=["secrets_access"])],
+    # a run's requesters: another identity that writes it, the client a gateway registered it for
+    "run.writer": [registered(), ("run.writer", {"identity": "uid:990777", "stream": "s2"}, "run-a")],
+    "run.registered.caller": [registered(caller="uid:501")],
+    # the AI approver (1.8.0)
+    "approval.request.ai": [registered(), asked(ai=AI_ASKED)],
+    "approval.relied_on": [registered(), answered(relied_on=RELIED_ON)],
+    "approval.run_clean": [registered(), answered(run_clean=True)],
+    "approval.suggested.relied_on": [registered(), ("approval.suggested", {
+        "tool_use_id": "t1", "approval_id": "apr-1", "decision": "approve", "approver": "uid:299",
+        "approver_identity": AGENT, "channel": "rpc", "approver_kind": "agent", "relied_on": RELIED_ON}, "run-a")],
+    "approval.escalated.relied_on": [registered(), ("approval.escalated", {
+        "approval_id": "apr-1", "by": "signer", "reason": "two keys", "relied_on": RELIED_ON}, "run-a")],
+    "playbook.entry": [registered(), ("playbook.entry", {
+        "action": "accept", "id": "P-0123abcd0123abcd0123abcd0123abcd", "text": "TK-A025 by Bash: approved 3 of 3",
+        "key": AI_ASKED["key"],
+        "by": "uid:502"}, "run-a")],
+    "precedent.revoked": [registered(), ("precedent.revoked", {"approval_id": "apr-0", "by": "uid:502"}, "run-a")],
+    "approver.enabled": [registered(), ("approver.enabled", {"rules": ["TK-A025"], "by": "uid:502"}, "run-a")],
+    "approver.switched": [registered(), ("approver.switched", {"on": False, "by": "uid:502", "reason": "a week off"},
+                                         "run-a")],
 }
 
 
@@ -1556,7 +1612,8 @@ class TestVersionTable(Case):
                    "1.2.0": "c0c704e79fe3641a7784cd2c05cf943c2ea9cab4c39181f6ab3bea5f736b1eb9",
                    "1.3.0": "1ced79b94a5a8e0cb977946b39109020beeaaea8a5c2ac5ac856dbd1c0f794d2",
                    "1.4.0": "7ba74fe8501c26765ef5cd3d0a762e6fbb9c9226e71cdcbc124d8f430c404d2b",
-                   "1.6.0": "6ef266c152352404725446b23739d5ef613f96e988400fe2021fec59939613b5"}
+                   "1.6.0": "6ef266c152352404725446b23739d5ef613f96e988400fe2021fec59939613b5",
+                   "1.8.0": "b4fcb02b9d8418bd42add6755ec61d5f61d6b5475065562021b8303d9e88f8a0"}
         for version, digest in shipped.items():
             self.assertEqual(hashlib.sha256(canonical(VERSIONS[version])).hexdigest(), digest, version)
 
@@ -1662,6 +1719,16 @@ class TestExt(Case):
                 out = ext_bundle(self.log(f"s-{random.random()}"), os.path.join(self.d, f"{random.random()}.tkb"),
                                  field, record)
                 self.assert_fails(out, "signatures")
+
+    def test_an_approval_decision_names_a_decision_of_its_call(self):
+        """ext.approval.decision (1.8.0): the consume's name is a policy.decision of its run, call id and attempt that
+        comes before it. A name the bundle doesn't hold there is a warning, not a failure (an ext name is not critical)."""
+        for name, kw in APPROVAL_DECISIONS.items():
+            with self.subTest(name):
+                rep, code = self.verify(approval_decision_bundle(self.log(f"approval-decision-{random.random()}"),
+                                                                 os.path.join(self.d, f"a{random.random()}.tkb"), **kw))
+                self.assertEqual((code, next(c["status"] for c in rep.checks if c["check"] == "approval decision")),
+                                 (0, "warn" if kw else "pass"))
 
     def test_an_ext_interpretation_adds_only_its_own_lines(self):
         """What may go in ext: every line a verifier that doesn't interpret a name prints stays true without it, so the

@@ -1,6 +1,20 @@
-"""The signer RPC contract, version 26: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 29: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 26 adds register_run's `continues` (a later run of an
+Frozen: a change to any schema here is a new RPC_VERSION. Version 29 adds the AI approver (docs/approvals.md#the-ai-
+approver): approval_request's `project` (the folder the agent works in, as its client names it), approval_decide's
+`ai` (an agent approver's answers, each with its model's identity where the model's server gave one) and
+`view_digest` (the approval_review it answers, required for an approval
+held by the policy's approval_agent rules), approval_review's `ai` (the precedent key, run labels, precedents,
+playbook and recent calls of such an approval), `approver` (people: the circuit breaker's state and the playbook,
+each entry with whether it binds, accept or retire a playbook entry, revoke a precedent, enable rules the breaker
+dropped), an approval's `ai` (what people see of agent approvers on it: whether one may answer it now and why, and
+the latest agent answer, with the models' answers and who took a yes back) and approval_list's `ended` (the approvals
+of runs that ended in the last day, after the live ones). Version 28 adds
+`run_label_clear`, an operator call: a person ends one of a run's labels (docs/policy-v2.md#run-conditions), which
+the signer records as theirs; a run's own owner, principal or requester can't (a dev signer's own, self_cleared), and
+decide's `recorded` (the rules in shadow that would hold the call). Version 27 adds decide's `agent_id` (the harness's
+id of the sub-agent that made the call, which the signer records as the agent reported it and checks nothing against).
+Version 26 adds register_run's `continues` (a later run of an
 agent session the client registered a run for before: its provenance index starts partial). Version 25 adds content_get's `type` of each record whose
 content it returns, and an input.observed's `source`: what a reader needs to know which kind of record the value is
 (tracekit.lessons.verified takes only a person's answer, never a call's arguments of the same shape). Version 24 adds `call_state` (a read under the run token):
@@ -46,7 +60,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 26
+RPC_VERSION = 29
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -92,6 +106,7 @@ DIGEST = _str(71, pattern=r"^sha256:[0-9a-f]{64}" + _END)
 TOKEN = _str(1024, minLength=1)
 RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
+RUN_LABEL = {"enum": ["secrets_access", "untrusted_content"]}   # policy2.compile.RUN_LABELS
 # in a deny's or an ask's `reason` (decide), what follows it is the rules' remedies: what to do instead
 INSTEAD = ". Instead: "
 
@@ -139,6 +154,9 @@ _OS_REQ = ["kind", "ts", "pid", "binary"]
 _decide = _obj(_EVENT_REQ + ["tool_call_id", "tool", "args_source", "args"], **_EVENT, caller=IDENTITY,
                tool_call_id=ID, attempt=SEQ, tool=_str(256, minLength=1),
                tool_class_hint=_str(64),         # a hint only: the signer classifies the tool itself
+               # the sub-agent that made the call, as the harness reported it (Claude Code's subagent id): descriptive,
+               # never an identity; signed as the decision's and its result's agent_id, as the event format holds it
+               agent_id=_str(200, minLength=1),
                args_source={"enum": ["raw", "parsed", "coerced"]},
                args=ANY)                         # the raw model string when args_source is raw, else the value
 _RAW = {"if": {"properties": {"args_source": {"const": "raw"}}}, "then": {"properties": {"args": _str(MAX_RAW_ARGS)}}}
@@ -231,6 +249,13 @@ REVIEW = _obj(["reviewer", "verdict", "cites"], reviewer=_str(128, minLength=1, 
 # a live constraint (constraint_add): what the person's request says not to do in the rest of the run; the signer
 # commits `object` (a file name) and holds a later call that breaks it for a person's approval, never lowering a decision
 CONSTRAINT_KINDS = ["keep_away", "only_change", "read_only", "no_push", "no_network"]
+# an agent approver's answers to an approval_agent approval (approval_decide `ai`): each answer's model and
+# decision (one, or two independent ones: a yes needs two that agree), and the model's identity where its server gave
+# one (an Ollama model's /api/show digest, else the answer's model and system_fingerprint), which the circuit breaker
+# pins
+APPROVER_ANSWER = _obj(["answers"], answers={"type": "array", "minItems": 1, "maxItems": 2, "items": _obj(
+    ["model", "decision"], model=_str(128, minLength=1), decision={"enum": ["approve", "reject", "escalate"]},
+    identity=_str(256, minLength=1))})
 _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "tool", "rule_ids", "policy_hash",
                  "requester", "expires_at"],
                 approval_id=ID, state=APPROVAL_STATE, run_id=ID, tool_call_id=ID, attempt=SEQ, tool=_str(256),
@@ -241,9 +266,26 @@ _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "t
                 # who answered (an agent's answer is model output) and, once escalated, by whom and why
                 answered=_obj(["by", "kind"], by=_str(256), kind={"enum": ["person", "agent"]}),
                 escalation=_obj(["by"], by={"enum": ["agent", "signer"]}, reason=REASON),
-                run_closing={"const": True})   # still requested, but its run is closing: no answer can be acted on
-# what approval_list shows an agent approver: nothing from the run or the requesting agent
-_AGENT_SUMMARY = _obj(["approval_id", "state", "tool", "rule_ids", "policy_hash", "expires_at"],
+                run_closing={"const": True},   # still requested, but its run is closing: no answer can be acted on
+                # people's view (approvers and break-glass only) of agent approvers on it, when its request weighed
+                # them: how an agent's answer counts now (`mode`; null: only people answer it) and why, and the latest
+                # agent answer (model output): its decision, mode, who gave it, its reason, and an AI answer's `view`:
+                # the view_digest it answered, or its record's commitment to it once the signer no longer holds the
+                # view it served
+                ai=_obj(["mode", "reason"], mode={"enum": ["enforce", "shadow", None]}, reason=REASON,
+                        answer=_obj(["decision", "mode", "by"], decision={"enum": ["approve", "reject", "escalate"]},
+                                    mode={"enum": ["enforce", "shadow"]}, by=_str(256), reason=REASON,
+                                    view={"oneOf": [DIGEST, _str(77, pattern=r"^hmac-sha256:[0-9a-f]{64}" + _END)]},
+                                    # the person's approval a yes matched: who gave it, when, and what it was of
+                                    matched=_obj(["approval_id"], approval_id=ID, by=_str(256), at=_str(40),
+                                                 target=REASON),
+                                    # the reviewer's answers as its record holds them (relied_on.answers), and a
+                                    # take-back of its yes: who (a person's name, or the signer), when and why
+                                    answers=APPROVER_ANSWER["properties"]["answers"],
+                                    revoked=_obj(["by", "at"], by=_str(256), at=_str(40), reason=REASON))))
+# what approval_list shows an agent approver (its properties, all it is shown): nothing from the run, the requesting
+# agent or other answers
+AGENT_SUMMARY = _obj(["approval_id", "state", "tool", "rule_ids", "policy_hash", "expires_at"],
                       **{k: _SUMMARY["properties"][k] for k in ("approval_id", "state", "tool", "rule_ids",
                                                                 "policy_hash", "expires_at", "escalated", "agent",
                                                                 "run_closing")})
@@ -353,12 +395,18 @@ REQUESTS = {
                                  "items": _str(256, pattern=r"^(/([^~/]|~[01])*)+" + _END)},
                         body=ANY),   # the exchange's body, for the content vault when status says it is on
     "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, caller=IDENTITY, tool_call_id=ID, attempt=SEQ,
-                             reason=REASON),   # the agent's words: shown to the approver as such, never as the args
+                             reason=REASON,   # the agent's words: shown to the approver as such, never as the args
+                             # the agent's project folder (version 29): in an AI approver's precedent key, narrowing it
+                             project=_str(1024, minLength=1)),
     "approval_decide": _obj(["request_id", "approval_id", "decision"], request_id=ID, approval_id=ID,
                             decision={"enum": ["approve", "reject", "escalate"]},   # escalate: an agent approver's
                             reason=REASON, on_behalf=PERSON, passkey=PASSKEY,
                             # an agent approver's word for what it runs: recorded as unattested
-                            asserted=_obj([], model=_str(128), version=_str(64), prompt_hash=DIGEST)),
+                            asserted=_obj([], model=_str(128), version=_str(64), prompt_hash=DIGEST),
+                            # its answers (two keys: two that agree for a yes): recorded, its word, on an
+                            # approval_agent approval, and the view_digest of the approval_review it answers, which
+                            # the signer requires there (version 29)
+                            ai=APPROVER_ANSWER, view_digest=DIGEST),
     # a chat bridge answers for the person who clicked (`approver`, slack:<team>/<user>), who `groups` (user groups of
     # the same team, slack:<team>/<group>) the bridge found them in; an `authorize` grant, never a default
     "approval_decide_on_behalf": _obj(["request_id", "approval_id", "decision", "approver"], request_id=ID,
@@ -371,6 +419,9 @@ REQUESTS = {
     # a page of the approvals the caller may see, oldest first; `cursor` is the previous page's next_cursor
     "approval_list": _obj([], run_id=ID, cursor=ID, limit={"type": "integer", "minimum": 1, "maximum": 1000},
                           on_behalf=PERSON, state=APPROVAL_STATE, escalated={"type": "boolean"},
+                          # after the live ones, those of runs that ended in the last day (version 29; never to an
+                          # agent approver)
+                          ended={"type": "boolean"},
                           # agent: approvals an agent approver may answer now; person: every other one
                           **{"for": {"enum": ["agent", "person"]}}),
     # an agent approver's view of an approval it may answer (an `authorize` grant, never a default)
@@ -380,6 +431,16 @@ REQUESTS = {
                             on_behalf=PERSON),
     # the operator's kill switch for agent approvals (an `authorize` grant, never a default)
     "approval_agents": _obj(["request_id", "enabled"], request_id=ID, enabled={"type": "boolean"}, reason=REASON),
+    # the AI approver, for people (version 29): status reads; accept and retire a playbook entry (`id`: P-…), revoke a
+    # precedent (`id`: the approval id of a person's answer), enable `rules` the circuit breaker dropped to shadow
+    "approver": {**_obj(["action"], request_id=ID, action={"enum": ["status", "on", "off", "accept", "retire", "drop",
+                                                                     "revoke", "enable"]},
+                        id=ID, rules={"type": "array", "minItems": 1, "maxItems": 32, "items": _str(64)},
+                        reason=REASON),
+                 "oneOf": [{"properties": {"action": {"const": "status"}}},   # a read; every other action changes state
+                           {"properties": {"action": {"enum": ["on", "off", "accept", "retire", "drop", "revoke",
+                                                               "enable"]}},
+                            "required": ["request_id"]}]},
     # the adapter will never resume this paused call: the approval ends at once and a later consume is refused
     "approval_abandon": _obj(_RUN_REQ + ["approval_id"], **_RUN, approval_id=ID, reason=REASON),
     # last_client_seq: the last client_seq each of the caller's streams sent; a value the signer never received becomes
@@ -468,6 +529,9 @@ REQUESTS = {
     # the shared suspension list: `identity` (scheme:subject, or a prefix ending in :* or /*) is refused every call
     **{m: _obj(["request_id", "identity"], request_id=ID, identity=IDENTITY, reason=REASON)
        for m in ("suspend", "unsuspend")},
+    # a person (as for run_resume) ends one of a run's labels: a run.label of theirs
+    "run_label_clear": _obj(["request_id", "run_id", "label"], request_id=ID, run_id=ID, label=RUN_LABEL,
+                            reason=REASON),
     # proof-carrying messages (experimental), the run's own agent only: sign a message as it (the signer adds pcm, id,
     # ts, nonce and sig); a root grant from the consumed approval of its `pcm.grant` call with these args; a narrower
     # child of a grant held by the caller; and its run's records with inclusion proofs, for claim evidence
@@ -521,6 +585,10 @@ RESPONSES = {
                    # the policy lists the tool as untrusted: `complete` should carry the result itself (the signer
                    # redacts it, commits to it and indexes its values for provenance), not a digest of it
                    send_result={"const": True},
+                   # rules in shadow (mode: shadow) that would hold the call: it runs, recorded (`reason` says why)
+                   recorded=RULE_IDS,
+                   # what the person reads of it: where it sends and after what, and that nothing is blocked
+                   noted=REASON,
                    incident_id=ID),   # the call is held (ask: a person answers) or quarantined (deny) by this incident
     "complete": _SEQ_ONLY,
     "observe": _SEQ_ONLY,
@@ -550,7 +618,7 @@ RESPONSES = {
                          properties=dict(_SUMMARY["properties"], args_source={"enum": ["raw", "parsed", "coerced"]},
                                          args=ANY, binding_digest=DIGEST, reason=REASON)),
     "approval_list": _obj(["approvals", "next_cursor"], approvals={"type": "array", "maxItems": 1000,
-                                                              "items": {"oneOf": [_SUMMARY, _AGENT_SUMMARY]}},
+                                                              "items": {"oneOf": [_SUMMARY, AGENT_SUMMARY]}},
                           next_cursor={"oneOf": [ID, {"type": "null"}]}),
     "approval_abandon": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE),
     # view_digest: sha256(JCS(the rest of the answer))
@@ -563,10 +631,37 @@ RESPONSES = {
                                 passed={"type": "boolean"})},
                             budget={"type": "object"}, args=ANY,
                             redacted={"type": "array", "maxItems": 4096, "items": _str(4096)},
+                            ai={"type": "object"},   # an approval_agent approval's (version 29)
                             view_digest=DIGEST),
     "approval_revoke": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE),
     "approval_agents": _obj(["enabled", "revoked"], enabled={"type": "boolean"},
                             revoked={"type": "array", "maxItems": 100000, "items": ID}),   # the agent approvals revoked
+    # status: {demoted, playbook, proposals}; a change: the action and the run_seq of its record
+    # status: a person's switch (null: the policy and signer.yaml decide alone), the rules and mode the policy gives
+    # the AI reviewer, how often people agreed with it per rule (all of the circuit breaker's last pairs, and the most
+    # recent ones), the rules the breaker dropped, the playbook and the proposals (each entry with `binds`: people said
+    # no to calls like it, so the signer holds them for a person; else it is advice the reviewer reads), the run labels
+    # that send a session's calls to people (`clean`), and whether the operator's kill switch (approval_agents) has
+    # agent approvals off (`agents_off`); a change: its record, what an `off` or an accept that binds withdrew, and
+    # whether an accepted entry binds
+    "approver": {"oneOf": [_obj(["switch", "rules", "mode", "agreement", "demoted", "playbook", "proposals", "clean",
+                                 "agents_off"],
+                                switch={"oneOf": [{"type": "null"}, _obj(
+                                    ["on", "by", "at"], on={"type": "boolean"}, by=_str(256), at=_str(40),
+                                    person=_str(256),
+                                    rules={"type": "array", "maxItems": 32, "items": _str(64)}, reason=REASON)]},
+                                rules={"type": "array", "maxItems": 32, "items": _str(64)},
+                                mode={"enum": ["shadow", "enforce"]},
+                                clean={"type": "array", "maxItems": 8, "items": _str(64)},
+                                agents_off={"type": "boolean"},
+                                agreement={"type": "array", "maxItems": 32, "items": _obj(
+                                    ["rule", "agreed", "of", "recent"], rule=_str(64), agreed=SEQ, of=SEQ,
+                                    recent=_obj(["agreed", "of"], agreed=SEQ, of=SEQ))},
+                                demoted={"type": "array"}, playbook={"type": "object"}, proposals={"type": "array"}),
+                           _obj(["action", "run_seq"], action={"enum": ["on", "off", "accept", "retire", "drop",
+                                                                        "revoke", "enable"]},
+                                run_seq=SEQ, revoked={"type": "array", "maxItems": 100000, "items": ID},
+                                binds={"type": "boolean"})]},
     # open: a gateway's close_run, which ends its stream only
     "close_run": _obj(["run_id", "state", "run_seq"], run_id=ID, state={"enum": ["closing", "open"]}, run_seq=SEQ),
     "delegate_run": _obj(["run_token"], run_token=TOKEN),
@@ -608,6 +703,7 @@ RESPONSES = {
     **{m: _obj(["enabled"], enabled={"type": "boolean"}) for m in ("response_pause", "response_resume")},
     **{m: _obj(["identity", "state"], identity=IDENTITY, state={"enum": ["suspended", "lifted"]})
        for m in ("suspend", "unsuspend")},
+    "run_label_clear": _obj(["run_id", "label", "run_seq"], run_id=ID, label=RUN_LABEL, run_seq=SEQ),
     "pcm_sign": _obj(["message", "run_seq"], message=PCM_MESSAGE, run_seq=SEQ),
     **{m: _obj(["grant", "run_seq"], grant=PCM_GRANT, run_seq=SEQ) for m in ("pcm_grant", "pcm_delegate")},
     # the latest checkpoint note and, for each record it covers, its inclusion proof under it (a policy.decision's salt
@@ -629,7 +725,7 @@ RESPONSES = {
     # frame (the transport's 1 MiB)
     "export_run": _obj(["digest", "size", "offset", "data"], digest=DIGEST, size=SEQ, offset=SEQ,
                        data=_str(1 << 20, pattern=r"^[A-Za-z0-9+/]*={0,2}" + _END)),
-    # {} when the run never decided the call; else its latest attempt's decision (as decide answered it), whether
+    # {} when the run never decided the call; else its latest attempt's decision and reason (as decide answered), whether
     # `args_digest` opens it (`same_args`), its approval and whether this attempt consumed it, a refused consume's rule
     # ids, and its tool.result
     "call_state": _obj([], attempt=SEQ, decision={"enum": ["allow", "deny", "ask"]}, decision_id=ID,
@@ -687,6 +783,7 @@ class SignerAPI(Protocol):
     def approval_review(self, req: dict) -> dict: ...
     def approval_revoke(self, req: dict) -> dict: ...
     def approval_agents(self, req: dict) -> dict: ...
+    def approver(self, req: dict) -> dict: ...
     def close_run(self, req: dict) -> dict: ...
     def delegate_run(self, req: dict) -> dict: ...
     def tailer_lost(self, req: dict) -> dict: ...
@@ -708,6 +805,7 @@ class SignerAPI(Protocol):
     def run_hold(self, req: dict) -> dict: ...
     def run_quarantine(self, req: dict) -> dict: ...
     def run_resume(self, req: dict) -> dict: ...
+    def run_label_clear(self, req: dict) -> dict: ...
     def response_pause(self, req: dict) -> dict: ...
     def response_resume(self, req: dict) -> dict: ...
     def suspend(self, req: dict) -> dict: ...

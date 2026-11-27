@@ -272,6 +272,13 @@ def unverified_bundles(test):
     return test
 
 
+def serial(test):
+    """@pytest.mark.serial for files the TypeScript suite runs without pytest: conftest marks the test, so CI runs it
+    on its own (`-m serial`)."""
+    test.serial = True
+    return test
+
+
 def rewrite_bundle(src, dst, edit):
     """Copy a bundle, letting `edit(files: dict, manifest: dict)` change it; manifest hashes are refreshed."""
     with zipfile.ZipFile(src) as z:
@@ -365,6 +372,20 @@ def persisted_queue(signer):
 
 # the modules whose syncs a signer on the file store makes: its logs, its new files, and its state and key files
 SIGNER_SYNCS = {"tracekit.storage.file", "tracekit.signer.service", "tracekit.deploy.files"}
+
+
+# JSON nested past every Python's limit: json's C parser reads 5,000 levels on 3.12 and 3.13 and 20,000 on 3.14
+TOO_DEEP_JSON = "[" * 100_000 + "]" * 100_000
+
+
+@contextlib.contextmanager
+def no_tomllib():
+    """Python 3.9 and 3.10: tomllib can't be imported, nor tracekit.tomlsafe, which imports it."""
+    import tracekit
+    with mock.patch.dict(sys.modules, {"tomllib": None}), mock.patch.dict(tracekit.__dict__):
+        sys.modules.pop("tracekit.tomlsafe", None)
+        tracekit.__dict__.pop("tomlsafe", None)
+        yield
 
 
 @contextlib.contextmanager

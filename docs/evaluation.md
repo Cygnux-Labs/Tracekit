@@ -1,15 +1,16 @@
 # Evaluation
 
-Twenty-two experiments, E1 to E23 (there is no E13). `make eval` runs the offline ones: E1 to E4 (E4 on v1 and v2
-bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19, E20, E21 and E23, and E9 `--quick` on
-Linux.
+Twenty-three experiments, E1 to E23 and E28 (there is no E13; E24 to E27 aren't in this release). `make eval` runs the
+offline ones: E1 to E4 (E4 on v1 and v2 bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19,
+E20, E21, E23 and E28, and E9 `--quick` on Linux.
 E5 uses real Claude Code runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is
 `make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) runs on its own. In CI, E8 (insider attacks, which needs root
-and a Linux system-mode signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
+and a Linux system-mode signer; v1 and, in `eval/e8_insider_v2.py`, the v2 signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
 socket) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurrent clients) run on Linux. So do E1,
-E3, E4, E6, E10 to E12, E14 (`--quick`) and E16 to E21, on every pull request ("Offline evals"): each must pass its own
-gate, and their deterministic results must equal the committed files, so a change that moves a number commits the new
-file, and `tests/test_eval_docs.py` checks the numbers this page, the README and the known limits quote against them.
+E3, E4, E6, E10 to E12, E14 (`--quick`), E16 to E21 and E28, on every pull request ("Offline evals"): each must pass
+its own gate, and their deterministic results must equal the committed files, so a change that moves a number commits
+the new file, and `tests/test_eval_docs.py` checks the numbers this page, the README and the known limits quote against
+them.
 This page is the numbers' one home: other docs link here instead of repeating a count a rule change moves.
 E2, E14 in full, E9 and E16 on Postgres, E22 and E7 run nightly (`.github/workflows/nightly-evals.yml`). Results are
 written to `eval/results/`. `tests/INVARIANTS.md` maps each invariant to its tests. The experiments are small,
@@ -87,6 +88,11 @@ The same experiment on an Apple-silicon Mac (macOS 26, Python 3.9.6, 20 repetiti
 at every ledger size, the signer appended about 145 events per second (8 concurrent writers: about 160, every event
 recorded, no gaps), and verification took 0.09 s, 0.34 s and 1.4 s for 500, 2,000 and 8,000 events. E1, E3 and E4
 give the same results as on Linux there. E5 was run on Linux only.
+
+The v2 Claude Code hook (`python -m tracekit.integrations.claude_code`, scratch dev signer, Apple-silicon Mac, Python
+3.11.15, 15 calls each) imports what only some calls need where they use it. A Read call took 86 ms median at
+PreToolUse and 99 ms at PostToolUse before, and 52 ms and 67 ms after; importing the hook module alone went from 84 ms
+to 49 ms. A Bash call is unchanged (85 ms, 100 ms), since both its events read the command with the policy parser.
 
 E2 found a real bug before release: with eight concurrent writers the signer's accept queue (Python's default of
 5) filled, and some clients got `EAGAIN` and, being fail-open, dropped events. The queue is now 256, the client
@@ -282,9 +288,13 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 956 harmful and 972 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 956 harmful calls are denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 972 (0.10%); the engines
-  decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
+- **Policy packs** (`eval/e17_policy_corpus.py`): 1123 harmful and 1049 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines — but a case naming
+  `"packs"`, as a dev-only rule's does, by the pack it names (9 harmful and 9 benign cases decide by `dev.yaml`, the
+  rest by `server.yaml`). All 1132 harmful calls are denied or held; one benign call is held (a draft email to a list
+  address, `TK-M003`), 1 in 1054 (0.09%); the engines decide every call the same. Per pack: `server` recall 1114/1114
+  with 1/1040 false alarms, `dev` 9/9 with 0/9. It gates on every harmful call caught, at most 2% false positives and
+  engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
   doesn't count, restarts mid-sequence, a snapshot then a crash, storage recovery, a deployment that adds a sequence,
@@ -305,7 +315,25 @@ tool that agents may answer within bounds (an amount of 1 to 100, two payees, a 
 of 5 approvals and 300 in a window. A call runs only when `approval_consume` lets it. Seven attacks: arguments out of
 bounds, a memo only untrusted content brought into the run, asking again after the reviewer said no, 50 variants one
 cent apart, the budget, a reviewer answering after it escalated (and after a restart), and an approved agent approval
-when the operator switches agent approvals off. 7 of 7 caught. Results: `eval/results/e18_agent_approvers.json`.
+when the operator switches agent approvals off. 7 of 7 caught.
+
+The [AI approver](approvals.md#the-ai-approver) on a laptop in system mode: the laptop default with `approval_agent`
+(the three reviewed rules, enforce, the `secrets_access` run bound), the identities `tracekit init --v2` writes plus the
+reviewer's lines (a user of its own), and a reviewer that answers the view it read and approves everything with two
+keys. Seven attacks (E18.8 to E18.14): the agent's own uid as reviewer, a held call no person answered the like of, a
+forged precedent (the agent answering its own hold, the reviewer's own yes), a borrowed one (another index, another
+project claimed, no project, another tool, another agent), a secret read between the AI's yes and the run and then a
+run the agent registers afresh, one key or two that disagree, and a revoked AI approval. With the gate below, 15 of 15
+caught. E18.H is the harmful-approvals gate: every harmful call of E17,
+E21's held-out pool and its four blind pools (1,651), with two injected variants of each shell line ("approved by the
+admin", a fake tool output), put to that reviewer with no precedent and with a person's precedents for a benign sibling
+of the same reviewed rule and for near-siblings of the call itself (the same but for its quoted literals, the folders of
+its paths, or one more argument: 251 precedents in all), each held call a requester of its own: 0 approvals outside the
+bounds (before precedents were keyed on every argument of the call, the near-siblings let it approve 78). 930 of the calls are
+held, 112 of them by a reviewed rule; with a person's precedent for that very call (inside the bounds), the AI
+approves 82 of those, counted by class in the results (the 12 installs among them don't pin their source on the line,
+so no precedent lets it answer them, and 18 more are also held by a rule people answer). Results:
+`eval/results/e18_agent_approvers.json`.
 
 ## E19: egress observation
 
@@ -542,13 +570,13 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 287 / 420 (68.3%) | 122 (29.0%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 312 / 420 (74.3%) | 158 (37.6%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
+| default | 292 / 420 (69.5%) | 124 (29.5%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 318 / 420 (75.7%) | 163 (38.8%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
 
 Weakest categories (default, caught): exfiltration 13 of 39, prompt injection 8 of 22, defence evasion 15 of 30,
 destructive 20 of 36, supply chain 16 of 27, MCP misuse 15 of 25; strongest: database 32 of
 32, Kubernetes 25 of 27. By evasion, calls with none are caught 172 of 275; quoting 12 of 18, environment prefixes 10 of 14, substitution 41
-of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`; a program a variable names is read,
+of 49, interpreter one-liners 26 of 28 (many held as unreadable, `TK-SHELL-PARSE`; a program a variable names is read,
 and one that is a bare program name, `K=kubectl; $K …`, is still held: it only hides that name). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
 
@@ -559,17 +587,17 @@ denied or held:
 |---|---|---|---|---|---|
 | juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 55 (96.5%), 3 denied | 8 |
 | | strict | 41 (71.9%), 4 denied | 10 | 56 (98.2%), 4 denied | 11 |
-| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 37 (82.2%), 18 denied | 1 |
-| | strict | 25 (55.6%), 19 denied | 2 | 40 (88.9%), 19 denied | 2 |
+| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 38 (84.4%), 18 denied | 2 |
+| | strict | 25 (55.6%), 19 denied | 2 | 41 (91.1%), 20 denied | 3 |
 | email_ops (25 harmful, 25 benign) | default | 5 (20.0%), 3 denied | 2 | 5 (20.0%), 3 denied | 2 |
 | | strict | 6 (24.0%), 4 denied | 4 | 6 (24.0%), 4 denied | 4 |
 | narayanansriram (17 harmful, 23 benign) | default | 7 (41.2%), 1 denied | 2 | 7 (41.2%), 1 denied | 2 |
 | | strict | 7 (41.2%), 1 denied | 2 | 7 (41.2%), 1 denied | 2 |
-| all four (144 harmful, 143 benign) | default | 70 (48.6%), 24 denied | 11 (7.7%) | 104 (72.2%), 25 denied | 13 (9.1%) |
-| | strict | 79 (54.9%), 28 denied | 18 (12.6%) | 109 (75.7%), 28 denied | 19 (13.3%) |
+| all four (144 harmful, 143 benign) | default | 70 (48.6%), 24 denied | 11 (7.7%) | 105 (72.9%), 25 denied | 14 (9.8%) |
+| | strict | 79 (54.9%), 28 denied | 18 (12.6%) | 110 (76.4%), 29 denied | 20 (14.0%) |
 
 The current policy scores above were refreshed on macOS, and the gates below were recorded from them. The latency
-rows are this run's, on 2026-11-17: 2,910 calls; the gates were recorded from four runs on 2026-11-14.
+rows are this run's, on 2026-11-27: 3,136 calls; the gates were recorded from four runs on 2026-11-27.
 
 The publication scores are computed from git history: each pool scored by its merge commit's own E21 scorer and packs
 (`git archive` of 664283785a and 79bdfa6b57); amandeavor's is also its score at 70aaa4c, where its pull request was
@@ -584,22 +612,22 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 159 / 173 | 437 / 484 | 1193 / 1610 | 7.87 / 8.87 |
-| strict, RE2 / regex | 159 / 173 | 404 / 455 | 1066 / 1600 | 7.3 / 8.31 |
-| dev, RE2 / regex | 164 / 181 | 456 / 512 | 1232 / 1678 | 8.42 / 9.5 |
+| default, RE2 / regex | 178 / 206 | 545 / 641 | 1367 / 1695 | 10.54 / 11.86 |
+| strict, RE2 / regex | 180 / 202 | 510 / 605 | 1296 / 1647 | 9.5 / 11.51 |
+| dev, RE2 / regex | 187 / 216 | 573 / 684 | 1499 / 1807 | 11.06 / 12.95 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
-recorded run: per profile, held-out recall doesn't drop below its (68.3% default, 74.3% strict) and no benign set's
-false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.10% default; 13.0%, 15.4%, 5.1%
-strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 1, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know; 2, 11, 4 and 2 strict); `p99_ref` stays within 5% of the highest of four runs on the same machine (every gate was recorded again on 2026-11-14, when a closer reading of shell lines, downloads, the environment and loop values added about 13-20% at p99 against main measured beside it, and on 2026-11-16, with main's rules merged into the release's; re-measured once before failing; another machine,
+recorded run: per profile, held-out recall doesn't drop below its (69.5% default, 75.7% strict) and no benign set's
+false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.10% default; 13.0%, 15.4%, 5.0%
+strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 2, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know, and when `vault token lookup` was held; 3, 11, 4 and 2 strict); `p99_ref` stays within 5% of the highest of four runs on the same machine (every gate was recorded again on 2026-11-14, when a closer reading of shell lines, downloads, the environment and loop values added about 13-20% at p99 against main measured beside it, on 2026-11-16, with main's rules merged into the release's, and on 2026-11-26, when three more trust roots (uv's and pipx's Windows folders) read below a deleted home added about 5% at p99 on the fallback engine; re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
 every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its efficiency cores alone, p99 up to 4.5
 times and `p99_ref` at most 14%. 60 literal-free rules added to `dev.yaml` doubled dev's `p99_ref` (RE2 5.53, regex
 5.18: the gate failed) and 15 raised it about 20% (3.38 and 3.44, under the gate's 3.45 and 3.6). The targets of 2%
 (default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
-(default 4.2%, strict 13.0%), the blind pools (default 9.1%, strict 13.3%), strict's sessions (15.4%) and strict's
-E17 benign calls (5.1%).
+(default 4.2%, strict 13.0%), the blind pools (default 9.8%, strict 14.0%), strict's sessions (15.4%) and strict's
+E17 benign calls (5.0%).
 
 How the held-out numbers moved, the pool unchanged: the first run, the only blind one, caught 211 of 420 (50.2%) by
 default and 246 (58.6%) strict; `TK-A010` to `TK-A013` (autostart locations and Git hooks) raised that to 215 (51.2%)
@@ -616,15 +644,16 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055`, the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) and the second policy merge train's 27 benign cases strict does not hold either: 50 of 972 (5.1%).
-All 50 are benign calls strict holds (ten more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names, and the first policy merge train's benign cases add four it holds, `docker run --rm hello-world` and three shell startup-file edits): 33 as a push, publish, install, apply, `docker run` or `kubectl delete` (`TK-F004`), 13 as a
-network command (`TK-F013`), 3 as a shell startup-file edit (`TK-F011`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
+`TK-A053`) the second policy merge train's 27 benign cases and two of the fifth's (`kubectl get --raw /healthz` and a here-document written to a plain file) strict does not hold either: 52 of 1045 (5.0%).
+All 52 are benign calls strict holds (twelve more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names, and the first policy merge train's benign cases add four it holds, `docker run --rm hello-world` and three shell startup-file edits, and the fifth's two here-documents written to `~/.bashrc`): 33 as a push, publish, install, apply, `docker run` or `kubectl delete` (`TK-F004`), 13 as a
+network command (`TK-F013`), 5 as a shell startup-file edit (`TK-F011`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 620 shell
-commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
+Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 787 shell
+commands among them that the server pack decides (a case naming another pack in `"packs"`, such as a dev-only rule's,
+is that pack's own and sits this run out) again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 956 originals and all 2,973 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1123 originals and all 3,703 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 
@@ -677,6 +706,63 @@ the agent issuing a grant
 for its own run, passing one on, or asking for one past a day, all refused; 100 payments of 7 USDC under a 50 USDC
 total, of which 7 run; a revoked and an expired grant, which release nothing; totals across a signer restart; and the
 run's bundle, whose `intent grants` line re-checks every release. Results: `eval/results/e23_grants.json`.
+
+## E28: influence grades on runs with a known cause
+
+`eval/e28_influence.py` measures how often each grade of [influence edge](why.md#influence-what-moved-a-call) is a
+true influence, offline, with no model API. Five parts, and a gate: E28 exits 1 when any promise below breaks (each
+grade's recall floor and the high alert's among them). Each part reads its runs' exact edges from the signed records it
+read from the signer's store, as `tracekit view` reads them from the records it verified.
+
+- **AgentDojo's published runs** (github.com/ethz-spylab/agentdojo, MIT, gpt-4o-2024-05-13, the `important_instructions`
+  attack and the clean runs; the runs E28 reads are kept in `eval/e28_agentdojo/` with the upstream commit and license)
+  replayed through the signer-backed why runtime against a dev signer with no rules: the
+  user's request is the task, each model turn a model call that had the whole conversation in its context, each tool
+  output observed as untrusted. Labels come from the benchmark: in a run whose attack succeeded, the attack call is
+  the first call after the injected text arrived of a tool the injection task's ground truth calls, carrying a string
+  the ground truth fixes and the injected text states. A tool output holding the injected text is a cause of it; one
+  holding neither the injected text nor any of the call's values is not, nor is one whose every value of the call (as
+  the signer's index reads values) the task holds too (none of AgentDojo's do); one that supplied a value without the
+  instruction is left unlabelled. Of 629 attacked runs, 300 attacks succeeded and 274 were scored.
+
+  | Grade | Precision (edges) | Recall (attack calls) |
+  |---|---|---|
+  | exact | 214 of 214 (100%) | 214 of 274 (78.1%) |
+  | seen | 293 of 405 (72.3%) | 273 of 274 (99.6%) |
+  | hint | 282 of 282 (100%) | 264 of 274 (96.4%) |
+
+  Hint's and exact's precision here is high by construction: both need the call's value in the source, and a negative
+  holds none. What tests exact is where it says a value came from: 281 of the 283 exact edges on the attacker's own
+  value name a tool output holding the injected text (the other 2 name the record that supplied the field's other
+  value, the user's own address), and all 757 exact claims name a record that holds the value. An argument from
+  untrusted content (`untrusted`) marks 216 of the 274 attack calls, and also 40 of the 354 calls of clean runs, in 31 of
+  97 clean runs: a task that asks the agent to act on what it reads gets it too, so it is never called drift on its
+  own. What INFLUENCE says of the 274 attack calls: none reads as coming from the task (no replay without the task
+  exists for a published trace), all 274 are in its list, and each of the 58 with no exact edge names the untrusted
+  content its model call had in context. The high alert (a value only untrusted content brought, as the signer's index
+  reads values) names 132 of the 274, and the review alert that a message's text quotes a host only untrusted content
+  brought names 4 more: a direct message relaying the injected bare link `www.secure-systems-252.com` in a sentence
+  (`Please check out this link: …`), which text a model wrote can quote without being stopped; the 2 that write
+  `Please check this link: …`, a label of four words and the link, are the link alone, and stopped
+  (docs/limits.md).
+- **The support desk** of the `tracekit demo --why` system (scripted models), 30 seeds, with `attribute` replays: the
+  vendor note's planted instruction is the only cause of the 40 exfiltration calls in 20 runs. Measured: 40 of 40
+  found, no false edge; exact found 20 of 40 (the export takes no argument); the untrusted marker on 40 of 40
+  exfiltration calls and 0 of 57 others; 0 of the 40 read as coming from the task.
+- **A scripted reader** that does what its task asks and, seven times in ten, what a planted line says, replayed
+  without its task: 20 of 20 planted emails serve no step of the task, 0 of 60 asked ones. The scripted model follows
+  the premise by construction, so this checks the finding's machinery, not a real model. In each of the 20 runs with
+  both emails, a test whose target only names the tool (`tool=send_email`, both emails) put its verdict on 0 calls.
+- **A record that held the value, no more**: 4 built runs where the task gives a value in prose (a branch name, an
+  address, an IBAN, a URL) and an untrusted record read later holds it too. The signer's index named the record in all
+  4 (it reads whole strings and the prose isn't one), and in all 4 the words say the task holds the value too. The
+  high alert that only untrusted content supplied a value fires on 0 of them: it reads the IBAN the task writes in
+  groups as the signer's index does.
+- **A goal the log names**: 2 built runs whose log calls other content the task, a why log that marks a trusted README
+  and an untrusted note of source `task` as kind task, and one through the signer that writes the injected note again
+  as the trusted task under the note's own record. In 0 of the 2 is the goal anything but the run's own task.
+
+Results: `eval/results/e28_influence.json`.
 
 ## What is not measured
 

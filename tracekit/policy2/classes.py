@@ -3,16 +3,76 @@
 The tool's class comes from the policy's `tools` map, never from the caller. A shell command's argv[] comes from
 shell.py in the engine. Fields that need signer state (payment.new_payee) are not extracted yet.
 """
+import fnmatch
 import ipaddress
 import posixpath
 import re
+import shlex
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
 from tracekit.format.canon import canonical, event_hash
 
 SHELL_KEYS = ("command", "cmd", "commands")
-PATH_KEYS = ("file_path", "notebook_path", "path")
+# a shell tool's own working directory, in any case: Gemini CLI's and Qwen Code's dir_path (directory in older
+# releases), Cursor's working_directory, Codex's and OpenCode's workdir, agy's Cwd, Crush's working_dir, and the
+# spellings MCP shell servers use (workingDirectory, dir, cd)
+WORKDIR_KEYS = ("dir_path", "directory", "working_directory", "workdir", "cwd", "working_dir", "workingdirectory", "dir",
+                "cd")
+# a shell tool's own environment for its command, in any case (OpenAI Agents' LocalShellTool and Codex's exec: `env`)
+ENV_KEYS = ("env",)
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+UNREAD = object()   # workdir's, environment's and in_workdir's: a working directory or environment no one reading places
+
+
+def workdir(args):
+    """The working directory a shell call's arguments name (WORKDIR_KEYS, in any case): None for none (or an empty
+    one); UNREAD for more than one (each key, any case, counts) or one that isn't text."""
+    named = [v for k, v in args.items() if isinstance(k, str) and k.casefold() in WORKDIR_KEYS and v is not None]
+    if not named or named == [""]:
+        return None
+    return named[0] if len(named) == 1 and isinstance(named[0], str) else UNREAD
+
+
+def environment(args):
+    """The line a shell call's own environment (ENV_KEYS, in any case) makes before its command: `export NAME=value
+    …; `, so the line is read with what it sets (BASH_ENV, HOME, PATH, LD_PRELOAD); None for none (or an empty one);
+    UNREAD for more than one, or one that isn't a mapping of variable names to text (a name bash can't export, such as
+    a function's BASH_FUNC_x%%, among them)."""
+    named = [v for k, v in args.items() if isinstance(k, str) and k.casefold() in ENV_KEYS and v is not None]
+    if not named or named == [{}]:
+        return None
+    if len(named) > 1 or not isinstance(named[0], dict) or not all(
+            isinstance(k, str) and _ENV_NAME.fullmatch(k) and isinstance(v, str) for k, v in named[0].items()):
+        return UNREAD
+    return "export " + " ".join(f"{k}={shlex.quote(v)}" for k, v in named[0].items()) + "; "
+
+
+def in_workdir(args):
+    """A shell call's arguments as run in the working directory and environment they name (workdir, environment),
+    each reading of it: the command as `export NAME=value …; cd <dir> && <command>` (an argv as the line it is), so a
+    relative path it names is read in that folder and the line with what the environment sets; a `commands` list both
+    as one shell runs it there (the prefix before its lines joined, where a `cd` in one moves the next) and as each
+    entry run in a shell of its own (the prefix before each). The command field is the one the engine reads: the
+    first that isn't None. None for a call that names neither, or has no command; UNREAD for one whose working
+    directory or environment can't be placed."""
+    d, env = workdir(args), environment(args)
+    if d is UNREAD or env is UNREAD:
+        return UNREAD
+    if d is None and env is None:
+        return None
+    key = next((k for k in SHELL_KEYS if args.get(k) is not None), None)
+    command, cd = args.get(key), (env or "") + ("" if d is None else f"cd {shlex.quote(d)} && ")
+    rest = {k: v for k, v in args.items() if k != key}
+    if isinstance(command, list) and command and all(isinstance(w, str) for w in command):
+        return [{**rest, "command": cd + "\n".join(command)}, {**rest, "commands": [cd + w for w in command]}] \
+            if key == "commands" else [{**rest, "command": cd + shlex.join(command)}]
+    return [{**rest, "command": cd + command}] if isinstance(command, str) else None
+
+
+PATH_KEYS = ("file_path", "notebook_path", "path", "relative_path", "pathInProject")   # serena's, JetBrains'
 BODY_KEYS = ("body", "data", "json", "files", "form", "content")   # an http call with one of these sends data
 # Browser Use actions that send data to the page they run on
 TYPING = ("input", "upload_file", "send_keys", "select_dropdown")
@@ -22,6 +82,22 @@ PAYEE_KEYS = ("payee", "to", "recipient", "destination", "account", "account_num
 FS_OPS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit", "Read": "read",
           "Grep": "read", "Glob": "read"}
 
+# The LangChain adapter uses these names for Deep Agents tools whose implementation it recognizes.
+# Keep the framework name in the record so the signer can reconcile it against the model's tool call.
+DEEP_AGENTS_TOOLS = {"deepagents:ls": "LS", "deepagents:read_file": "Read", "deepagents:write_file": "Write",
+                    "deepagents:edit_file": "Edit", "deepagents:glob": "Glob", "deepagents:grep": "Grep",
+                    "deepagents:execute": "Bash"}
+
+
+def tool_class(tools, tool):
+    """The class `tools` (a policy's `tools:` map) gives `tool`: its name, else the most specific glob, else "unknown"."""
+    tool = DEEP_AGENTS_TOOLS.get(tool, tool)
+    if tool in tools:
+        return tools[tool]
+    # the most specific glob wins (most characters that are not * or ?), so mcp:postgres/* beats mcp:*/*
+    hits = sorted((-len(pat.replace("*", "").replace("?", "")), pat) for pat in tools if fnmatch.fnmatchcase(tool, pat))
+    return tools[hits[0][1]] if hits else "unknown"
+
 
 _CI_WORKFLOW = re.compile(r"(?:^|/)(?:\.github/(?:workflows/[^/].*|actions/(?:[^/]+/)+action\.ya?ml)|"
                           r"\.gitlab-ci\.yml|\.circleci/config\.yml|azure-pipelines\.ya?ml|jenkinsfile)$")
@@ -29,9 +105,14 @@ _CI_WORKFLOW = re.compile(r"(?:^|/)(?:\.github/(?:workflows/[^/].*|actions/(?:[^
 # text names GITHUB_SHA other than as `$GITHUB_SHA` or `${GITHUB_SHA…}` (`GITHUB_SHA=$TOKEN`, an `env:` key): then
 # it is read as any other variable.
 _CI_PUBLIC_SHA = re.compile(r"(\$\{?)?\bGITHUB_SHA\b")
-# a skill OpenHands loads from a project's or the home folder's .agents/skills/ (any .md there, at any depth), whose
-# invoke_skill runs each !`cmd` in it with shell=True (openhands-sdk skills/execute.py)
-_AGENT_SKILL = re.compile(r"(?:^|/)\.agents/skills/(?:[^/]+/)*[^/]+\.md$")
+# a skill OpenHands loads, whose invoke_skill runs each !`cmd` in it with shell=True (openhands-sdk skills/execute.py):
+# any .md under a project's or the home folder's .agents/skills/, at any depth, and an instruction file it loads as a
+# skill, by its whole name in lower case (openhands-sdk 1.63.1: Skill.PATH_TO_THIRD_PARTY_SKILL_NAME in skills/skill.py,
+# matched with name.lower() by find_third_party_files in skills/utils.py). It runs them from the working folder and
+# the repository root; ones in folders below (find_nested_third_party_files) are path rules it shows but doesn't run.
+# The signer can't tell which folder is which, so such a name is read in any folder
+_AGENT_SKILL = re.compile(
+    r"(?:^|/)(?:\.agents/skills/(?:[^/]+/)*[^/]+\.md|(?:agents|agent|claude|gemini)\.md|\.cursorrules)$")
 
 
 def _texts(value):

@@ -25,8 +25,9 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-from .. import privacy
+from .. import privacy, provenance
 from ..format.canon import event_hash as jcs_hash
+from ..policy2.engine import Engine
 from .core import COMMITTED, GENESIS, SCHEMA, UNFINISHED, Run, content_hash, event_hash, load_run, verify
 from .evals import list_runs
 
@@ -55,13 +56,14 @@ def store_runs(data_dir: str) -> Dict[str, int]:
 
 def store_records(data_dir: str, run: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
     """run_id -> records of every client run (or only run `run`) in the store of signer data dir `data_dir`, read
-    without its lock."""
+    without its lock. A why log cites a run by its id alone, so a run id two tenants share is left out: which tenant's
+    records it means can't be told."""
     from ..signer.pipeline import SIGNER_RUN
     r = _store(data_dir)
-    # lean: keyed by run id alone, tenants dropped (run ids are random); key by (tenant, run_id) if ids may collide
     try:
-        return {key[1]: list(r.iter_run(*key)) for key in list(r.runs)
-                if key != SIGNER_RUN and run in (None, key[1])}
+        keys = [key for key in list(r.runs) if key != SIGNER_RUN and run in (None, key[1])]
+        ids = [key[1] for key in keys]
+        return {key[1]: list(r.iter_run(*key)) for key in keys if ids.count(key[1]) == 1}
     finally:
         r.close()
 
@@ -106,25 +108,44 @@ def _call_id(r: Dict[str, Any]) -> Optional[str]:
 def held_calls(recs: List[Dict[str, Any]]):
     """(folds, owners) of a run's records. owners: approval_id -> the run_seq of the decision its request was for (the
     latest decision under the request's call id and attempt). folds: run_seq -> the held call's run_seq, for each decision
-    that is the held call's retry with its own id (LangGraph's resume). A consume names a call id and attempt, not a
-    decision, so a decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it has
-    no approval request of its own; no binding_mismatch of the held call's approval comes after it; a consume of that
-    approval under the id does. When in doubt a decision is a call of its own: a call shown twice is a small fault, a
-    deny hidden under an approved call a serious one."""
+    that is the held call's retry with its own id (LangGraph's resume). A consume whose ext.approval.decision names a
+    decision (format 1.8) folds it when it is an ask of the held call's tool and tool_call_id (a later attempt included),
+    recorded after the held call and before the consume, and the consume is under that decision's own call and attempt;
+    another name, or one the bundle doesn't hold there, is a call of its own. Without the name a consume gives a call id
+    and attempt, not a decision, so a decision is that retry only when all hold: it asks, for the held call's tool, id and
+    attempt; it has no approval request of its own; no binding_mismatch of the held call's approval comes after it; a
+    consume of that approval under the id does. When in doubt a decision is a call of its own: a call shown twice is a
+    small fault, a deny hidden under an approved call a serious one."""
     decs, owners, mism, cons = {}, {}, {}, {}   # (id, attempt) -> its decisions; approval_id -> (its owner, key)
+    named = {}                                  # approval_id -> (decision_id, the consume's run_seq, its key)
+    dec_by_id = {}                              # decision_id -> (run_seq, key, tool, decision)
     for r in recs:
         e, t, d = r["event"], r["event"]["type"], r["event"]["data"]
         key = (_call_id(r), e.get("attempt"))
         if t == "policy.decision":
             decs.setdefault(key, []).append((e["run_seq"], d.get("tool"), d.get("decision")))
+            if d.get("decision_id"):
+                dec_by_id[d["decision_id"]] = (e["run_seq"], key, d.get("tool"), d.get("decision"))
         elif t == "approval.request" and decs.get(key):
             owners[d.get("approval_id")] = decs[key][-1], key
         elif t == "approval.binding_mismatch":
             mism[d.get("approval_id")] = e["run_seq"]   # the latest
         elif t == "approval.consumed":
             cons.setdefault(d.get("approval_id"), []).append((e["run_seq"], key))
+            ext = e.get("ext") if isinstance(e.get("ext"), dict) else {}
+            if isinstance(ext.get("approval.decision"), str):
+                named.setdefault(d.get("approval_id"), []).append((ext["approval.decision"], e["run_seq"], key))
     folds, own = {}, {o[0][0] for o in owners.values()}
     for aid, ((h, tool, _), key) in owners.items():
+        if aid in named:   # the consume names its decision (format 1.8): the named ask folds; another kind stays visible
+            for did, cseq, ckey in named[aid]:
+                seq, dkey, dtool, decision = dec_by_id.get(did, (None, None, None, None))
+                # the consume must be the named decision's own call and after it; the retry may be a later attempt
+                # of the held call's id (the signer reuses the approval), never another call's
+                if seq is not None and seq > h and cseq > seq and ckey == dkey and dkey[0] == key[0] \
+                        and dtool == tool and decision == "ask" and seq not in own:
+                    folds[seq] = h
+            continue
         for seq, dtool, decision in decs[key]:
             if seq > h and decision == "ask" and dtool == tool and seq not in own and mism.get(aid, -1) < seq \
                     and any(c > seq and k == key for c, k in cons.get(aid, ())):
@@ -187,6 +208,60 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
         if c["seq"] in appr:
             c["approval"] = appr[c["seq"]]
     return calls
+
+
+def signed(run: Run, records: Dict[str, List[Dict[str, Any]]]):
+    """(the exact edges the signer's `records` back in why run `run`, influence.signed_edges; the run_seq of each such
+    call's signed decision, by its node; merge's alerts on the log) over records the caller read and checked: no edges
+    when the log fails merge's check against them (a citation that doesn't match its record or its agent's run, a
+    record cited twice, one the log owes and doesn't cite, a run it cites that isn't among them). A call's record is the
+    one it cites, and a result is the call of the decision it names. An edge stays only where the source's content in
+    the log holds the call's argument in the log, as the index reads values: a log that gives a call another call's
+    citation (merge's check can't tell) otherwise traces it to content its argument isn't in. A call whose arguments are
+    only their commitment (an import of its records alone) has no argument in the log to say otherwise."""
+    from .influence import signed_edges
+    alerts = check(run, records)[1]   # each problem of an event is an alert too
+    if alerts:
+        return frozenset(), {}, alerts
+    decision_of, record, decision = lookups(records)
+    by_id = run.by_id()
+    edges = frozenset(e for e in signed_edges(run, decision_of, record) if _logged(run, by_id, *e))
+    calls = {e[0] for e in edges}
+    return edges, {"ev:" + ev["id"]: (ev["tracekit"]["run_id"], decision(ev["tracekit"]["run_id"], ev["tracekit"]["run_seq"]))
+                   for ev in run.of_type("action") if "ev:" + ev["id"] in calls}, []
+
+
+def _logged(run: Run, by_id: Dict[str, Dict[str, Any]], call: str, field: Any, kind: Any, _seq: Any, src: str) -> bool:
+    """Whether the content source event `src` brought, in the log, holds argument `field` of `call` in the log as a
+    value of `kind` the index reads (a call's arguments as the signer reads them, without an address's host); true for
+    a call whose arguments are only their commitment."""
+    args = run.value(by_id[call[3:]].get("args_ref"))
+    if isinstance(args, dict) and args.get("content") == COMMITTED:
+        return True
+    ev = by_id[src[3:]]
+    held = run.value(ev.get("ref") if ev["type"] in ("input", "message") else ev.get("result_ref"))
+    if not isinstance(args, dict) or field not in args or isinstance(held, dict) and held.get("content") == COMMITTED:
+        return False
+    return bool({(k, v) for k, v in provenance.values(args[field], email_hosts=False)[0] if k == kind}
+                & set(provenance.values(held)[0]))
+
+
+def lookups(records: Dict[str, List[Dict[str, Any]]]):
+    """(decision_of, record, decision) over signed records: the provenance the decision of the call a record is of
+    recorded (a result is the call of the decision it names, never another decision under its tool call id; that the
+    call is of the tool, merge's check says); a record's type, trust and source; the run_seq of a record's call's
+    decision."""
+    at = {rid: _at(_calls(recs)) for rid, recs in records.items()}
+    index = {(r["event"]["run_id"], r["event"]["run_seq"]): r["event"] for recs in records.values() for r in recs}
+
+    def decision_of(run_id, run_seq, _tool):
+        call = at.get(run_id, {}).get(run_seq)
+        return (call["decision"]["event"]["data"].get("provenance") or []) if call else None
+
+    def record(run_id, run_seq):
+        e = index.get((run_id, run_seq))
+        return e and (e["type"], e["data"].get("trust"), e["data"].get("source"))
+    return decision_of, record, lambda run_id, run_seq: at[run_id][run_seq]["decision"]["event"]["run_seq"]
 
 
 def _at(calls: Dict[int, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
@@ -275,6 +350,16 @@ class _Writer:
 
 # --------------------------------------------------------------------------- one v2 run
 
+def _result_trust(decision: Dict[str, Any], reasons, engines: Dict[str, Any]) -> str:
+    """A call's result's trust under the policy its decision records (its `untrusted` list); a policy `reasons` doesn't
+    have reads untrusted, so nothing unknown is shown as trusted."""
+    h = decision.get("policy_hash")
+    if h not in engines:
+        pol = getattr(reasons, "policies", {}).get(h)
+        engines[h] = pol and Engine(pol)
+    return "trusted" if engines[h] and not engines[h].untrusted_results(decision["tool"]) else "untrusted"
+
+
 def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[str, Dict[str, str]]]) -> str:
     first = recs[0]["event"]
     w = _Writer(out_dir, first["run_id"], first["tenant"])
@@ -293,13 +378,15 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
     final = recs[-1]["event"]["type"] == "run.final"   # an open run's newest calls may still be running
     seen: List[Dict[str, Any]] = []        # what the run had observed so far: a model exchange's context
     decision_of: Dict[str, str] = {}       # tool_use id -> the decision event of the exchange that asked for it
+    results: Dict[str, Dict[str, Any]] = {}   # tool_use id -> the context entry of the call's result
+    engines: Dict[str, Any] = {}           # policy hash -> its Engine (None: a policy `reasons` doesn't have)
     for r in recs:
         e, d, t = r["event"], r["event"]["data"], r["event"]["type"]
         ev = None
         if t == "run.registered":
             ev = w.emit(agent, "agent.start", e["ts"], r, parent=None, role="")
         elif t == "input.observed":
-            kind = "task" if d["source"] == "task" else "input"
+            kind = "task" if d["source"] == "task" and d["trust"] == "trusted" else "input"   # the run's own task only
             ev = w.emit(agent, "input", e["ts"], r, ref=w.blob({"content": COMMITTED, **d["output"]}),
                         source=d["source"], trust=d["trust"], kind=kind)
             seen.append({"ref": ev["ref"], "kind": kind, "source": d["source"], "trust": d["trust"],
@@ -310,8 +397,13 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
                 any(x["event"]["data"].get("phase") != "request" for x in exchanges[d["exchange_id"]]):
             ex = [x["event"]["data"] for x in exchanges[d["exchange_id"]]]
             uses = [u for x in ex for u in x.get("tool_uses") or []]
+            # the results the LLM gateway (T2) recorded this exchange sending the model: in its context by the gateway's
+            # own record, where the rest of the context is reconstructed
+            sent = {i: results[i] for x in exchanges[d["exchange_id"]] if x["event"].get("source") == "gateway"
+                    for i in x["event"]["data"].get("tool_results_sent") or () if i in results}
             ev = w.emit(agent, "decision", e["ts"], r, model=d["model"], purpose="", params={}, seed=None,
-                        context=list(seen), ablated=[], output=w.blob({"content": COMMITTED, "tool_uses": uses}),
+                        context=list(seen) + list(sent.values()), ablated=[],
+                        output=w.blob({"content": COMMITTED, "tool_uses": uses}),
                         usage=next((x["usage"] for x in ex if x.get("usage")), {}),
                         status="error" if any(x.get("error") for x in ex) else "ok", duration_ms=None,
                         context_mode="reconstructed")
@@ -338,7 +430,12 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
                         status=("ok" if d["ok"] else "error") if ran else "blocked" if refused else "error",
                         mode="live" if ran else "blocked" if refused else "unrecorded",
                         sensitive=dd["decision"] in ("deny", "ask") or bool(dd.get("provenance")), duration_ms=None,
-                        policy=pol, provenance=_provenance(call, lambda _, seq: by_seq.get(seq)), **extra)
+                        policy=pol, provenance=_provenance(call, lambda _, seq: by_seq.get(seq)),
+                        # a result's trust under the policy the call was decided under, as the signer indexed it
+                        **({"trust": _result_trust(dd, reasons, engines)} if ran else {}), **extra)
+            if ran:
+                results[d["tool_use_id"]] = {"ref": ev["result_ref"], "kind": "result", "source": "tool:" + dd["tool"],
+                                             "trust": ev["trust"], "from_event": ev["id"], "seen": "gateway"}
         elif t == "run.final":
             w.emit("run", "run.end", e["ts"], r, outcome=None)
         if ev is not None:
@@ -404,6 +501,9 @@ def _mismatch(ev: Dict[str, Any], t: Dict[str, Any], index: Dict[tuple, Dict[str
         return f"the run was registered for agent {(d.get('agent') or {}).get('name')!r}"
     if ev["type"] in ("input", "message") and d["trust"] != ev["trust"]:
         return f"the record says {d['trust']}, the log {ev['trust']}"
+    if ev["type"] == "input" and (ev.get("kind") == "task") != (d["source"] == "task" and d["trust"] == "trusted"):
+        return "the log's kind is task and the record is not the run's task" if ev.get("kind") == "task" else \
+            "the record is the run's task and the log's kind is not"
     if ev["type"] == "input" and d["source"] != ev["source"][:256]:
         return f"the record's source is {d['source']!r}"
     if ev["type"] == "decision" and d["model"] != ev["model"][:128]:

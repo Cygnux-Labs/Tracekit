@@ -1,0 +1,20 @@
+{
+  "name": "tracekit",
+  "version": "1.8.0",
+  "description": "Signed, tamper-evident evidence of what your coding agent did: every tool call checked by a policy before it runs, risky ones held for you, and each one recorded in a hash-chained, Ed25519-signed log that verifies offline.",
+  "author": {
+    "name": "Cygnux Labs"
+  },
+  "homepage": "https://github.com/Cygnux-Labs/Tracekit",
+  "repository": "https://github.com/Cygnux-Labs/Tracekit",
+  "license": "MIT",
+  "keywords": [
+    "audit",
+    "security",
+    "provenance",
+    "hooks"
+  ],
+  "logo": ".claude-plugin/icon.png",
+  "skills": "./skills/",
+  "hooks": "./hooks/cursor.json"
+}

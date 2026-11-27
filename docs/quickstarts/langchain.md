@@ -9,7 +9,7 @@ means](../quickstart-v2.md#what-dev-assurance-means)).
 ```sh
 git clone --depth 1 https://github.com/Cygnux-Labs/Tracekit && cd Tracekit
 python3 -m venv .venv && . .venv/bin/activate
-pip install . 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3'
+pip install . 'langchain>=1.4,<2' 'langgraph>=1.2,<1.3'
 python examples/v2/langchain/agent.py --scripted
 ```
 
@@ -19,7 +19,7 @@ A mock model drives a real graph: `ls` is allowed, `sudo rm -rf /` is denied and
 ## 1. Install
 
 ```sh
-pip install tracekit-ai 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3' langchain-openai
+pip install tracekit-ai 'langchain>=1.4,<2' 'langgraph>=1.2,<1.3' langchain-openai
 export OPENAI_API_KEY=...        # the model below is OpenAI's
 ```
 
@@ -136,6 +136,8 @@ runs it on a page with a planted instruction. How it works: [fork replay](../why
   come from another account: [system mode](../quickstart-v2.md#system-mode-linux-macos-experimental).
 - **Witnesses** cosign the signer's checkpoints from another host, so a rolled-back or forked log shows:
   [witnesses](../witnesses.md). Pin them in the trust config and the report reads `Assurance: witnessed`.
-- **Your own policy**: the dev signer uses the coding pack plus two demo rules (`tracekit/policy2/packs/dev.yaml`); a
-  configured signer takes `policy:` in `signer.yaml`.
+- **Your own policy**: the dev signer runs `tracekit/policy2/packs/dev.yaml` (the coding, browser, data, network,
+  cloud, comms and core packs, two demo rules, unmapped tools flagged) and can't take another. To run yours, start
+  `tracekit signer serve --config signer.yaml` with `policy:` set and point the agent at it with `TRACEKIT_SIGNER`:
+  [run your own policy on your machine](../policy-guide.md#run-your-own-policy-on-your-machine).
 - **Reference**: [the LangChain integration](../integrations/langchain.md), with every option and what it doesn't cover.

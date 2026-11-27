@@ -34,10 +34,12 @@ mode lets the call run unrecorded, with a warning). Since 1.2, `decide` returns 
 `unavailable: True` instead of raising `SignerUnavailable`: a loop that caught that exception to block the call now
 gets `{"decision": "deny", ...}` and blocks by the decision. `approval_consume` doesn't raise either: a signer that
 can't be reached or refuses answers `{"ok": False, ...}`, and the call doesn't run. `complete` never raises: the call
-already ran, so a result the signer can't take is a warning, and the signer records the call as decided and not
-completed. To record
-the OpenAI, Anthropic or Google Gen AI calls made inside the `with` block into its run as well, add `from tracekit
-import autotrace; autotrace.instrument(None)` before it.
+already ran, so a failure is a warning, with one of three outcomes. A result the signer refused, or that never went
+out, was not recorded: the bundle shows the call as decided and not completed. A result that went out and got no
+answer, or that the signer answered `unavailable`, may have been recorded: the bundle has its `tool.result` if it was,
+or a `decided_not_completed` gap if it wasn't. A retry the signer refused as already recorded was recorded, and there
+is no warning. To record the OpenAI, Anthropic or Google Gen AI calls made inside the `with` block into its run as
+well, add `from tracekit import autotrace; autotrace.instrument(None)` before it.
 
 ## Frameworks that catch exceptions
 
@@ -113,5 +115,7 @@ quickstart](../quickstart-v2.md#export-and-verify-by-hand) explains every line.
   come from another account: [system mode](../quickstart-v2.md#system-mode-linux-macos-experimental).
 - **Witnesses** cosign the signer's checkpoints from another host, so a rolled-back or forked log shows:
   [witnesses](../witnesses.md). Pin them in the trust config and the report reads `Assurance: witnessed`.
-- **Your own policy**: the dev signer uses the coding pack plus two demo rules (`tracekit/policy2/packs/dev.yaml`); a
-  configured signer takes `policy:` in `signer.yaml`.
+- **Your own policy**: the dev signer runs `tracekit/policy2/packs/dev.yaml` (the coding, browser, data, network,
+  cloud, comms and core packs, two demo rules, unmapped tools flagged) and can't take another. To run yours, start
+  `tracekit signer serve --config signer.yaml` with `policy:` set and point the agent at it with `TRACEKIT_SIGNER`:
+  [run your own policy on your machine](../policy-guide.md#run-your-own-policy-on-your-machine).

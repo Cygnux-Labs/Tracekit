@@ -44,11 +44,12 @@ import itertools
 import threading
 import uuid
 import warnings
+from types import FunctionType
 from typing import Union
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, ToolMessage
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, StructuredTool
 from langchain_core.runnables.fallbacks import RunnableWithFallbacks
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph._internal._constants import CONFIG_KEY_SCRATCHPAD
@@ -61,12 +62,53 @@ from langgraph.types import interrupt
 
 from tracekit.format.canon import event_hash
 from tracekit.integrations import said, version_check
+from tracekit.integrations.recording_warning import recording_warning
 from tracekit.integrations.claude_code import _tool_class
 from tracekit.integrations.executor_tools import CALL_ID, EXECUTOR
+from tracekit.policy2.classes import DEEP_AGENTS_TOOLS
 from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 _FRAMEWORK = version_check.framework("langgraph")
+
+# Deep Agents 0.7.41, deepagents/middleware/filesystem.py: FilesystemMiddleware._create_tools
+# binds each StructuredTool to its own sync and async implementations and argument schema.
+_DEEP_AGENTS_ARGS = {
+    "ls": {"path"},
+    "read_file": {"file_path", "offset", "limit"},
+    "write_file": {"file_path", "content"},
+    "edit_file": {"file_path", "old_string", "new_string", "replace_all"},
+    "glob": {"pattern", "path"},
+    "grep": {"pattern", "path", "glob", "output_mode", "max_count"},
+    "execute": {"command", "timeout"},
+}
+
+
+def _policy_tool(call, tool):
+    """The signer name of a tool call. The model and handler keep the original name and arguments."""
+    name, args = call["name"], call["args"]
+    if name in DEEP_AGENTS_TOOLS:
+        return None   # reserved for the adapter, not a name a LangChain tool can choose
+    tagged = f"deepagents:{name}"
+    if tagged not in DEEP_AGENTS_TOOLS or type(tool) is not StructuredTool:
+        return name
+    for prefix, attr in (("sync", "func"), ("async", "coroutine")):
+        implementation = getattr(tool, attr)
+        if (not isinstance(implementation, FunctionType) or
+                implementation.__globals__.get("__name__") != "deepagents.middleware.filesystem" or
+                getattr(implementation.__code__, "co_qualname", None) !=
+                f"FilesystemMiddleware._create_{name}_tool.<locals>.{prefix}_{name}"):
+            return name
+    fields = _DEEP_AGENTS_ARGS[name]
+    if tool.args.keys() != fields or args.keys() - fields:
+        return name
+    if name == "execute" and not isinstance(args.get("command"), str):
+        return name
+    return tagged
+
+
+def _call_digest(call, tool):
+    return event_hash({"tool": tool, "args": call["args"]})
 
 
 # the held pass a ToolNode task runs (TracekitMiddleware._pass): `ns`, the task's checkpoint namespace (a tool may run a
@@ -95,6 +137,7 @@ class TracekitMiddleware(AgentMiddleware):
         # lean: a task never run again (a thread left paused, a node that raised for good) keeps its entries for the
         # middleware's life; drop them by age if agents leave many threads that way
         self._plans = {}
+        self._grants = set()   # the RPCs this gate warned about (call_state, call_claim): one warning each
         self.said = said.Said(lambda **f: self._send("model_event", **f), lambda: signer.status({}))
 
     def _send(self, method, **kw):
@@ -117,19 +160,22 @@ class TracekitMiddleware(AgentMiddleware):
         await asyncio.to_thread(self.said, *_said(request, out))
         return out
 
-    def _new(self, call, config, attempt):
+    def _new(self, call, tool, config, attempt):
         """A call's plan, decided now: `decide`, and `approval_request` when it asks. A plan's `state`: `decide` (the
         signer's approval_consume comes before it runs), `run` (consumed, or unrecorded: the signer unreachable and the
         run failing open), `paused` (its tool paused the run after its consume: it goes on, consumed once), `open`
         (consumed and not ended, as the signer recorded it: paused, or cut off), `done` (`out` is what the model reads),
         `raised` (its tool raised: a retry runs it as a new attempt)."""
-        digest = event_hash({"tool": call["name"], "args": call["args"]})
-        p = {"attempt": attempt, "d": None, "digest": digest, "entry": None, "state": "decide", "out": None}
+        digest = _call_digest(call, tool)
+        p = {"attempt": attempt, "d": None, "digest": digest, "tool": tool,
+             "entry": None, "state": "decide", "out": None}
+        if tool is None:
+            return _done(p, self._refusal(call, "this tool name is reserved by Tracekit"))
         self.said.decided(call["id"])   # the call its recorded response left for now
         try:   # LangChain hands over JSON-decoded args, never the model's raw string
-            d = self._event("decide", call, attempt, tool=call["name"], args_source="parsed", args=call["args"])
+            d = self._event("decide", call, attempt, tool=tool, args_source="parsed", args=call["args"])
         except SignerUnavailable as e:   # the run's fail mode for the tool's class
-            if fail_open(self.fail_modes, _tool_class(call["name"])):
+            if fail_open(self.fail_modes, _tool_class(DEEP_AGENTS_TOOLS.get(tool, tool))):
                 p["state"] = "run"
                 return p
             return _done(p, self._refusal(call, f"signer unavailable: {e}"))
@@ -156,27 +202,43 @@ class TracekitMiddleware(AgentMiddleware):
         executor runs the arguments the consume returns."""
         try:
             c = self.signer.approval_consume({"request_id": uuid.uuid4().hex, **self.run, "tool_call_id": call["id"],
-                                              "attempt": p["attempt"], "tool": call["name"], "args_source": "parsed",
+                                              "attempt": p["attempt"], "tool": p["tool"], "args_source": "parsed",
                                               "args": call["args"], **({"approval_id_hint": hint} if hint else {})})
         except (RPCError, SignerUnavailable) as e:   # e.g. a hint that is not an id at all
             c = {"ok": False, "rule_ids": [], "reason": str(e)}
         if not c["ok"]:
             return _done(p, self._refusal(call, refusal(c, c.get("approval_id"))))
         if "args" in c:   # T2: the signer's copy is what runs
-            p["d"]["args"], p["d"]["args_digest"] = c["args"], event_hash({"tool": call["name"], "args": c["args"]})
+            p["d"]["args"], p["d"]["args_digest"] = c["args"], _call_digest({"args": c["args"]}, p["tool"])
         p["state"] = "run"
         return p
 
-    def _recorded(self, call):
+    def _warn_grant(self, rpc, why):
+        """Say once, per gate, that the signer has no `rpc` or refuses it: an explicit `authorize` list grants only what
+        it names, so an identity written before these RPCs existed runs calls again or refuses them and no line says
+        which grant is missing. The wording follows the `status` warning (sdk/client.py)."""
+        if rpc in self._grants:
+            return
+        self._grants.add(rpc)
+        warnings.warn(f"tracekit: {why}: grant this identity {rpc} in signer.yaml authorize, beside decide and "
+                      "approval_consume", stacklevel=3)
+
+    def _recorded(self, call, tool):
         """The plan of a call as the signer recorded its latest attempt (call_state), for its node task run again after
         a resume, in this process or another; None when the signer never decided it, can't say, or the call raised (a
         retry runs it as a new attempt). A result comes back as a stand-in: the signer keeps a commitment to it, not
         the result."""
-        digest = event_hash({"tool": call["name"], "args": call["args"]})
+        digest = _call_digest(call, tool)
         state = getattr(self.signer, "call_state", None)   # a SignerAPI of the app's own may have none
+        if state is None:
+            self._warn_grant("call_state", "the signer has no call_state")
         try:
             s = state({**self.run, "tool_call_id": call["id"], "args_digest": digest}) if state else {}
-        except (RPCError, SignerUnavailable):   # decided again (_new), and judged by the signer then
+        except SignerUnavailable:   # decided again (_new), and judged by the signer then
+            return None
+        except RPCError as e:   # decided again too; a refusal of the grant is what an authorize list leaves out
+            if e.code == "forbidden":
+                self._warn_grant("call_state", f"the signer refused call_state ({e.message})")
             return None
         if "attempt" not in s:
             return None
@@ -184,7 +246,7 @@ class TracekitMiddleware(AgentMiddleware):
             self._attempts[call["id"]] = s["attempt"] + 1
             return None
         d = {k: s[k] for k in ("decision", "decision_id", "rule_ids", "reason", "send_result") if k in s}
-        p = {"attempt": s["attempt"], "d": dict(d, args_digest=digest), "digest": digest, "state": "decide",
+        p = {"attempt": s["attempt"], "d": dict(d, args_digest=digest), "digest": digest, "tool": tool, "state": "decide",
              "out": None, "entry": _entry(call, d, s["approval_id"]) if "approval_id" in s else None}
         if "result" in s:
             return _done(p, ToolMessage(f"ran; its result is recorded at run_seq {s['result']['run_seq']}",
@@ -211,7 +273,7 @@ class TracekitMiddleware(AgentMiddleware):
         """interrupt() for the approvals of `entries`, the first one's at the top and all in `approvals`."""
         return interrupt({"tracekit": {**entries[0], "approvals": entries}})
 
-    def _pass(self, calls, config):
+    def _pass(self, calls, tools, config):
         """{tool_call_id: plan} of a held pass: a ToolNode running several calls of one model message in one node task,
         which LangGraph runs again from its start on each resume (and RetryPolicy retry) and whose interrupt() calls it
         pairs with resume values by the order they are reached. Each call's plan is established first: what this
@@ -226,11 +288,15 @@ class TracekitMiddleware(AgentMiddleware):
             if ids[call["id"]] > 1:   # each refused in its own message (_gate)
                 plans[call["id"]] = {"d": None, "entry": None, "held": True, "state": "done", "twice": ids[call["id"]]}
                 continue
+            tool = _policy_tool(call, tools.get(call["name"]))
             p = _resumed(self._plans.get((ns, call["id"])))
-            if p is None and answered:
-                p = self._recorded(call)
+            if p is not None and p["tool"] != tool:
+                _done(p, self._refusal(call, "the tool changed after the decision"))
+                p["entry"] = None
+            if p is None and answered and tool is not None:
+                p = self._recorded(call, tool)
             if p is None or p["state"] == "raised":
-                p = self._new(call, config, self._attempts.get(call["id"], 0))
+                p = self._new(call, tool, config, self._attempts.get(call["id"], 0))
             p["held"] = True   # its plan stays until the node ends
             plans[call["id"]] = self._plans[ns, call["id"]] = p
         asked = [p["entry"] for p in plans.values() if p["entry"]]
@@ -254,24 +320,28 @@ class TracekitMiddleware(AgentMiddleware):
         (_pass). A single call is decided, paused for when it asks, and consumed in each pass of its node, as the
         resume hint names its approval; one whose tool paused the run after its consume goes on, consumed once."""
         call, config = request.tool_call, request.runtime.config
+        tool = _policy_tool(call, request.tool)
         held = _PASS.get()
         if held is not None and held["ns"] == _ns(config) and call["id"] in held["plans"]:
             p = held["plans"][call["id"]]
             if p.get("twice"):
                 return self._refusal(call, f"the message has {p['twice']} calls with id {call['id']!r}, so none of "
                                            "them runs"), p
-            if p["state"] != "done" and event_hash({"tool": call["name"], "args": call["args"]}) != p["digest"]:
+            if p["state"] != "done" and _call_digest(call, tool) != p["digest"]:
                 _done(p, self._refusal(call, "the call's arguments changed after the decision"))   # an outer wrapper's
             return p["out"], p
         key, answered = (_ns(config), call["id"]), _answered(config)
         p = _resumed(self._plans.get(key))   # one running in another pass of its node is refused by _claim
-        if p is None and answered:
-            p = self._recorded(call)
+        if p is not None and p["tool"] != tool:
+            _done(p, self._refusal(call, "the tool changed after the decision"))
+            return p["out"], p
+        if p is None and answered and tool is not None:
+            p = self._recorded(call, tool)
             if p is not None:
                 self._opened([p], answered, [p["entry"]] if p["entry"] else [])
                 p = p if p["state"] == "paused" else None
         if p is None:
-            p = self._new(call, config, self._attempts.get(call["id"], 0))
+            p = self._new(call, tool, config, self._attempts.get(call["id"], 0))
         hint = None
         if p["entry"] is not None:   # in every pass of its node, so a tool's own interrupt() comes after it
             resume = self._pause([p["entry"]])
@@ -295,11 +365,17 @@ class TracekitMiddleware(AgentMiddleware):
         if not goes_on:
             return None
         claim = getattr(self.signer, "call_claim", None)   # a SignerAPI of the app's own may have none
+        if claim is None:
+            self._warn_grant("call_claim", "the signer has no call_claim")
         req = {"request_id": uuid.uuid4().hex, **self.run, "tool_call_id": call["id"], "attempt": p["attempt"],
                "answers": _answered(config)}
         try:
             c = claim(req) if claim else {"ok": False, "reason": "the signer has no call_claim"}
-        except (RPCError, SignerUnavailable) as e:
+        except SignerUnavailable as e:
+            c = {"ok": False, "reason": str(e)}
+        except RPCError as e:   # a refusal of the grant is what an authorize list leaves out
+            if e.code == "forbidden":
+                self._warn_grant("call_claim", f"the signer refused call_claim ({e.message})")
             c = {"ok": False, "reason": str(e)}
         return None if c["ok"] else _done(p, self._refusal(call, c.get("reason") or "not claimed"))["out"]
 
@@ -343,13 +419,15 @@ class TracekitMiddleware(AgentMiddleware):
             fields["result"] = result_field(decision.get("send_result"), out.content)
             if out.status == "error":
                 fields["status"] = "error"
-        if event_hash({"tool": call["name"], "args": call["args"]}) != decision["args_digest"]:
+        if _call_digest(call, p["tool"]) != decision["args_digest"]:
             fields.update(status="error", error="the call's arguments changed after the decision")
         try:
             self._event("complete", call, p["attempt"], decision_id=decision["decision_id"],
                         args_digest=decision["args_digest"], **fields)
         except Exception as e:
-            warnings.warn(f"tracekit: outcome of tool call {call['id']} not recorded: {e}", stacklevel=2)
+            message = recording_warning(f"outcome of tool call {call['id']}", e)
+            if message is not None:
+                warnings.warn(f"tracekit: {message}", stacklevel=2)
         self._attempts[call["id"]] = p["attempt"] + 1
 
     # lean: wrap_tool_call's signer calls block; awrap_tool_call runs them in a worker thread (issue #680)
@@ -568,7 +646,7 @@ def pass_func(self, input, config, runtime):
     gate, calls = _held(self, input)
     if gate is None:
         return _TOOL_NODE[0](self, input, config, runtime)
-    token, ended = _PASS.set({"ns": _ns(config), "plans": gate._pass(calls, config)}), False
+    token, ended = _PASS.set({"ns": _ns(config), "plans": gate._pass(calls, self.tools_by_name, config)}), False
     try:
         out, ended = _TOOL_NODE[0](self, input, config, runtime), True
     finally:
@@ -583,7 +661,7 @@ async def pass_afunc(self, input, config, runtime):
     gate, calls = _held(self, input)
     if gate is None:
         return await _TOOL_NODE[1](self, input, config, runtime)
-    plans = await asyncio.to_thread(gate._pass, calls, config)
+    plans = await asyncio.to_thread(gate._pass, calls, self.tools_by_name, config)
     token, ended = _PASS.set({"ns": _ns(config), "plans": plans, "node": self, "left": len(self._parse_input(input)[0]),
                               "done": asyncio.Event()}), False
     try:
@@ -723,7 +801,9 @@ class TracekitCheckpointer(BaseCheckpointSaver):
             n = next(self._reads)   # numbered after the write, so any later-numbered read includes it
             self._commit(n, self.saver.get_tuple(_latest(config)))
         except Exception as e:
-            warnings.warn(f"tracekit: checkpoint commitment for {_key(config)} not recorded: {e}", stacklevel=3)
+            message = recording_warning(f"checkpoint commitment for {_key(config)}", e)
+            if message is not None:
+                warnings.warn(f"tracekit: {message}", stacklevel=3)
 
     async def _awrote(self, config):
         try:
@@ -731,7 +811,9 @@ class TracekitCheckpointer(BaseCheckpointSaver):
             t = await self.saver.aget_tuple(_latest(config))
             await asyncio.to_thread(self._commit, n, t)   # the signer client blocks
         except Exception as e:
-            warnings.warn(f"tracekit: checkpoint commitment for {_key(config)} not recorded: {e}", stacklevel=3)
+            message = recording_warning(f"checkpoint commitment for {_key(config)}", e)
+            if message is not None:
+                warnings.warn(f"tracekit: {message}", stacklevel=3)
 
     def _commit(self, n, t):
         """Commit `t`, the thread's latest checkpoint as read `n` found it, unless a later read is committed already

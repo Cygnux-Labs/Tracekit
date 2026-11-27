@@ -9,13 +9,15 @@
 | Process-tree check for approvals | `/proc` | `ps(1)` | none: approvals are refused |
 | Harness binding (`init --harness`) | system mode | not available | not available |
 | Managed Claude Code settings | `/etc/claude-code/` | `/Library/Application Support/ClaudeCode/` | not wired up |
-| Hooks via the Claude Code plugin | supported | supported | no (the wrapper is POSIX shell) |
+| Hooks via the Claude Code plugin | supported | supported | supported (Git Bash, or PowerShell without it) |
 
 ## What "tested" means here
 
-The CI workflow runs the whole suite on Linux, macOS and Windows (Python 3.9, 3.12, 3.13). The macOS and Windows
-jobs are `continue-on-error`, so a failure there is visible but does not block a merge. Two more Linux jobs block
-merges: the root-only tests, and E8 (insider attacks against a real system-mode signer, docs/evaluation.md).
+The CI workflow runs the whole suite on Linux (Python 3.9, 3.12, 3.13; in three shards each, with a required check per
+Python version). The whole suite also runs on macOS and Windows (Python 3.9 and 3.13) on the merge queue and nightly,
+not on a pull request or a push to main; those jobs are `continue-on-error`, so a failure there is visible but does not
+block a merge. Two more Linux jobs block merges: the root-only tests, and E8 (insider attacks against a real
+system-mode signer, docs/evaluation.md).
 
 Tested locally:
 
@@ -53,6 +55,13 @@ Dev mode only. The signer listens on `127.0.0.1` with a random port and a token 
 Windows has no peer-credential call that Python exposes. Because the signer shares the agent's user, a Windows
 deployment's evidence is only as strong as its witness: point `--witness` at a repository or share the agent's user
 cannot rewrite (docs/witnesses.md).
+
+The Claude Code plugin's hook (`tracekit-hook` in Git Bash, `tracekit-hook.ps1` in PowerShell without it) runs only
+the Python `tracekit init` recorded, and init records one only from a uv tool or pipx install of `tracekit-ai`. On
+Windows those are uv's `%APPDATA%\uv\tools` (`%APPDATA%\uv\data\tools` where `%APPDATA%\uv\data` is, as older uv made
+it) and pipx's `%LOCALAPPDATA%\pipx\pipx\venvs` (or `~\pipx\venvs` where pipx still has it), unless `UV_TOOL_DIR` or
+`PIPX_HOME` moves them. The policy keeps the agent from writing them and the interpreters uv keeps in
+`%APPDATA%\uv\python` (`TK-D007`, `TK-D013`, `TK-A096`; [limits](limits.md)).
 
 Codex, Gemini CLI and Qwen Code (0.15.0 and later, which reads the hook's `"shell"`) run hooks through PowerShell on
 Windows (Codex through cmd.exe when PowerShell isn't found or the session has no single local environment), so

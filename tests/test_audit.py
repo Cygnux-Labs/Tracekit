@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from factories import TOO_DEEP_JSON
 from tracekit import __version__, agent_hooks, audit, cli
 from tracekit.integrations import harness_hooks
 from tracekit.signer.service import DEFAULT_POLICY, evaluate, load_policy
@@ -233,7 +234,7 @@ class TestAudit(unittest.TestCase):
 
     def test_a_line_nested_past_what_json_takes_is_malformed_and_the_rest_is_read(self):
         """Review of 1.5.3: its RecursionError made the whole file unreadable, its calls uncounted."""
-        _write_jsonl(self.root / "s.jsonl", ["[" * 5000 + "]" * 5000, _call("Bash", {"command": "ls"})])
+        _write_jsonl(self.root / "s.jsonl", [TOO_DEEP_JSON, _call("Bash", {"command": "ls"})])
         report = audit.audit(str(self.root))
         self.assertEqual((report["counts"]["allow"], report["skipped_malformed"], report["unreadable"]), (1, 1, []))
 
@@ -456,6 +457,53 @@ class TestAudit(unittest.TestCase):
         self.assertEqual([line for line in audit._by_day(report) if "Day " in line],
                          ["  Day 1: allow 0, flag 0, ask 0, deny 0", "  Day 2: allow 1, flag 0, ask 0, deny 0"])
 
+    def test_share_folds_into_weeks_over_28_days(self):
+        """#1123: over 28 days, --share folds day lines into 7-day weeks from the window's start (last week may be
+        shorter), clamping clock-ahead calls and dropping pre-window ones."""
+        def week(n, allow=0, ask=0, deny=0):
+            return f"  Week {n}: allow {allow}, flag 0, ask {ask}, deny {deny}"
+        _write_jsonl(self.root / "s.jsonl", [
+            _call("Bash", {"command": "rm -rf /"}, days_ago=52.5),   # day 8 from window start -> Week 2
+            _call("Bash", {"command": "ls"}, days_ago=52.5),
+            _call("Bash", {"command": "ls"}, days_ago=0.5),   # in the 4-day 9th week -> Week 9
+            _call("Bash", {"command": "ls"}, days_ago=65),   # before the window -> no week
+            _call("Bash", {"command": "ls"}, days_ago=-1)])   # a clock ahead -> clamps to Week 9
+        report = audit.audit(str(self.root), since="60d")
+        lines = audit.share(report).splitlines()
+        self.assertIn("Calls by decision and week (7 days each, week 1 from the window's start):", lines)
+        self.assertEqual([line for line in lines if "Day " in line], [])
+        self.assertEqual([line for line in lines if "Week " in line], [
+            week(1), week(2, allow=1, deny=1), week(3), week(4), week(5), week(6), week(7), week(8), week(9, allow=2)])
+        before = datetime.fromtimestamp(report["window"][0] - 3600, timezone.utc).isoformat()
+        ahead = datetime.fromtimestamp(report["window"][1] + 5 * 86400, timezone.utc).isoformat()
+        report["calls"].extend([{**report["calls"][0], "verdict": "deny", "time": before},
+                                {**report["calls"][0], "verdict": "ask", "time": ahead}])
+        self.assertEqual([line for line in audit._by_day(report) if "Week " in line], [
+            week(1), week(2, allow=1, deny=1), week(3), week(4), week(5), week(6), week(7), week(8),
+            week(9, allow=2, ask=1)])
+
+    def test_share_weekly_no_time_follows_last_week(self):
+        """#1123: in a weekly --share window, calls with no time print immediately after the last Week line."""
+        def week(n, deny=0):
+            return f"  Week {n}: allow 0, flag 0, ask 0, deny {deny}"
+        _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "rm -rf /"}, days_ago=50),
+                                                 {"tool": "Bash", "args": {"command": "ls"}}])
+        page = audit.share(audit.audit(calls=str(self.root / "calls.jsonl"), since="60d")).splitlines()
+        self.assertEqual(page[3:14], [
+            "Calls by decision and week (7 days each, week 1 from the window's start):",
+            week(1), week(2, deny=1), week(3), week(4), week(5), week(6), week(7), week(8), week(9),
+            "  No time: allow 1, flag 0, ask 0, deny 0"])
+
+    def test_share_at_28_days_keeps_daily_lines(self):
+        """#1123: 28 days is still daily, never folded into weeks."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"}, days_ago=0.5)])
+        lines = audit.share(audit.audit(str(self.root), since="28d")).splitlines()
+        self.assertIn("Calls by decision and day (24 hours each, day 1 from the window's start):", lines)
+        self.assertEqual([line for line in lines if "Week " in line], [])
+        self.assertEqual([line for line in lines if "Day " in line], [
+            *[f"  Day {d}: allow 0, flag 0, ask 0, deny 0" for d in range(1, 28)],
+            "  Day 28: allow 1, flag 0, ask 0, deny 0"])
+
     def test_share_has_no_day_lines_without_since(self):
         """Without --since a window starts at the first call: day lines would show how far back the transcripts go."""
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"}, days_ago=3),
@@ -580,6 +628,18 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(report["agents"], {"claude": {"folder": str(folder), "calls": 2, "sessions": 1}})
         self.assertEqual({c["agent"] for c in report["calls"]}, {"claude"})
         self.assertIn(f"\nread: claude ({folder}): 2 calls in 1 session\n", text)
+
+    def test_a_home_with_no_sessions_says_so_in_one_line(self):
+        """It printed every agent's folder, one wall of paths, and exited 2."""
+        home = self.root / "home"
+        home.mkdir()
+        with mock.patch.dict(os.environ, _home(home)):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            code, out, err = _run("--since", "7d")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("no coding-agent sessions found", err)
+        self.assertIn(str(home), err)
+        self.assertEqual(len(err.strip().splitlines()), 1 + ("experimental" in err), err)
 
     def test_help_names_every_reader(self):
         """#811: audit's description listed the agents it reads by hand, so a new reader had to remember to edit it."""
@@ -847,7 +907,7 @@ class TestAudit(unittest.TestCase):
 
     def test_agent_denies_what_its_hook_denies_before_mapping(self):
         """#730 review: Kilo's notebook_execute, Crush's sub-agents and a Devin call missing its argument are denied in
-        the hook before mapping."""
+        the hook before mapping; #929: so are OpenCode's and Kilo's batch."""
         _write_jsonl(self.root / "calls.jsonl", [_line("notebook_execute", {"cell": "print(1)"})])
         report = audit.audit(calls=str(self.root / "calls.jsonl"), agent="kilo")
         self.assertEqual((report["calls"][0]["verdict"], report["calls"][0]["rule_ids"]),
@@ -860,6 +920,12 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(audit.audit(calls=str(self.root / "calls.jsonl"), agent="crush")["counts"]["deny"], 1)
         _write_jsonl(self.root / "calls.jsonl", [_line("read", {"path_name": "notes.txt"})])   # no file_path
         self.assertEqual(audit.audit(calls=str(self.root / "calls.jsonl"), agent="devin")["counts"]["deny"], 1)
+        for harness in ("opencode", "kilo"):
+            _write_jsonl(self.root / "calls.jsonl", [_line("batch", {"tool_calls": []})])
+            batch_report = audit.audit(calls=str(self.root / "calls.jsonl"), agent=harness)
+            self.assertEqual((batch_report["calls"][0]["verdict"], batch_report["calls"][0]["rule_ids"]),
+                             ("deny", ["TK-HOOK-BLOCKED"]), harness)
+            self.assertEqual(batch_report["counts"]["ask"], 0, harness)
 
     def test_what_a_calls_file_option_cant_read_exits_2_with_the_reason(self):
         code, _, err = _run("--calls", str(self.root / "missing.jsonl"))
@@ -1000,8 +1066,12 @@ class TestAudit(unittest.TestCase):
             self.assertEqual(audit.codex_root(), str(self.root / "missing" / ".codex" / "sessions"))
             code, _, err = _run()
             self.assertEqual(code, 2)
-            self.assertIn("$CODEX_HOME/sessions", err)
-            self.assertIn("~/.codex/sessions", err)
+            self.assertIn("no coding-agent sessions found", err)
+            helped = io.StringIO()   # where each agent keeps its sessions is the help's
+            with contextlib.redirect_stdout(helped), self.assertRaises(SystemExit):
+                cli.main(["audit", "--help"])
+            self.assertIn("$CODEX_HOME/sessions", " ".join(helped.getvalue().split()))
+            self.assertIn("~/.codex/sessions", " ".join(helped.getvalue().split()))
 
     def _gemini_sessions(self) -> Path:
         """A Gemini CLI tmp folder (#715): a session written as JSON lines, its subagent's file, a session from before

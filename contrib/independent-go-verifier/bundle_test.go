@@ -238,6 +238,76 @@ func TestInspectBundleCore(t *testing.T) {
 		}
 	})
 }
+
+func TestRejectsMismatchedKeyDerivedOrigin(t *testing.T) {
+	files, trust := bundleFixture(t)
+	var config map[string]any
+	if err := json.Unmarshal(trust, &config); err != nil {
+		t.Fatal(err)
+	}
+	other := sha256.Sum256([]byte("different log key"))
+	name := "tracekit.local/k" + hex.EncodeToString(other[:])
+	log := config["logs"].([]any)[0].(string)
+	parts := strings.SplitN(log, "+", 3)
+	encoded, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil || len(encoded) != ed25519.PublicKeySize+1 {
+		t.Fatalf("fixture log key: %v", err)
+	}
+	config["logs"] = []any{fixtureVKey(name, encoded[0], encoded[1:])}
+	raw, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := VerifyBundle(fixtureZip(files), raw)
+	if result.ExitCode != 2 || result.Integrity != TrustUnusable || !strings.Contains(result.Detail, "named after another key") {
+		t.Fatalf("mismatched key-derived origin accepted: %+v", result)
+	}
+}
+
+func TestKeyOriginNameBoundaries(t *testing.T) {
+	_, trust := bundleFixture(t)
+	var config map[string]any
+	if err := json.Unmarshal(trust, &config); err != nil {
+		t.Fatal(err)
+	}
+	log := config["logs"].([]any)[0].(string)
+	parts := strings.SplitN(log, "+", 3)
+	encoded, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := sha256.Sum256(encoded[1:])
+	other := sha256.Sum256([]byte("another key"))
+	for _, tc := range []struct {
+		name string
+		bad  bool
+	}{
+		{"tracekit.local/k" + strings.Repeat("a", 65), false},
+		{"tracekit.local/k" + strings.Repeat("a", 63), false},
+		{"tracekit.local/k" + strings.Repeat("A", 64), false},
+		{"tracekit.local/k" + hex.EncodeToString(own[:]), false},
+		{"tracekit.local/k" + hex.EncodeToString(own[:]) + "/registry/" + strings.Repeat("0", 32), false},
+		{"x.tracekit.local/k" + hex.EncodeToString(other[:]), false},
+		{"tracekit.local/k" + strings.Repeat("a", 64) + "/registry/" + strings.Repeat("0", 32), true},
+		{"tracekit.local/k" + strings.Repeat("a", 64) + "/x", true},
+	} {
+		name := tc.name
+		config["logs"] = []any{fixtureVKey(name, encoded[0], encoded[1:])}
+		valid, err := json.Marshal(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, _, _, err = loadTrust(valid)
+		if tc.bad {
+			if err == nil || !strings.Contains(err.Error(), "named after another key") {
+				t.Fatalf("accepted mismatched registry origin %q: %v", name, err)
+			}
+		} else if err != nil {
+			t.Fatalf("rejected non-key-derived origin %q: %v", name, err)
+		}
+	}
+}
+
 func copyFiles(f map[string][]byte) map[string][]byte {
 	out := make(map[string][]byte)
 	for k, v := range f {

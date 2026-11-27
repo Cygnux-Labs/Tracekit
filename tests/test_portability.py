@@ -133,25 +133,92 @@ class WindowsPaths(unittest.TestCase):
 class PluginPackage(unittest.TestCase):
     def test_plugin_hooks_match_the_installer_exactly(self):
         import json
-        with open(os.path.join(ROOT, "plugin", "hooks", "hooks.json")) as f:
+        with open(os.path.join(ROOT, "plugin", "hooks", "claude.json")) as f:
             hooks = json.load(f)["hooks"]
         self.assertEqual(set(hooks), set(install.TOOL_EVENTS + install.OTHER_EVENTS))
         for ev, groups in hooks.items():
             h = groups[0]["hooks"][0]
-            self.assertEqual(h["command"], '"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook" ' + ev)   # v2: names its event
+            # sh execs /bin/sh on tracekit-hook, so the script runs without its exec bit, and when it can't read the
+            # script it says so and exits with the failure code first: before a tool call that blocks it (2); for the
+            # other events 1, which doesn't block, where /bin/sh's own exit would be 2 under dash (Linux) and stop
+            # Claude from stopping or drop the prompt. PowerShell (Windows without Git Bash) skips that inside <# #>
+            # and runs tracekit-hook.ps1 in a try, exiting with the failure code if the script never starts or throws
+            # (#1097)
+            fail = 2 if ev == "PreToolUse" else 1
+            check = ('[ -r "${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook" ] || { echo "tracekit plugin: the hook '
+                     f'script did not run" >&2; exit {fail}; }}; ')
+            self.assertEqual(h["command"],
+                             f'echo `# <#`>/dev/null; {check}exec /bin/sh "${{CLAUDE_PLUGIN_ROOT}}/scripts/tracekit-hook" {ev} '
+                             f'#> >$null; $LASTEXITCODE = {fail}; '
+                             f'try {{ & "${{CLAUDE_PLUGIN_ROOT}}/scripts/tracekit-hook.ps1" {ev}; '
+                             f'exit $LASTEXITCODE }} catch {{ [Console]::Error.WriteLine("tracekit plugin: the hook script '
+                             f'did not run: $_"); exit {fail} }}')
             self.assertEqual(h["timeout"], install.HOOK_TIMEOUT.get(ev, 30), ev)
             self.assertEqual(groups[0].get("matcher") == "*", ev in install.TOOL_EVENTS, ev)
 
+    def test_the_other_harnesses_plugin_hooks_match_what_init_writes(self):
+        """Codex, Copilot CLI and Cursor: init's events, timeouts, matchers and Cursor's failClosed, each command the
+        plugin's script with the event and the harness, from the variable the harness sets to the plugin's directory."""
+        import io
+        import json
+        import tempfile
+        from contextlib import redirect_stdout
+
+        from tracekit import agent_hooks
+
+        def flat(hooks):   # {event: its one hook}, a Codex group's matcher on its hook
+            return {ev: dict(g) if "hooks" not in g else dict(g["hooks"][0], matcher=g.get("matcher"))
+                    for ev, (g,) in hooks.items()}
+        for harness, var in (("codex", "PLUGIN_ROOT"), ("copilot", "COPILOT_PLUGIN_ROOT"),
+                             ("cursor", "CURSOR_PLUGIN_ROOT")):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as d:
+                with redirect_stdout(io.StringIO()):
+                    path = agent_hooks.install(harness, v2=True, python="py", path=os.path.join(d, "hooks.json"))
+                with open(path) as f:
+                    init = flat(json.load(f)["hooks"])
+                with open(os.path.join(ROOT, "plugin", "hooks", harness + ".json")) as f:
+                    plugin = flat(json.load(f)["hooks"])
+                self.assertEqual(set(plugin), set(init))
+                for ev, h in plugin.items():
+                    # Copilot: `bash` (no PowerShell twin, which can't run the script) and its own name for the timeout
+                    self.assertEqual(h.pop("bash", None) or h.pop("command"),
+                                     f'/bin/sh "${{{var}}}/scripts/tracekit-hook" {ev} {harness}')
+                    if "timeoutSec" in h:
+                        h["timeout"] = h.pop("timeoutSec")
+                    want = {k: v for k, v in init[ev].items() if k != "command" and v not in (None, False)}
+                    self.assertEqual({k: v for k, v in h.items() if v is not None}, want, ev)
+
     def test_manifests_parse_and_versions_agree(self):
+        """One plugin folder, a manifest for each harness: the same name and version, each naming its own hooks file.
+        No harness gets a default hooks file (hooks/hooks.json, hooks.json): Codex, Copilot CLI and Cursor each read
+        one when their manifest names none, and would run Claude Code's hooks there, or run them twice."""
         import json
         import tracekit
-        with open(os.path.join(ROOT, "plugin", ".claude-plugin", "plugin.json")) as f:
-            plugin = json.load(f)
-        with open(os.path.join(ROOT, ".claude-plugin", "marketplace.json")) as f:
-            market = json.load(f)
+        plugin_dir = os.path.join(ROOT, "plugin")
+
+        def load(*path):
+            with open(os.path.join(plugin_dir, *path)) as f:
+                return json.load(f)
+        plugin = load(".claude-plugin", "plugin.json")
         self.assertEqual(plugin["version"], tracekit.__version__.replace("rc", "-rc.").replace(".dev", "-dev."))
+        for manifest, hooks in (((".claude-plugin",), "claude"), ((".codex-plugin",), "codex"),
+                                ((".github", "plugin"), "copilot"), ((".cursor-plugin",), "cursor")):
+            m = load(*manifest, "plugin.json")
+            self.assertEqual((m["name"], m["version"]), (plugin["name"], plugin["version"]), manifest)
+            self.assertEqual(m["hooks"], f"./hooks/{hooks}.json")
+            self.assertTrue(os.path.isfile(os.path.join(plugin_dir, "hooks", hooks + ".json")))
+        self.assertFalse(os.path.exists(os.path.join(plugin_dir, "hooks", "hooks.json")))
+        self.assertFalse(os.path.exists(os.path.join(plugin_dir, "hooks.json")))
+        with open(os.path.join(ROOT, ".claude-plugin", "marketplace.json")) as f:
+            market = json.load(f)   # this repository's marketplace, which existing installs came from
         self.assertEqual(market["plugins"][0]["source"], "./plugin")
         self.assertEqual(market["plugins"][0]["name"], plugin["name"])
+        # the published copy of plugin/ is its own marketplace, under the same name: tracekit@tracekit everywhere
+        claude, codex = load(".claude-plugin", "marketplace.json"), load(".agents", "plugins", "marketplace.json")
+        self.assertEqual((claude["name"], claude["plugins"][0]["name"], claude["plugins"][0]["source"]),
+                         ("tracekit", plugin["name"], "./"))
+        self.assertEqual((codex["name"], codex["plugins"][0]["name"], codex["plugins"][0]["source"]),
+                         ("tracekit", plugin["name"], {"source": "local", "path": "./"}))
 
     @unittest.skipIf(sys.platform == "win32", "the plugin wrapper is POSIX shell")
     def test_wrapper_is_executable_and_shows_a_notice_without_tracekit(self):
@@ -164,6 +231,104 @@ class PluginPackage(unittest.TestCase):
                                env={"PATH": "/nonexistent", "HOME": home, "TRACEKIT_PYTHON": ""})
         self.assertEqual(r.returncode, 1)   # a non-blocking error Claude Code shows; exit 0's stderr is never seen
         self.assertIn("NOT recorded", r.stderr)
+
+    @unittest.skipIf(sys.platform == "win32", "the plugin wrapper is POSIX shell")
+    def test_every_harness_runs_the_script_without_its_exec_bit(self):
+        """`chmod -x` on the script made each hooks file's command fail to start (126), and Claude Code and Codex then
+        run the call unrecorded. Each command runs it with /bin/sh, so it still decides: here, set up with no tracekit
+        to run, it blocks the pre-tool call (2)."""
+        import json
+        import shutil
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            plugin = os.path.join(d, "plugin")
+            shutil.copytree(os.path.join(ROOT, "plugin"), plugin)
+            os.chmod(os.path.join(plugin, "scripts", "tracekit-hook"), 0o644)
+            data = os.path.join(d, "home", "Library", "Application Support", "tracekit", "data")
+            os.makedirs(data)   # set up (macOS's place, and XDG_DATA_HOME's below for the others)
+            for harness, var, pre in (("claude", "CLAUDE_PLUGIN_ROOT", "PreToolUse"),
+                                      ("codex", "PLUGIN_ROOT", "PreToolUse"),
+                                      ("copilot", "COPILOT_PLUGIN_ROOT", "preToolUse"),
+                                      ("cursor", "CURSOR_PLUGIN_ROOT", "preToolUse")):
+                with open(os.path.join(plugin, "hooks", harness + ".json")) as f:
+                    entry = json.load(f)["hooks"][pre][0]
+                cmd = entry["hooks"][0]["command"] if "hooks" in entry else entry.get("bash") or entry["command"]
+                with self.subTest(harness=harness):
+                    r = subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True,
+                                       env={"PATH": "/usr/bin:/bin", "HOME": os.path.join(d, "home"),
+                                            "XDG_DATA_HOME": os.path.join(d, "home", "Library", "Application Support"),
+                                            "TRACEKIT_PYTHON": "", var: plugin})
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertIn("tracekit plugin:", r.stderr)
+
+    @unittest.skipIf(sys.platform == "win32", "PluginInPowerShell (test_hook_invocation.py) runs it on Windows")
+    def test_sh_runs_the_wrapper_from_the_hooks_command(self):
+        import json
+        import subprocess
+        import tempfile
+        with open(os.path.join(ROOT, "plugin", "hooks", "claude.json")) as f:
+            cmd = json.load(f)["hooks"]["Stop"][0]["hooks"][0]["command"]
+        with tempfile.TemporaryDirectory() as home:
+            r = subprocess.run(["/bin/sh", "-c", cmd], input="{}", capture_output=True, text=True,
+                               env={"PATH": "/usr/bin:/bin", "HOME": home, "TRACEKIT_PYTHON": "/nonexistent",
+                                    "CLAUDE_PLUGIN_ROOT": os.path.join(ROOT, "plugin")})
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("this Stop event was NOT recorded", r.stderr)
+
+    @unittest.skipIf(sys.platform == "win32", "PluginInPowerShell (test_hook_invocation.py) runs it on Windows")
+    def test_sh_passes_the_hooks_exit_code_through_silently(self):
+        import json
+        import subprocess
+        import tempfile
+        with open(os.path.join(ROOT, "plugin", "hooks", "claude.json")) as f:
+            cmd = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        with tempfile.TemporaryDirectory() as root:
+            os.mkdir(os.path.join(root, "scripts"))
+            hook = os.path.join(root, "scripts", "tracekit-hook")
+            with open(hook, "w") as f:
+                f.write('#!/bin/sh\n[ "$1" = PreToolUse ] && exit "$CODE"\nexit 9\n')
+            os.chmod(hook, 0o755)
+            for code in ("0", "1", "2"):
+                for flags in ("-c", "-uc"):
+                    r = subprocess.run(["/bin/sh", flags, cmd], capture_output=True, text=True,
+                                       env={"PATH": "/usr/bin:/bin", "CLAUDE_PLUGIN_ROOT": root, "CODE": code})
+                    with self.subTest(code=code, flags=flags):
+                        self.assertEqual((r.returncode, r.stdout, r.stderr), (int(code), "", ""))
+
+    @unittest.skipIf(sys.platform == "win32", "PluginInPowerShell (test_hook_invocation.py) runs it on Windows")
+    def test_a_missing_or_unreadable_script_blocks_a_tool_call_in_every_sh(self):
+        """Every command checks the script first: the pre-tool command blocks (2); the other events exit 1, which
+        doesn't block, where sh's own exit for a script it can't open is 127 (126) under bash and 2 under dash
+        (Linux's /bin/sh), which would stop Claude from stopping and drop each prompt."""
+        import json
+        import shutil as sh_
+        import subprocess
+        import tempfile
+        with open(os.path.join(ROOT, "plugin", "hooks", "claude.json")) as f:
+            hooks = json.load(f)["hooks"]
+        shells = [s for s in ("/bin/sh", sh_.which("dash"), sh_.which("bash")) if s]
+        self.assertGreaterEqual(len(shells), 2)
+        with tempfile.TemporaryDirectory() as root:
+            os.mkdir(os.path.join(root, "scripts"))
+            hook = os.path.join(root, "scripts", "tracekit-hook")
+            for state in ("missing", "unreadable"):
+                if state == "unreadable":
+                    if hasattr(os, "geteuid") and os.geteuid() == 0:   # root reads it anyway
+                        continue
+                    with open(hook, "w") as f:
+                        f.write("exit 0\n")
+                    os.chmod(hook, 0)
+                for shell in shells:
+                    for ev in sorted(hooks):
+                        r = subprocess.run([shell, "-c", hooks[ev][0]["hooks"][0]["command"]], input="{}",
+                                           capture_output=True, text=True,
+                                           env={"PATH": "/usr/bin:/bin", "CLAUDE_PLUGIN_ROOT": root})
+                        with self.subTest(state=state, shell=shell, event=ev):
+                            self.assertEqual((r.returncode, r.stderr),
+                                             (2 if ev == "PreToolUse" else 1,
+                                              "tracekit plugin: the hook script did not run\n"))
 
 
 if __name__ == "__main__":

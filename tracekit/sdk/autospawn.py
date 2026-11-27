@@ -85,7 +85,8 @@ def _private(d, create):
         os.makedirs(d, 0o700, exist_ok=True)
     st = os.lstat(d)
     if not stat.S_ISDIR(st.st_mode) or os.name == "posix" and (st.st_uid != os.getuid() or st.st_mode & 0o077):
-        raise SignerUnavailable(f"{d} must be a directory owned by you with mode 0700")
+        raise SignerUnavailable(f"{d} must be a directory owned by you with mode 0700 (chmod 700 {d}, or point "
+                                "TRACEKIT_RUNTIME_DIR at a folder you own)")
     return d
 
 
@@ -345,11 +346,13 @@ def down(timeout=10, d=None, show_log=True):
     stacks it wrote there; a hook replacing it leaves them out of what the agent reads)."""
     d = d or signer_dir()
     lock = os.path.join(d, LOCK)
-    deadline = time.monotonic() + timeout
-    while (pid := _pid(d)) is None:   # one still starting (`tracekit up` without --wait) publishes its pid shortly
+    # one still starting (`tracekit up` without --wait) publishes its pid once started: given as long as ensure() gives it
+    # while endpoint.json isn't there yet; one that published a pid no signal may go to gets `timeout`
+    begun = time.monotonic()
+    while (pid := _pid(d)) is None:
         if not _held(lock):
             return None
-        if time.monotonic() > deadline:
+        if time.monotonic() > begun + (timeout if _published(d) else max(timeout, START_WAIT_S)):
             raise Hung(f"a dev signer holds {lock} but never published {ENDPOINT}; see {os.path.join(d, LOG)}")
         time.sleep(0.05)
     if not _held(lock):   # the endpoint of a signer that has exited

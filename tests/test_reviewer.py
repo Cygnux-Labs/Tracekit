@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import test_agent_approvers as aa
@@ -46,32 +47,35 @@ def message(decision="approve", reason="routine", **kw):
 
 class Model:
     def __init__(self, *answers):
-        self.answers, self.views = list(answers), []
+        self.answers, self.views, self.models = list(answers), [], []
 
-    def __call__(self, tenant, view):
+    def __call__(self, tenant, view, model):
         self.views.append((tenant, view))
+        self.models.append(model)
         a = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
-        if isinstance(a, Exception):
+        if isinstance(a, BaseException):
             raise a
         return a
 
 
 class Case(aa.Case):
-    def reviewer(self, model, agent=None):
-        return reviewer.Reviewer([("acme", agent or As(self, aa.AGENT))], model, "m-test")
+    def reviewer(self, model, agent=None, state_file=None):
+        return reviewer.Reviewer([("acme", agent or As(self, aa.AGENT))], model, "m-test", state_file)
 
     def state(self, aid):
         return self.s.log.approvals[aid]
 
 
 class TestReviewer(Case):
-    def test_an_always_approve_model_approves_within_the_bounds_one_call_each(self):
+    def test_an_always_approve_model_approves_within_the_bounds_two_calls_each(self):
         a1, _ = self.ask(tcid="tc-1")
         a2, _ = self.ask(aa.OK | {"amount": 41}, tcid="tc-2")
         model = Model(message())
         self.reviewer(model).poll()
         self.assertEqual([self.state(a)["state"] for a in (a1, a2)], ["approved", "approved"])
-        self.assertEqual([v["approval_id"] for _, v in model.views], [a1, a2])   # one isolated call per approval
+        # two isolated calls per approval, the two keys of a yes: the one model asked twice
+        self.assertEqual([v["approval_id"] for _, v in model.views], [a1, a1, a2, a2])
+        self.assertEqual(model.models, ["m-test"] * 4)
         self.assertTrue(all(self.run["run_id"] not in json.dumps(v) for _, v in model.views))
         [rec, _] = [e["data"] for e in self.events() if e["type"] == "approval"]
         self.assertEqual(rec["asserted"], {"model": "m-test", "version": reviewer.__version__,
@@ -87,7 +91,8 @@ class TestReviewer(Case):
                     self.reviewer(Model(answer)).poll()
                 self.assertEqual((self.state(aid)["state"], self.state(aid)["escalated"]), ("requested", True))
                 self.assertIn(aid, logs.output[0])
-                self.assertIn("check the gateway URL, run token and model", logs.output[0])
+                self.assertIn("check the gateway URL or endpoint, the run token or key file, and the model",
+                              logs.output[0])
 
     def test_a_transient_signer_error_is_tried_again_next_poll(self):
         class Busy(As):   # the signer answers `method` once with `code`
@@ -146,9 +151,12 @@ class TestReviewer(Case):
                    "tenants: {acme: {token_file: a.token, run_token_file: r.token}}\n")
         self.assertEqual((cfg["signer"], cfg["tenants"]["acme"]["token_file"]),
                          (["https://signer:8443"], os.path.join(d, "a.token")))
-        for signer in ("/run/tracekit/signer.sock", "tcp://127.0.0.1:7000"):   # the uid and dev transports
-            with self.subTest(signer), self.assertRaisesRegex(ValueError, "never a uid"):
-                load(f"signer: {signer}\ngateway: https://gw\ntenants: {{acme: {{token_file: a, run_token_file: r}}}}\n")
+        with self.assertRaisesRegex(ValueError, "dev transport is refused"):   # the agent's own user could answer
+            load("signer: tcp://127.0.0.1:7000\ngateway: https://gw\ntenants: {acme: {token_file: a, run_token_file: "
+                 "r}}\n")
+        with self.assertRaisesRegex(ValueError, "no tenants, and a url"):   # a uid has no run identity for the gateway
+            load("signer: /run/tracekit/signer.sock\ngateway: https://gw\ntenants: {acme: {token_file: a, "
+                 "run_token_file: r}}\n")
         with self.assertRaisesRegex(ValueError, "tenants"):
             load("signer: https://s\ngateway: https://gw\n")
         tenants = "tenants: {acme: {token_file: a, run_token_file: r}}\n"
@@ -157,6 +165,17 @@ class TestReviewer(Case):
                 load(f"signer: https://s\ngateway: {gateway}\n{tenants}")
         self.assertEqual(load(f"signer: https://s\ngateway: http://127.0.0.1:8080\n{tenants}")["gateway"],
                          "http://127.0.0.1:8080")
+        # a signer's insecure_loopback listener: plain http to this machine only, its token never on the wire
+        self.assertEqual(load(f"signer: http://127.0.0.1:8443\ngateway: https://gw\n{tenants}")["signer"],
+                         ["http://127.0.0.1:8443"])
+        for signer in ("http://signer.internal:8443", "http://user@127.0.0.1:8443"):
+            with self.subTest(signer), self.assertRaisesRegex(ValueError, "signer: an https:// URL"):
+                load(f"signer: {signer}\ngateway: https://gw\n{tenants}")
+        base = f"signer: https://s\ngateway: https://gw\n{tenants}"
+        self.assertNotIn("state_file", load(base))
+        self.assertEqual(load(base + "state_file: r.state\n")["state_file"], os.path.join(d, "r.state"))
+        with self.assertRaisesRegex(ValueError, "state_file"):
+            load(base + "state_file: [a]\n")
 
 
 class TestShadow(Case):
@@ -175,6 +194,111 @@ class TestShadow(Case):
         rv.poll()
         rv.poll()
         self.assertEqual([e["type"] for e in self.events()].count("approval.suggested"), 1)
+
+
+class TestState(Case):
+    agent = {"mode": "shadow"}
+
+    def suggested(self):
+        return [e["type"] for e in self.events()].count("approval.suggested")
+
+    def test_a_restart_with_a_state_file_does_not_suggest_again(self):
+        self.ask()
+        state = os.path.join(ts.tmpdir(self), "reviewer.state")
+        model = Model(message())
+        self.reviewer(model, state_file=state).poll()
+        self.reviewer(model, state_file=state).poll()   # the restart
+        self.assertEqual((self.suggested(), len(model.views)), (1, 2))   # a yes's two keys, asked once
+        if os.name != "nt":
+            self.assertEqual(os.stat(state).st_mode & 0o777, 0o600)
+
+    def test_without_a_state_file_a_restart_suggests_again(self):
+        self.ask()
+        for _ in range(2):
+            self.reviewer(Model(message())).poll()
+        self.assertEqual(self.suggested(), 2)
+
+    def test_a_missing_or_unreadable_state_file_starts_empty(self):
+        self.ask()
+        d = ts.tmpdir(self)
+        for i, text in enumerate((None, "{not json", '{"a": 1}', "[1, 2]", "")):
+            state = os.path.join(d, f"s{i}")
+            if text is not None:
+                with open(state, "w") as f:
+                    f.write(text)
+            with self.subTest(text):
+                rv = self.reviewer(Model(message()), state_file=state)
+                self.assertEqual(rv.seen, set())
+                rv.poll()
+                with open(state) as f:
+                    self.assertEqual(json.load(f), sorted(rv.seen))
+
+    def test_the_state_file_is_replaced_whole_and_a_failed_write_keeps_the_old_one(self):
+        self.ask()
+        state = os.path.join(ts.tmpdir(self), "reviewer.state")
+        with open(state, "w") as f:
+            json.dump(["old"], f)
+        rv = self.reviewer(Model(message()), state_file=state)
+        with mock.patch("os.replace", side_effect=OSError("disk full")):
+            rv.poll()   # the answer is sent; saving it fails
+        with open(state) as f:
+            self.assertEqual(json.load(f), ["old"])
+        rv.poll()
+        with open(state) as f:
+            self.assertEqual(json.load(f), sorted(rv.seen))
+        self.assertEqual(os.listdir(os.path.dirname(state)), ["reviewer.state"])
+
+    def test_each_answer_is_kept_as_it_is_sent(self):
+        a1, _ = self.ask(tcid="tc-1")
+        self.ask(aa.OK | {"amount": 41}, tcid="tc-2")
+        state = os.path.join(ts.tmpdir(self), "reviewer.state")
+        with self.assertRaises(KeyboardInterrupt):   # stopped during the second approval's model call
+            self.reviewer(Model(message(), message(), KeyboardInterrupt()), state_file=state).poll()
+        with open(state) as f:
+            self.assertEqual(json.load(f), [a1])
+
+    def test_json_nested_too_deep_for_python_starts_empty(self):
+        state = os.path.join(ts.tmpdir(self), "reviewer.state")
+        with open(state, "w") as f:
+            f.write("[" * 200000 + "]" * 200000)
+        self.assertEqual(self.reviewer(Model(message()), state_file=state).seen, set())
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs FIFOs")
+    def test_a_fifo_as_the_state_file_neither_blocks_nor_is_read(self):
+        state = os.path.join(ts.tmpdir(self), "reviewer.state")
+        os.mkfifo(state)
+        got = []
+        t = threading.Thread(target=lambda: got.append(self.reviewer(Model(message()), state_file=state).seen),
+                             daemon=True)
+        t.start()
+        t.join(10)
+        self.assertEqual(got, [set()])   # a plain open() waits for a writer that never comes
+
+    def test_a_symlinked_state_file_is_refused_and_said_once(self):
+        d = ts.tmpdir(self)
+        target, state = os.path.join(d, "elsewhere.json"), os.path.join(d, "reviewer.state")
+        with open(target, "w") as f:
+            json.dump(["apr-elsewhere"], f)
+        try:
+            os.symlink(target, state)
+        except (OSError, NotImplementedError) as e:   # Windows without the symlink privilege
+            self.skipTest(f"no symlinks here: {e}")
+        with self.assertLogs(reviewer.log, "WARNING") as logs:
+            rv = self.reviewer(Model(message()), state_file=state)
+            self.assertEqual(rv.seen, set())   # read as it is written: a symlink is refused both ways
+            self.ask(tcid="tc-1")
+            rv.poll()
+            self.ask(aa.OK | {"amount": 41}, tcid="tc-2")
+            rv.poll()   # two answers, two refused writes
+        self.assertEqual((len(rv.seen), len(logs.records)), (2, 1), logs.output)
+        with open(target) as f:
+            self.assertEqual(json.load(f), ["apr-elsewhere"])
+
+    def test_an_unwritable_state_file_does_not_stop_the_reviewer(self):
+        self.ask()
+        rv = self.reviewer(Model(message()), state_file=os.path.join(ts.tmpdir(self), "no", "such", "dir"))
+        rv.poll()
+        self.assertEqual((self.suggested(), len(rv.seen)), (1, 1))
 
 
 class Gateway(BaseHTTPRequestHandler):
@@ -203,14 +327,16 @@ class TestGateway(Case):
             f.write("run-identity-token\n")
         aid, _ = self.ask()
         ask = reviewer.Gateway(f"http://127.0.0.1:{srv.server_address[1]}", {"acme": (As(self, ts.ME), token)})
-        self.reviewer(ask).poll()
+        reviewer.Reviewer([("acme", As(self, aa.AGENT))], ask).poll()
         self.assertEqual(self.state(aid)["state"], "approved")
-        [(path, headers, body)] = srv.seen
+        [(path, headers, body), again] = srv.seen   # the two keys of a yes: the model asked twice
+        self.assertEqual(again[2], body)
         self.assertEqual((path, headers["Authorization"], body["model"], body["system"]),
                          ("/v1/messages", "Bearer run-identity-token", reviewer.DEFAULT_MODEL, reviewer.PROMPT))
         self.assertEqual(body["output_config"]["format"]["schema"], reviewer.ANSWER)
         self.assertEqual(json.loads(body["messages"][0]["content"])["approval_id"], aid)
         run_id = headers["X-Tracekit-Run"].split(".")[0]
+        self.assertNotEqual(again[1]["X-Tracekit-Run"].split(".")[0], run_id)   # each call a run of its own
         mine = [e for e in self.events() if e["run_id"] == run_id]
         self.assertEqual(mine[0]["data"]["agent"]["name"], "tracekit-reviewer")
         [linked] = [e for e in mine if e["type"] == "input.observed"]

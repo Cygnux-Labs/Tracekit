@@ -26,6 +26,14 @@
       --blue: #7aa2ff;
       --yellow: #ffdd57;
       --ink: #000;
+      --mc-ink: #fff;
+      --mc-claude: #d97757;
+      --mc-openai: #10a37f;
+      --mc-google: #4285f4;
+      --mc-qwen: #615ced;
+      --mc-meta: #0866ff;
+      --mc-mistral: #fa520f;
+      --mc-deepseek: #4d6bfe;
       --row-line: #121210;
       --row-hover: #12100b;
       --track: #141310;
@@ -68,6 +76,14 @@
         --blue: #2f56c6;
         --yellow: #8a6a00;
         --ink: #fff;
+        --mc-ink: #fff;
+        --mc-claude: #d97757;
+        --mc-openai: #10a37f;
+        --mc-google: #4285f4;
+        --mc-qwen: #615ced;
+        --mc-meta: #0866ff;
+        --mc-mistral: #fa520f;
+        --mc-deepseek: #4d6bfe;
         --row-line: #e8e4da;
         --row-hover: #f3ead9;
         --track: #e6e2d8;
@@ -107,6 +123,14 @@
       --blue: #2f56c6;
       --yellow: #8a6a00;
       --ink: #fff;
+      --mc-ink: #fff;
+      --mc-claude: #d97757;
+      --mc-openai: #10a37f;
+      --mc-google: #4285f4;
+      --mc-qwen: #615ced;
+      --mc-meta: #0866ff;
+      --mc-mistral: #fa520f;
+      --mc-deepseek: #4d6bfe;
       --row-line: #e8e4da;
       --row-hover: #f3ead9;
       --track: #e6e2d8;
@@ -1221,116 +1245,1043 @@
       background: var(--c)
     }
 
-    /* a run's TIMELINE by call: one row per call on one time axis (a waterfall); waiting for a person is hatched */
+    /* a run's TIMELINE by call: a card in a sans-serif of its own, after affectUI's "Tool Calls Network". Bars sit on one axis by
+       CSS: --a and --e are a bar's start and end in seconds from the run's first record, --t0 and --span the axis */
+    .pg-run.rv-waterfall main {
+      grid-template-columns: minmax(170px, .5fr) minmax(0, 3.1fr) minmax(300px, 1fr)
+    }
+
     #wf {
+      --t-line: color-mix(in srgb, var(--text) 10%, transparent);
+      --t-soft: color-mix(in srgb, var(--text) 5.5%, transparent);
+      --t-tool: var(--cyan);
+      --t-llm: var(--magenta);
       position: absolute;
-      inset: 0;
-      overflow: auto;
-      scrollbar-gutter: stable
-    }
-
-    .wfr {
+      inset: 10px;
       display: flex;
-      align-items: center;
-      border-bottom: 1px solid var(--row-line);
-      cursor: pointer
-    }
-
-    .wfr:hover {
-      background: var(--row-hover)
-    }
-
-    .wfr.on {
-      background: var(--amber-bg);
-      box-shadow: inset 2px 0 0 var(--amber)
-    }
-
-    .wfr .wl {
-      flex: none;
-      width: var(--lw);
-      padding: 0 8px;
+      flex-direction: column;
       overflow: hidden;
-      text-overflow: ellipsis;
+      container: tcn / inline-size;
+      background: var(--panel);
+      border: 1px solid var(--t-line);
+      border-radius: 16px;
+      color: var(--text);
+      font: 13.5px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-variant-numeric: tabular-nums
+    }
+
+    #wf button,
+    #wf input {
+      font: inherit;
+      color: inherit
+    }
+
+    #wf :focus-visible {
+      outline: 2px solid var(--blue);
+      outline-offset: -2px;
+      border-radius: 6px
+    }
+
+    #wf .tn-bar {
+      flex: none;
+      display: flex;
+      gap: 12px;
+      justify-content: space-between;
+      padding: 10px 12px 8px
+    }
+
+    #wf .tn-chips {
+      display: flex;
+      gap: 2px;
+      padding: 3px;
+      border-radius: 11px;
+      background: var(--t-soft);
+      overflow: hidden;
+      min-width: 0
+    }
+
+    #wf .chip2 {
+      border: 0;
+      background: none;
+      padding: 5px 11px;
+      border-radius: 8px;
+      color: var(--muted);
+      cursor: pointer;
       white-space: nowrap
     }
 
-    .wfr.on .wl b {
+    #wf .chip2 .n {
+      opacity: .6;
+      margin-left: 2px
+    }
+
+    #wf .chip2:hover {
+      color: var(--text)
+    }
+
+    #wf .chip2.on {
+      background: var(--panel);
+      color: var(--text);
+      font-weight: 500;
+      box-shadow: 0 0 0 1px var(--t-line), 0 1px 2px color-mix(in srgb, var(--scrim) 12%, transparent)
+    }
+
+    #wf .tn-q {
+      flex: 0 1 240px;
+      min-width: 120px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      border-radius: 11px;
+      background: var(--t-soft);
+      color: var(--muted)
+    }
+
+    #wf .tn-q input {
+      flex: 1;
+      min-width: 0;
+      height: 34px;
+      border: 0;
+      outline: 0;
+      background: none;
+      color: var(--text)
+    }
+
+    #wf .tn-q:focus-within {
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 55%, transparent)
+    }
+
+    #wf .tn-ov {
+      flex: none;
+      position: relative;
+      height: 58px;
+      margin: 0 12px 6px;
+      border-radius: 10px;
+      background: var(--t-soft);
+      overflow: hidden;
+      cursor: crosshair;
+      user-select: none;
+      touch-action: none
+    }
+
+    #wf .tn-ov .tk {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: calc((var(--a) - var(--o0)) / var(--os) * 100%);
+      border-left: 1px solid var(--t-line)
+    }
+
+    #wf .tn-ov .tk em {
+      position: absolute;
+      top: 3px;
+      left: 6px;
+      font-style: normal;
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap
+    }
+
+    #wf .tn-ov .s {
+      position: absolute;
+      top: calc(22px + var(--l) * 6px);
+      height: 4px;
+      border-radius: 2px;
+      left: calc((var(--a) - var(--o0)) / var(--os) * 100%);
+      width: max(3px, calc((var(--e) - var(--a)) / var(--os) * 100%));
+      background: var(--t-tool);
+      opacity: .75
+    }
+
+    #wf .s.llm {
+      background: var(--t-llm)
+    }
+
+    #wf .s.bad {
+      background: var(--red);
+      opacity: 1
+    }
+
+    #wf .s.wait {
+      background: repeating-linear-gradient(135deg, var(--amber) 0 2px, color-mix(in srgb, var(--amber) 30%, transparent) 2px 4px);
+      opacity: 1
+    }
+
+    #wf .tn-sel {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: calc((var(--a) - var(--o0)) / var(--os) * 100%);
+      width: calc((var(--e) - var(--a)) / var(--os) * 100%);
+      background: color-mix(in srgb, var(--text) 9%, transparent);
+      border: 1px solid color-mix(in srgb, var(--text) 22%, transparent);
+      border-radius: 6px;
+      pointer-events: none
+    }
+
+    #wf .tn-nowo {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: calc((var(--now) - var(--o0)) / var(--os) * 100%);
+      width: 1.5px;
+      background: var(--blue);
+      pointer-events: none
+    }
+
+    #wf:not([data-live]) .tn-nowo,
+    #wf:not([data-live]) .tn-now {
+      display: none
+    }
+
+    #wf .tn-rl {
+      position: absolute;
+      top: 4px;
+      right: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 1px 3px 1px 9px;
+      border-radius: 8px;
+      font-size: 12px;
+      background: var(--panel);
+      box-shadow: 0 0 0 1px var(--t-line)
+    }
+
+    #wf .tn-rl button {
+      border: 0;
+      background: none;
+      cursor: pointer;
+      padding: 1px 5px;
+      border-radius: 6px;
+      font-weight: 500
+    }
+
+    #wf .tn-rl button:hover {
+      background: var(--t-soft)
+    }
+
+    #wf .tn-main {
+      --wfw: clamp(200px, 36cqw, 560px);
+      flex: 1;
+      min-height: 0;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      border-top: 1px solid var(--t-line)
+    }
+
+    #wf .tn-th,
+    #wf .tn-r {
+      display: grid;
+      grid-template-columns: 14px 28px minmax(120px, 1fr) 120px 84px 64px var(--wfw);
+      align-items: center;
+      column-gap: 9px;
+      padding: 0 14px 0 14px
+    }
+
+    #wf .tn-th {
+      flex: none;
+      height: 36px;
+      color: var(--muted);
+      font-size: 13px
+    }
+
+    #wf .tn-tbl {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column
+    }
+
+    #wf .thc {
+      display: flex;
+      min-width: 0
+    }
+
+    #wf .thc.sz,
+    #wf .thc.tm {
+      justify-content: flex-end
+    }
+
+    #wf .th {
+      border: 0;
+      background: none;
+      padding: 0;
+      text-align: left;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      color: inherit;
+      white-space: nowrap
+    }
+
+    #wf .th:hover,
+    #wf .th[aria-sort="ascending"],
+    #wf .th[aria-sort="descending"] {
+      color: var(--text)
+    }
+
+    #wf .th[aria-sort="ascending"],
+    #wf .th[aria-sort="descending"] {
+      font-weight: 500
+    }
+
+    #wf .th .ar2 {
+      display: inline-flex;
+      transform: rotate(180deg)
+    }
+
+    #wf .th .ar2.dn {
+      transform: none
+    }
+
+    #wf .wh {
+      position: relative;
+      height: 100%;
+      display: flex;
+      align-items: center
+    }
+
+    #wf .wh .tks {
+      position: absolute;
+      inset: 0;
+      pointer-events: none
+    }
+
+    #wf .wh .tk {
+      position: absolute;
+      top: 11px;
+      left: calc((var(--a) - var(--t0)) / var(--span) * 100%);
+      font-size: 11px;
+      color: var(--faint);
+      transform: translateX(-50%);
+      white-space: nowrap
+    }
+
+    #wf .tn-rows {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--line2) transparent
+    }
+
+    #wf .tn-in {
+      position: relative;
+      min-height: 100%
+    }
+
+    #wf .tn-r {
+      height: 40px;
+      cursor: pointer
+    }
+
+    #wf .tn-r:hover {
+      background: var(--t-soft)
+    }
+
+    #wf .tn-r.on {
+      background: color-mix(in srgb, var(--blue) 11%, transparent)
+    }
+
+    #wf .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--text) 28%, transparent)
+    }
+
+    #wf .dot.run {
+      background: var(--blue);
+      animation: tnpulse 1.6s ease-in-out infinite
+    }
+
+    #wf .dot.fail {
+      background: var(--red)
+    }
+
+    #wf .dot.retry {
+      background: var(--amber)
+    }
+
+    @keyframes tnpulse {
+      50% {
+        opacity: .35
+      }
+    }
+
+    #wf .ic {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: 0 0 0 1px var(--t-line);
+      color: var(--text)
+    }
+
+    #wf .ic.llm {
+      color: var(--t-llm)
+    }
+
+    #wf .ic.mono {
+      color: var(--mc-ink);
+      font-weight: 800;
+      font-size: 15px;
+      line-height: 1;
+      box-shadow: none
+    }
+
+    #wf .ic.m-claude {
+      background: var(--mc-claude)
+    }
+
+    #wf .ic.m-openai {
+      background: var(--mc-openai)
+    }
+
+    #wf .ic.m-google {
+      background: var(--mc-google)
+    }
+
+    #wf .ic.m-qwen {
+      background: var(--mc-qwen)
+    }
+
+    #wf .ic.m-meta {
+      background: var(--mc-meta)
+    }
+
+    #wf .ic.m-mistral {
+      background: var(--mc-mistral)
+    }
+
+    #wf .ic.m-deepseek {
+      background: var(--mc-deepseek)
+    }
+
+    #wf .nm {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap
+    }
+
+    #wf .nm b {
+      flex: 0 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-weight: 450
+    }
+
+    #wf .ar {
+      flex: 1 1 0;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--muted)
+    }
+
+    #wf .bd {
+      flex: 0 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      padding: 1px 7px;
+      border-radius: 6px;
+      font-size: 11.5px;
+      font-weight: 600;
+      letter-spacing: .01em;
+      background: var(--t-soft);
+      color: var(--muted)
+    }
+
+    #wf .bd.deny {
+      background: color-mix(in srgb, var(--red) 13%, transparent);
+      color: var(--red)
+    }
+
+    #wf .bd.held,
+    #wf .bd.retry {
+      background: color-mix(in srgb, var(--amber) 15%, transparent);
       color: var(--amber)
     }
 
-    .wfr svg {
-      flex: none;
-      display: block
+    #wf .bd.ok {
+      background: color-mix(in srgb, var(--green) 14%, transparent);
+      color: var(--green)
     }
 
-    .wfh {
-      position: sticky;
+    #wf .bd.flag {
+      background: none;
+      box-shadow: inset 0 0 0 1px var(--t-line);
+      font-weight: 500;
+      color: var(--yellow)
+    }
+
+    #wf .ag {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      white-space: nowrap
+    }
+
+    #wf .ag span {
+      overflow: hidden;
+      text-overflow: ellipsis
+    }
+
+    #wf .sz,
+    #wf .tm {
+      text-align: right;
+      color: var(--muted);
+      white-space: nowrap
+    }
+
+    #wf .tm.bad {
+      color: var(--red)
+    }
+
+    #wf .tn-r .wf {
+      position: relative;
+      height: 100%;
+      overflow: hidden
+    }
+
+    #wf .tn-r .wf i {
+      position: absolute;
+      top: 50%;
+      left: calc((var(--a) - var(--t0)) / var(--span) * 100%)
+    }
+
+    #wf .tn-r .b {
+      height: 14px;
+      margin-top: -7px;
+      width: max(4px, calc((var(--e) - var(--a)) / var(--span) * 100%));
+      border-radius: 5px;
+      background: color-mix(in srgb, var(--t-tool) 22%, var(--panel));
+      border: 1px solid color-mix(in srgb, var(--t-tool) 55%, transparent)
+    }
+
+    #wf .tn-r .b.flag {
+      box-shadow: inset 0 2px 0 var(--yellow)
+    }
+
+    #wf .tn-r .b.llm {
+      background: color-mix(in srgb, var(--t-llm) 22%, var(--panel));
+      border-color: color-mix(in srgb, var(--t-llm) 55%, transparent)
+    }
+
+    #wf .tn-r .b.fail {
+      background: color-mix(in srgb, var(--red) 24%, var(--panel));
+      border-color: color-mix(in srgb, var(--red) 60%, transparent)
+    }
+
+    #wf .tn-r .b.wait {
+      background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--amber) 60%, transparent) 0 2px, color-mix(in srgb, var(--amber) 14%, var(--panel)) 2px 5px);
+      border-color: color-mix(in srgb, var(--amber) 65%, transparent)
+    }
+
+    #wf .tn-r .mk {
+      width: 4px;
+      height: 16px;
+      margin-top: -8px;
+      border-radius: 2px;
+      background: var(--red)
+    }
+
+    #wf .tn-r .mk.tick {
+      width: 2px;
+      height: 12px;
+      margin-top: -6px;
+      background: var(--amber)
+    }
+
+    #wf .tn-r .dash {
+      height: 0;
+      border-top: 1px dashed var(--amber);
+      width: calc((var(--e) - var(--a)) / var(--span) * 100%)
+    }
+
+    #wf .tn-now {
+      position: absolute;
       top: 0;
-      z-index: 1;
+      bottom: 0;
+      right: 14px;
+      width: var(--wfw);
+      pointer-events: none;
+      overflow: hidden
+    }
+
+    #wf .tn-now::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: calc((var(--now) - var(--t0)) / var(--span) * 100%);
+      width: 1.5px;
+      background: var(--blue);
+      opacity: .7
+    }
+
+    #wf .tn-empty,
+    #wf .tn-more {
+      padding: 22px 16px;
+      color: var(--muted);
+      text-align: center
+    }
+
+    #wf .tn-more {
+      padding: 6px 14px;
+      font-size: 12px
+    }
+
+    #wf .tn-new {
+      position: absolute;
+      left: 50%;
+      bottom: 12px;
+      transform: translateX(-50%);
+      border: 0;
+      padding: 5px 13px;
+      border-radius: 999px;
+      background: var(--text);
+      color: var(--panel);
+      font-weight: 500;
+      font-size: 12.5px;
+      cursor: pointer;
+      box-shadow: 0 4px 14px color-mix(in srgb, var(--scrim) 30%, transparent);
+      animation: tnrise .2s ease-out
+    }
+
+    @keyframes tnrise {
+      from {
+        opacity: 0;
+        transform: translate(-50%, 8px)
+      }
+    }
+
+    #wf .tn-foot {
+      flex: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 46px;
+      padding: 0 12px 0 16px;
+      border-top: 1px solid var(--t-line);
+      color: var(--muted);
+      font-size: 13px
+    }
+
+    #wf .fl {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 18px
+    }
+
+    #wf .fi {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap
+    }
+
+    #wf .fi.bad {
+      color: var(--red)
+    }
+
+    #wf .fi.held {
+      color: var(--amber)
+    }
+
+    #wf .seal {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 11px;
+      border-radius: 8px;
+      font-weight: 500;
+      background: color-mix(in srgb, var(--blue) 13%, transparent);
+      color: var(--blue)
+    }
+
+    #wf .seal.ok {
+      background: color-mix(in srgb, var(--green) 14%, transparent);
+      color: var(--green)
+    }
+
+    #wf .seal.bad {
+      background: color-mix(in srgb, var(--red) 14%, transparent);
+      color: var(--red)
+    }
+
+    #wf .seal.live i {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: tnpulse 1.6s ease-in-out infinite
+    }
+
+    #wf .tn-drawer {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      right: 0;
+      width: 55%;
+      min-width: min(100%, 340px);
+      display: flex;
+      flex-direction: column;
       background: var(--panel);
+      border-left: 1px solid var(--t-line);
+      box-shadow: -16px 0 28px -18px color-mix(in srgb, var(--scrim) 40%, transparent);
+      transform: translateX(104%);
+      visibility: hidden;
+      transition: transform .24s cubic-bezier(.2, .8, .2, 1), visibility 0s .24s
+    }
+
+    #wf .tn-drawer.open {
+      transform: none;
+      visibility: visible;
+      transition: transform .24s cubic-bezier(.2, .8, .2, 1)
+    }
+
+    #wf .tn-drawer header {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 14px 10px
+    }
+
+    #wf .tn-drawer .hd {
+      flex: 1;
+      min-width: 0
+    }
+
+    #wf .tn-drawer .t {
+      display: flex;
+      gap: 7px;
+      min-width: 0;
+      white-space: nowrap;
+      font-size: 14.5px
+    }
+
+    #wf .tn-drawer .t b {
+      font-weight: 500;
+      flex: none;
+      max-width: 60%;
+      overflow: hidden;
+      text-overflow: ellipsis
+    }
+
+    #wf .tn-drawer .s {
       color: var(--muted);
-      font-size: 10px;
-      letter-spacing: .08em;
-      cursor: default
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis
     }
 
-    .wfh:hover {
-      background: var(--panel)
+    #wf .pill {
+      flex: none;
+      padding: 3px 12px;
+      border-radius: 8px;
+      font-weight: 500;
+      background: color-mix(in srgb, var(--green) 14%, transparent);
+      color: var(--green)
     }
 
-    .wfmore {
-      padding: 2px 8px;
+    #wf .pill.bad {
+      background: color-mix(in srgb, var(--red) 13%, transparent);
+      color: var(--red)
+    }
+
+    #wf .pill.held {
+      background: color-mix(in srgb, var(--amber) 15%, transparent);
+      color: var(--amber)
+    }
+
+    #wf .pill.none {
+      background: var(--t-soft);
+      color: var(--muted)
+    }
+
+    #wf .pill.run {
+      background: color-mix(in srgb, var(--blue) 13%, transparent);
+      color: var(--blue)
+    }
+
+    #wf .tn-drawer .x {
+      flex: none;
+      border: 0;
+      background: none;
+      cursor: pointer;
       color: var(--muted);
-      border-bottom: 1px solid var(--row-line)
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px
     }
 
-    #wf line {
-      stroke: var(--line)
+    #wf .tn-drawer .x:hover {
+      background: var(--t-soft);
+      color: var(--text)
     }
 
-    #wf text {
-      fill: var(--muted);
-      font: 10px var(--mono)
+    #wf .tabs {
+      flex: none;
+      align-self: flex-start;
+      display: flex;
+      gap: 2px;
+      margin: 0 14px 10px;
+      padding: 3px;
+      border-radius: 11px;
+      background: var(--t-soft);
+      max-width: calc(100% - 28px);
+      overflow-x: auto;
+      scrollbar-width: none
     }
 
-    #wf .wk-ok {
-      fill: var(--green)
+    #wf .tabs button {
+      border: 0;
+      background: none;
+      padding: 5px 12px;
+      border-radius: 8px;
+      color: var(--muted);
+      cursor: pointer;
+      white-space: nowrap
     }
 
-    #wf .wk-flag {
-      fill: var(--cyan)
+    #wf .tabs button.on {
+      background: var(--panel);
+      color: var(--text);
+      font-weight: 500;
+      box-shadow: 0 0 0 1px var(--t-line), 0 1px 2px color-mix(in srgb, var(--scrim) 12%, transparent)
     }
 
-    #wf .wk-deny {
-      fill: var(--red)
+    #wf .pn {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 2px 16px 18px;
+      scrollbar-width: thin
     }
 
-    #wf .wk-wait {
-      fill: url(#wfhatch)
+    #wf .pn p {
+      margin: 0 0 10px
     }
 
-    #wf .hatch-a {
-      fill: var(--amber)
+    #wf .mu,
+    #wf .pn small {
+      color: var(--muted)
     }
 
-    #wf .hatch-b {
-      fill: var(--amber-bg)
+    #wf .pn code {
+      font: 12px var(--mono);
+      overflow-wrap: anywhere
     }
 
-    .legend .wk-ok {
-      --c: var(--green)
+    #wf .cb {
+      margin: 0 0 10px;
+      padding: 12px;
+      border-radius: 10px;
+      background: var(--t-soft);
+      font: 12px/1.5 var(--mono);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere
     }
 
-    .legend .wk-flag {
-      --c: var(--cyan)
+    #wf .cb.bad {
+      background: color-mix(in srgb, var(--red) 10%, transparent);
+      color: color-mix(in srgb, var(--red) 70%, var(--text))
     }
 
-    .legend .wk-deny {
-      --c: var(--red)
+    #wf .err {
+      margin: 0 0 8px;
+      padding: 9px 12px;
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--red) 12%, transparent);
+      color: var(--red);
+      font-weight: 500
     }
 
-    .legend .wk-wait {
-      --c: repeating-linear-gradient(45deg, var(--amber) 0 2px, var(--amber-bg) 2px 4px)
+    #wf .kv2 {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 7px 16px;
+      margin-bottom: 12px
+    }
+
+    #wf .kv2>span,
+    #wf .ph .pl small {
+      color: var(--muted)
+    }
+
+    #wf .kv2 b {
+      font-weight: 450;
+      overflow-wrap: anywhere
+    }
+
+    #wf .kv2 b.deny {
+      color: var(--red)
+    }
+
+    #wf .kv2 b.held {
+      color: var(--amber)
+    }
+
+    #wf .kv2 b.ok {
+      color: var(--green)
+    }
+
+    #wf .sec2 {
+      margin: 14px 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .05em
+    }
+
+    #wf .rl {
+      margin-bottom: 8px
+    }
+
+    #wf .rl b {
+      color: var(--amber);
+      font-weight: 600
+    }
+
+    #wf .rm {
+      color: var(--muted)
+    }
+
+    #wf .ph {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.3fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 7px 0
+    }
+
+    #wf .ph .pl small {
+      display: block;
+      font-size: 12px;
+      overflow-wrap: anywhere
+    }
+
+    #wf .ph .pt {
+      position: relative;
+      height: 18px
+    }
+
+    #wf .ph .pv {
+      text-align: right;
+      white-space: nowrap
+    }
+
+    #wf .ph.tot {
+      margin-top: 6px;
+      border-top: 1px solid var(--t-line);
+      padding-top: 12px;
+      font-weight: 500
+    }
+
+    #wf .pb {
+      position: absolute;
+      top: 2px;
+      bottom: 2px;
+      left: calc((var(--a) - var(--dlo)) / var(--dsp) * 100%);
+      width: max(1.2%, calc((var(--e) - var(--a)) / var(--dsp) * 100%));
+      border-radius: 5px;
+      background: color-mix(in srgb, var(--t-tool) 25%, var(--panel));
+      border: 1px solid color-mix(in srgb, var(--t-tool) 55%, transparent)
+    }
+
+    #wf .pb.llm {
+      background: color-mix(in srgb, var(--t-llm) 25%, var(--panel));
+      border-color: color-mix(in srgb, var(--t-llm) 55%, transparent)
+    }
+
+    #wf .pb.fail {
+      background: color-mix(in srgb, var(--red) 25%, var(--panel));
+      border-color: color-mix(in srgb, var(--red) 60%, transparent)
+    }
+
+    #wf .pb.wait {
+      background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--amber) 60%, transparent) 0 2px, color-mix(in srgb, var(--amber) 14%, var(--panel)) 2px 5px);
+      border-color: color-mix(in srgb, var(--amber) 65%, transparent)
+    }
+
+    #wf .pm {
+      position: absolute;
+      left: calc((var(--a) - var(--dlo)) / var(--dsp) * 100%);
+      top: 6px;
+      width: 6px;
+      height: 6px;
+      margin-left: -3px;
+      border-radius: 50%;
+      background: var(--muted)
+    }
+
+    #wf .lk {
+      border: 0;
+      background: none;
+      padding: 0;
+      color: var(--blue);
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 2px
+    }
+
+    @container tcn (max-width: 820px) {
+
+      #wf .tn-th,
+      #wf .tn-r {
+        grid-template-columns: 14px 28px minmax(110px, 1fr) 104px 64px var(--wfw)
+      }
+
+      #wf .sz {
+        display: none
+      }
+    }
+
+    @container tcn (max-width: 600px) {
+
+      #wf .tn-th,
+      #wf .tn-r {
+        grid-template-columns: 14px 28px minmax(100px, 1fr) 56px var(--wfw)
+      }
+
+      #wf .ag {
+        display: none
+      }
+
+      #wf .tn-drawer {
+        width: 100%
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+
+      #wf .tn-drawer,
+      #wf .tn-drawer.open {
+        transition: none
+      }
+
+      #wf .dot.run,
+      #wf .seal.live i {
+        animation: none
+      }
     }
 
     /* reasoning */
@@ -2278,6 +3229,213 @@
       margin: -4px 8px 2px
     }
 
+    /* INFLUENCE's card's WHY: the call's words, then its chain top to bottom (a thin hop per step), a solid line
+       from a step the signer traced an argument to (exact), a double one from a step a replay showed changed the call
+       (measured: a wide stroke with the panel's colour down its middle), a dashed hint only when asked for */
+    .iwhy .w {
+      font-size: 13px
+    }
+
+    /* INFLUENCE's card per call stopped or flagged: what happened and why in one line, the value's route below, how
+       it is known as a tag; the same call that ran with a trusted value beside it; the rest one quiet line */
+    .icards {
+      display: grid;
+      gap: 8px;
+      margin: 6px 0 4px
+    }
+
+    .icard {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      align-items: flex-start
+    }
+
+    .icard .main {
+      flex: 1 1 420px;
+      min-width: 0;
+      border-left: 3px solid var(--line2);
+      padding: 2px 0 4px 10px
+    }
+
+    .icard.c-blk .main {
+      border-left-color: var(--red)
+    }
+
+    .icard.c-held .main {
+      border-left-color: var(--amber)
+    }
+
+    .icard.c-flag .main {
+      border-left-color: var(--cyan)
+    }
+
+    .icard .ih {
+      font-size: 14px;
+      color: var(--text)
+    }
+
+    .icard .ih .vb,
+    .icard .itwin .vb {
+      font-weight: 700
+    }
+
+    .icard.c-blk .ih .vb {
+      color: var(--red)
+    }
+
+    .icard.c-held .ih .vb {
+      color: var(--amber)
+    }
+
+    .icard.c-flag .ih .vb {
+      color: var(--cyan)
+    }
+
+    .icard .ih .why {
+      color: var(--muted)
+    }
+
+    /* a value the agent's content chose, in a card's sentence: data, not our words */
+    .icard code.dv {
+      font: inherit;
+      color: var(--text);
+      background: var(--panel2);
+      border: 1px solid var(--line2);
+      border-radius: 3px;
+      padding: 0 3px
+    }
+
+    .ipath {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      margin: 4px 0;
+      font-size: 11px
+    }
+
+    .ipath .hop {
+      border: 1px solid var(--line2);
+      padding: 1px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 34ch
+    }
+
+    .ipath .hop.bad {
+      border-color: var(--red);
+      color: var(--red)
+    }
+
+    .ipath .hop.end {
+      color: var(--text);
+      border-color: var(--muted)
+    }
+
+    .ipath .ar {
+      color: var(--faint)
+    }
+
+    .ipath .ar.bad {
+      color: var(--red)
+    }
+
+    .icard .imeta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 2px
+    }
+
+    .icard .itwin {
+      flex: 0 1 260px;
+      border: 1px solid var(--line2);
+      border-left: 3px solid var(--green);
+      padding: 3px 8px;
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .icard .itwin .vb {
+      color: var(--green)
+    }
+
+    .icard .iwhy {
+      flex-basis: 100%;
+      margin: 2px 0 4px 13px
+    }
+
+    .iquiet {
+      margin: 4px 0;
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .iquiet div {
+      margin-left: 14px
+    }
+
+    .ichain {
+      display: block;
+      margin: 2px 0;
+      overflow: visible
+    }
+
+    .glegend .ichain {
+      display: inline-block;
+      vertical-align: middle
+    }
+
+    .ichain text {
+      fill: var(--text);
+      font-size: 11px
+    }
+
+    .ichain text.dim {
+      fill: var(--muted)
+    }
+
+    .ichain path {
+      fill: none
+    }
+
+    .ichain .hop {
+      stroke: var(--muted);
+      stroke-width: 1
+    }
+
+    .ichain .dot {
+      fill: var(--muted)
+    }
+
+    .ichain .dot.bad {
+      fill: var(--red)
+    }
+
+    .ichain .g-exact {
+      stroke: var(--amber);
+      stroke-width: 2
+    }
+
+    .ichain .g-measured {
+      stroke: var(--amber);
+      stroke-width: 5
+    }
+
+    .ichain .g-gap {
+      stroke: var(--panel2);
+      stroke-width: 1.6
+    }
+
+    .ichain .g-hint {
+      stroke: var(--muted);
+      stroke-width: 1;
+      stroke-dasharray: 3 3
+    }
+
     /* INFLUENCE's flow: each kind of content (left) to the tools called after it (right), as GRAPH draws inputs and
        tool calls; a line is coloured as its chip, a hovered or clicked one stays bright and the rest dim; a plain line
        shows only for the content or tool pointed at or clicked */
@@ -3120,6 +4278,10 @@
         min-height: 170px
       }
 
+      .pg-run.rv-waterfall .lanes {
+        min-height: 640px
+      }
+
       #app {
         height: auto;
         min-height: 100%
@@ -3163,7 +4325,7 @@
     }
     @media (max-width:700px) {
       /* phones: keep time, event, tool, target and status readable; agent and duration live in DETAIL */
-      th.c-ms, td.c-ms, th.c-agent, td.c-agent, .wfr .wa {
+      th.c-ms, td.c-ms, th.c-agent, td.c-agent {
         display: none
       }
 
@@ -3558,9 +4720,25 @@
           <span class="legend" id="lanelegend"><span style="--c:var(--cyan)">read</span><span style="--c:var(--amber)">write</span><span
               style="--c:var(--magenta)">exec</span><span style="--c:var(--blue)">net</span><span
               style="--c:var(--green)">agent</span><span style="--c:var(--red)">blocked/error</span></span>
-          <span class="legend" id="wflegend" hidden></span>
         </h2>
-        <div class="body" id="lanewrap"><canvas id="lanes"></canvas><div id="wf" hidden></div></div>
+        <div class="body" id="lanewrap"><canvas id="lanes"></canvas><div id="wf" class="tcn" hidden>
+          <div class="tn-bar">
+            <div class="tn-chips" id="tnchips" role="group" aria-label="Show calls of one kind"></div>
+            <label class="tn-q"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/></svg><input id="tnq" type="search" placeholder="Filter calls" aria-label="Filter calls (the same as FIND)" spellcheck="false" autocomplete="off"></label>
+          </div>
+          <div class="tn-ov" id="tnov" tabindex="0" role="group" aria-label="The whole run in miniature. Drag across it to select a window of time. With the keyboard: arrows move the window, Shift and arrows resize it, Escape clears it.">
+            <div id="tnticks"></div><div id="tnsegs"></div><div class="tn-sel" id="tnsel" hidden></div><i class="tn-nowo"></i><div class="tn-rl" id="tnrl" hidden></div>
+          </div>
+          <div class="tn-main">
+            <div class="tn-tbl" role="table" aria-label="Calls of this run, in the order and window chosen">
+              <div class="tn-th" id="tnth" role="row"></div>
+              <div class="tn-rows" id="tnrows" role="rowgroup"><div class="tn-in" id="tnin"></div></div>
+            </div>
+            <button type="button" class="tn-new" id="tnnew" data-wfnew hidden></button>
+            <aside class="tn-drawer" id="tndrawer" aria-label="Details of the selected call" aria-hidden="true"></aside>
+          </div>
+          <div class="tn-foot" id="tnfoot"></div>
+        </div></div>
       </section>
       <section class="p reason">
         <h2><b>6</b>REASONING<small>self-reported, not proof</small></h2>
@@ -3784,7 +4962,7 @@
     function reset() {
       S = {
         recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
-        tools: new Map(), alerts: [], reasoning: [], tokIn: 0, tokOut: 0, cost: 0, costSeen: false, currency: "", spawnQ: [], withheldSeen: new Set(),
+        tools: new Map(), alerts: [], llm: [], reasoning: [], tokIn: 0, tokOut: 0, cost: 0, costSeen: false, currency: "", spawnQ: [], withheldSeen: new Set(),
         turns: new Map(),  // v2: a model turn's exchange id and tool_use ids -> what its tokens added (tk_model); its counts -> such turns
         asked: new Map(),  // v2: a call (tuid) -> the model message that asked for it {x: exchange id, seq: its record's run_seq}
         effects: new Map(),  // v2: an observed effect (session|run_seq) -> {rec, call: tuid or null, how, status}
@@ -3813,7 +4991,7 @@
           current: null, errors: 0, blocked: 0, flags: 0, model: "", name: r.agent || ""
         });
       }
-      const a = S.agents.get(key); if (a) { a.last = Math.max(a.last, r.ts); if (r.agent_type && a.type === "subagent") a.type = r.agent_type; }
+      const a = S.agents.get(key); if (a) { if (a.lastRec !== r) { a.before = a.last; a.lastRec = r; } a.last = Math.max(a.last, r.ts); if (r.agent_type && a.type === "subagent") a.type = r.agent_type; }
       return a;
     }
     function label(a) {
@@ -3842,24 +5020,44 @@
     const callKey = r => r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id) + "|" + (r.v2?.attempt ?? ""), aidKey = r => r.session_id + "|" + r.v2?.approval_id, didKey = r => r.session_id + "|" + r.v2?.decision_id, refusedUse = r => /^approval\.(refused|binding_mismatch)$/.test(r.v2?.type);
     // a run's held calls as why/import_v2.held_calls reads them. Returns the owners: approval key -> the decision row its
     // request was for (the latest under the request's call id and attempt). Into `out`: each decision row that is a held
-    // call's retry with its own id (LangGraph's resume) -> the held call's row. A consume names a call id and attempt, not
-    // a decision, so a decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it
-    // has no approval request of its own; no binding_mismatch of the held call's approval comes after it; a consume of
-    // that approval under the id does. When in doubt it is a call of its own
+    // call's retry with its own id (LangGraph's resume) -> the held call's row. A consume that names its decision
+    // (ext.approval.decision, format 1.8) folds exactly that one, when it is the held call's own id (a later attempt
+    // included) and the consume is its call, after it; without it a consume names a call id and attempt, not a decision,
+    // so a decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it has no
+    // approval request of its own; no binding_mismatch of the held call's approval comes after it; a consume of that
+    // approval under the id does. When in doubt it is a call of its own
     function foldsOf(rows, out = new Map()) {
+      const callId = r => r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id);   // a call's id, without its attempt
       const decs = new Map(), at = new Map(), owners = new Map(), mism = new Map(), cons = new Map();   // call key -> its decisions
+      const named = new Map(), byId = new Map();   // an approval -> [decision, consume index, consume key]; decision key -> its row
       out.clear();
       rows.forEach((r, i) => {
         const a = r.v2?.approval, k = callKey(r);
-        if (r.event === "PreToolUse" && r.v2) { at.set(r, i); decs.set(k, [...(decs.get(k) || []), r]); }
+        if (r.event === "PreToolUse" && r.v2) {
+          at.set(r, i); decs.set(k, [...(decs.get(k) || []), r]);
+          if (r.v2.decision_id) byId.set(didKey(r), r);
+        }
         else if (a === "requested" && decs.has(k)) owners.set(aidKey(r), decs.get(k).at(-1));
         else if (a === "binding_mismatch") mism.set(aidKey(r), i);   // the latest
-        else if (a === "consumed") cons.set(aidKey(r), [...(cons.get(aidKey(r)) || []), [i, k]]);
+        else if (a === "consumed") {
+          cons.set(aidKey(r), [...(cons.get(aidKey(r)) || []), [i, k]]);
+          if (r.v2.decision_id) named.set(aidKey(r), [...(named.get(aidKey(r)) || []), [didKey(r), i, k]]);
+        }
       });
       const own = new Set(owners.values());
-      for (const [aid, h] of owners) for (const d of decs.get(callKey(h)))
-        if (at.get(d) > at.get(h) && d.v2.decision === "ask" && d.tool_name === h.tool_name && !own.has(d) && !(mism.get(aid) > at.get(d))
-            && (cons.get(aid) || []).some(([c, k]) => c > at.get(d) && k === callKey(h))) out.set(d, h);
+      for (const [aid, h] of owners) {
+        if (named.has(aid)) {   // the consume names its decision (ext.approval.decision, format 1.8): fold exactly it
+          for (const [did, ci, ck] of named.get(aid)) {
+            const d = byId.get(did);
+            if (d && d.v2.decision === "ask" && d.tool_name === h.tool_name && at.get(d) > at.get(h) && at.get(d) < ci
+                && ck === callKey(d) && callId(d) === callId(h) && !own.has(d)) out.set(d, h);
+          }
+          continue;
+        }
+        for (const d of decs.get(callKey(h)))
+          if (at.get(d) > at.get(h) && d.v2.decision === "ask" && d.tool_name === h.tool_name && !own.has(d) && !(mism.get(aid) > at.get(d))
+              && (cons.get(aid) || []).some(([c, k]) => c > at.get(d) && k === callKey(h))) out.set(d, h);
+      }
       return owners;
     }
     // a call's acts under its id (latest last), and the one a row of `r`'s id and attempt is of that passes `ok`
@@ -3893,6 +5091,8 @@
       return ended(a) ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"];
     }
 
+    // a model turn, for the TIMELINE: from the agent's previous record to this one (a turn records no start of its own)
+    const llmTurn = (a, r, tin, tout) => ({ ts: r.ts, from: a.before, agent: a, model: r.model, tin, tout, cr: r.usage?.cache_read_input_tokens || 0, cw: r.usage?.cache_creation_input_tokens || 0, started: r.started, rec: r });
     function ingest(r) {
       S.recs.push(r);
       if (S.firstTs === null) S.firstTs = r.ts;
@@ -3907,7 +5107,10 @@
         const a = agentOf(r); const u = r.usage || {};
         const tin = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), tout = u.output_tokens || 0;
         const mid = r.message_id || r.transcript_uuid;
-        if (!S.withheldSeen.has("u" + mid)) { a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout; S.withheldSeen.add("u" + mid); }
+        if (!S.withheldSeen.has("u" + mid)) {
+          a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout; S.withheldSeen.add("u" + mid);
+          if (r.usage) S.llm.push(llmTurn(a, r, tin, tout));
+        }
         if (r.model) a.model = r.model;
         // v2: each entry keeps its form, its model message (x) and its record's run_seq, for the call it led to
         const at = { x: r.v2?.exchange_id, seq: r.v2?.run_seq, calls: r.calls };
@@ -4052,13 +5255,15 @@
           const j = t ? (t.gw !== gw ? pool.indexOf(t) : -1) : pool.findIndex(p => p.gw !== gw && Math.abs(p.ts - r.ts) <= 300);
           if (j >= 0) t = pool.splice(j, 1)[0];
           if (!t) {
-            t = { a, tin, tout, gw, ts: r.ts };
+            t = { a, tin, tout, gw, ts: r.ts, row: llmTurn(a, r, tin, tout) };
+            S.llm.push(t.row);
             a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout;
             pool.push(t);
             S.turns.set(same, pool);
           } else if (gw && !t.gw) {
             t.a.tokIn -= t.tin; t.a.tokOut -= t.tout; S.tokIn -= t.tin; S.tokOut -= t.tout;
             Object.assign(t, { a, tin, tout, gw, ts: r.ts });
+            Object.assign(t.row, llmTurn(a, r, tin, tout));
             a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout;
           }
           for (const k of keys) S.turns.set(k, t);
@@ -4304,14 +5509,22 @@
         + `<div class="tsave"><span>GIVEN TO<b>${esc(plural(x.effect.given, "session"))}</b>signed: each session's tracekit:lessons record names it</span>` + lessonEffect(x) + `</div>`
         + `<div class="dim">${esc(x.effect.basis)}</div>` + lessonCmd(x.retire) + `</section>`;
     }
+    function lessonRetired(x) {
+      const rb = x.retired_because;
+      return `<div class="lrow"><b>${esc(x.name)}</b> <span class="dim">${esc(x.id)} · ${esc(rb ? rb.why : "Retired")}${rb && rb.state === "signed"
+        ? ` <a href="#" data-lrec="${esc(rb.run)}" data-lseq="${esc(rb.seq)}" title="${esc(`run ${rb.run} record ${rb.seq}`)}">OPEN</a>`
+        : ""}</span></div>`;
+    }
     function renderLessons(L, days) {
       const head = `<div class="tsrc">LESSONS · what your coding agents keep relearning, from signed records · a person approves each one</div>`;
       if (!L || !L.ok) return head + `<section class="tcard tno"><div class="tst">${esc(L?.why || "No lessons here.")}</div></section>`;
       const nope = L.not_proposed, more = L.not_proposed_n - nope.length;
+      const retired = (L.earlier || []).filter(x => x.status === "retired");
       return head + `<div class="lgrid"><div>`
         + (L.waiting.length ? `<div class="tsrc">WAITING FOR YOUR OK ${esc(L.waiting.length)}</div>` + L.waiting.map(x => lessonCard(x, days)).join("")
           : `<section class="tcard tno"><div class="tst">Nothing waits for your OK: no lookup, fix or instruction repeats enough in the signed records to propose.</div></section>`)
         + (L.active.length ? `<div class="tsrc">IN USE ${esc(L.active.length)} · each session of its project reads them at its first prompt</div>` + L.active.map(lessonUse).join("") : "")
+        + (retired.length ? `<section class="tcard tno"><div class="tsrc">RETIRED ${esc(retired.length)}</div>` + retired.map(lessonRetired).join("") + `</section>` : "")
         + `</div><div><section class="tcard tno"><div class="tsrc">HOW THEY ARE GIVEN</div><div class="tst">${esc(`At each Claude Code session's first prompt, and again after a compaction or a resume, within ${L.budget.toLocaleString("en-US")} bytes, the ones that bear on the prompt first. The session's run signs which ones it got, by id and the block's hash, never the text. Off: ${L.off}.`)}</div></section>`
         + `<section class="tcard tno"><div class="tsrc">NOT PROPOSED ${esc(L.not_proposed_n)}</div>` + (nope.length ? nope.map(x => `<div class="lrow"><b>${esc(x.name)}</b> <span class="dim">${esc(x.why)}</span></div>`).join("")
           + (more > 0 ? `<div class="dim">${esc(`and ${more} more (tracekit tips --json)`)}</div>` : "") : `<div class="tst">Nothing left out.</div>`) + `</section>`
@@ -5233,14 +6446,18 @@
       if (scope) p.set("run", scope);
       if (PAGE === "run") p.set("view", CALLSLOG ? "timeline" : RV);
       if (seq != null) p.set("seq", seq);
+      if (PAGE === "run" && RV === "waterfall" && !CALLSLOG) {
+        if (WFR) p.set("range", WFR.map(x => +Math.max(0, x).toFixed(1)).join("-"));
+        if (seq != null && WFTAB !== "request") p.set("tab", WFTAB);
+      }
       return p.toString() ? "#" + p : "";
     }
     // a step of a replay, or a link just followed (whose record may open as the row before it), replaces the entry
     function syncLink() {
-      const h = linkOf(), replace = R || following;
+      const h = linkOf(), drag = WF.drag?.moved ? WF.drag : null, replace = R || following || drag?.pushed;
       if (!linked) return;
       following = false;
-      if (h !== location.hash) history[replace ? "replaceState" : "pushState"](null, "", h || location.pathname);
+      if (h !== location.hash) { history[replace ? "replaceState" : "pushState"](null, "", h || location.pathname); if (drag) drag.pushed = true; }
     }
     // #approval=apr-…: the call that approval held, as [its run, its hold's seq]; null while the page has no record of it
     function heldAt(id) {
@@ -5259,6 +6476,8 @@
       if (PAGE === "run" && !p.get("view")) { RV = "calls"; CALLSLOG = false; }
       wvKey = "";
       selected = null;
+      const rg = (p.get("range") || "").split("-").map(Number);
+      WFR = rg.length === 2 && rg.every(x => Number.isFinite(x) && x >= 0 && x < 1e7) && rg[1] > rg[0] ? rg : null; WFTAB = WFTABS.includes(p.get("tab")) ? p.get("tab") : "request";
       if (seq != null && seq !== "") openSeq(+seq);
       schedule();
     }
@@ -5696,9 +6915,10 @@
       }).join("") || `<div class="empty">No actions yet.</div>`);
       $("mixsum").textContent = `${counts.size} tools`;
     }
-    // a time axis: its step, at most `most` ticks (down to a millisecond in a v2 run), and a tick's words
-    const tickStep = (span, most = 10) => [...(V2 ? [.001, .002, .005, .01, .02, .05, .1, .2, .5] : []), 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].find(s => span / s <= most) || 3600;
-    const tickText = (t, step) => step < 1 ? fmtT(t) + "." + String(Math.round(t * 1000) % 1000).padStart(3, "0") : fmtT(t);
+    // a time axis: its step, at most `most` ticks (down to a millisecond in a v2 run), and a tick's words (rounded to the
+    // millisecond first: a tick at 15.9999999 reads 16.000, not fmtT's floor with the rounded milliseconds, 15.000)
+    const tickStep = (span, most = 10) => [...(V2 ? [.001, .002, .005, .01, .02, .05, .1, .2, .5] : []), 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600, 43200, 86400, 604800].find(s => span / s <= most) || 604800;
+    const tickText = (t, step) => { const ms = Math.round(t * 1000); return fmtT(Math.floor(ms / 1000)) + (step < 1 ? "." + String(ms % 1000).padStart(3, "0") : ""); };
     let laneHits = [], laneKey = [], laneAt = 0;
     function renderLanes() {
       const cv = $("lanes"), wrap = $("lanewrap"), dpr = window.devicePixelRatio || 1, top = 16;
@@ -5778,52 +6998,410 @@
       if (R && rpos) { const px = Math.round(Math.min(W - 2, Math.max(labelW, x(R[rpos - 1].ts)))) + .5; g.strokeStyle = css("--cyan"); g.lineWidth = 2; g.beginPath(); g.moveTo(px, top - 4); g.lineTo(px, H); g.stroke(); g.lineWidth = 1; }
       if (mode === "live" && !V2) { const nx = x(Date.now() / 1000); g.strokeStyle = css("--red"); g.beginPath(); g.moveTo(nx + .5, top - 4); g.lineTo(nx + .5, H); g.stroke(); }
     }
-    // a run's TIMELINE: BY CALL, one row per call on one time axis (a waterfall), or BY AGENT, the lanes above
-    let WFBY = "call";
-    const WFMAX = 600, WFK = { ok: "allowed", flag: "flagged", deny: "blocked, refused or failed", wait: "held for a person" };
-    // a call's bars, [kind, from, to]; to null: still waiting or running, so to the axis' right edge. A hold waits (hatched)
-    // from its decision to its answer, then runs if it was approved; a refused one ends there, red. A call whose retry ran
-    // under its approval waits only (the retry's row runs), and the retry runs at once
+    // a run's TIMELINE: BY CALL, one row per call on one time axis (filters, an overview strip to select a window, a
+    // drawer per call: the signed records' own times and decisions), or BY AGENT, the lanes above
+    let WFBY = "call", WFCHIP = "all", WFSORT = { k: "start", dir: 1 }, WFTAB = "request", WFR = null;   // WFR: the window selected, [from, to] in seconds from the run's first record
+    const WFMAX = 600, WFCHIPS = [["all", "All"], ["llm", "LLM"], ["tool", "Tools"], ["held", "Held"], ["deny", "Denied"], ["err", "Errors"], ["retry", "Retries"]];
+    const WFTABS = ["request", "response", "timing", "decision", "evidence", "retries"];
+    const WF = { keys: new Set(), unseen: 0, n: null, ov: { o0: 0, os: 1 }, drag: null, sel: "", last: null, cur: null, open: false };
+    // a call's bars, [kind, from, to]; to null: still waiting or running (only while its run is open), so to the axis' right edge.
+    // A hold waits (hatched) from its decision to its answer, then runs if it was approved; a refused one ends there, red. A call
+    // that ran with no approval (denied, rejected, unanswered) is drawn running in red to its result: it ran anyway. A call whose
+    // retry ran under its approval waits only (the retry's row runs), and the retry runs at once. A run that is not open ends every wait
+    // a replay paused before its last record is a run still going at that point: its calls are in flight, not left without a result
+    const wfPlaying = () => mode === "replay" && (BOOT ? pos < BOOT.length : R ? rpos < R.length : false);
+    const wfOpen = a => (wfLive() || wfPlaying()) && !ended(a);
+    const wfStop = a => S.sessions.get(a.agent.session)?.end ?? S.lastTs ?? a.start;
     function wfBars(a) {
-      if (a.denied) return [["deny", a.start, a.start]];
-      const kind = a.error ? "deny" : a.flags.some(f => f !== "held_for_approval") ? "flag" : "ok", run = from => [kind, from, a.end ?? (ended(a) ? from : null)];
+      const ranTo = a.post ? a.end ?? a.post.ts : null;
+      if (a.denied) return a.post ? [["deny", a.start, ranTo]] : [["deny", a.start, a.start]];
+      const kind = a.error ? "deny" : a.flags.some(f => f !== "held_for_approval") ? "flag" : "ok", run = from => [kind, from, a.end ?? (wfOpen(a) ? null : from)];
       if (a.v2?.decision !== "ask" || a.retryOf) return [run(a.start)];
       const ans = a.approvals.filter(x => x.v2.approval in ANSWER).pop();
-      if (!ans) return [["wait", a.start, null]];
-      return [["wait", a.start, ans.ts], ...a.ranBy ? [] : [ans.v2.approval === "approve" ? run(ans.ts) : ["deny", ans.ts, ans.ts]]];
+      if (!ans) return a.post ? [["deny", a.start, ranTo]] : [["wait", a.start, wfOpen(a) ? null : wfStop(a)]];
+      if (ans.v2.approval === "approve") return [["wait", a.start, ans.ts], ...a.ranBy || !a.post && a.end == null && !wfOpen(a) ? [] : [run(ans.ts)]];   // a ran bar needs a result, an end, or a run still going
+      return [["wait", a.start, ans.ts], a.post ? ["deny", ans.ts, ranTo] : ["deny", ans.ts, ans.ts]];
+    }
+    const wfDur = d => { if (d == null) return "–"; if (d < 1) return Math.round(d * 1000) + "ms"; if (d < 10) return d.toFixed(1) + "s"; const s = Math.round(d); return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s"; };
+    const wfRel = (s, step) => { if (step < 1) return +s.toFixed(3) + "s"; s = Math.round(s); if (s >= 86400) return Math.floor(s / 86400) + "d" + (s % 86400 >= 3600 ? " " + Math.floor(s % 86400 / 3600) + "h" : ""); if (s >= 3600) return Math.floor(s / 3600) + "h" + (s % 3600 >= 60 ? " " + Math.floor(s % 3600 / 60) + "m" : ""); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60 ? " " + s % 60 + "s" : ""); };
+    const wfBytes = n => n < 1000 ? n + " B" : n < 1e5 ? (n / 1e3).toFixed(1) + " KB" : n < 1e6 ? Math.round(n / 1e3) + " KB" : (n / 1e6).toFixed(1) + " MB";
+    const wfTok = n => (n >= 1000 ? +(n / 1000).toFixed(1) + "K" : n) + " tok";
+    const wfTitleCase = s => String(s).replace(/[-_]+/g, " ").replace(/\b[a-z]/g, c => c.toUpperCase());
+    // an agent's name for a person: the run's agent, or a sub-agent by its description, its id when that is a word, else its type
+    const wfAgent = a => a.signer ? "signer" : !a.sub ? (V2 && a.name ? a.name : "main") : /^[a-z][a-z _-]{0,23}$/i.test(a.id) ? wfTitleCase(a.id) : a.desc ? a.desc.split(/\s+/).slice(0, 3).join(" ").slice(0, 28) : wfTitleCase(a.type);
+    // a mark of 3 x 3 squares, mirrored left to right, from the agent's name
+    function wfMark(name) {
+      let h = 2166136261; for (const c of name) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
+      const on = [0, 1, 2].flatMap(y => [0, 1, 2].map(x => (h >>> (y * 2 + Math.min(x, 2 - x))) & 1 || (x === 1 && y === 1)));
+      return { on, hue: ["--magenta", "--green", "--amber", "--blue", "--cyan", "--red"][(h >>> 9) % 6] };
+    }
+    // a v2 result the viewer holds only as a commitment reads "[hashed · N bytes]": N is its size
+    const wfHashed = a => /^\[hashed · (\d+) bytes\]$/.exec(a.post?.tool_response?.output);
+    // a result's size, worked out once: a tick draws every call again
+    function wfSize(a) {
+      if (a._szFor !== a.post) { const r = a.post?.tool_response, h = wfHashed(a); a._szFor = a.post; a._sz = h ? +h[1] : r == null || typeof r === "object" && !Object.keys(r).length ? null : new TextEncoder().encode(typeof r === "string" ? r : JSON.stringify(r)).length; }
+      return a._sz;
+    }
+    // live: the page follows a log that is still being written. A file (a bundle, a saved report) never is
+    const wfLive = () => mode === "live" && !ENDED && SOURCE !== "bundle" && !document.URL.startsWith("file:") && (V2 ? (scope && RUNS.get(scope)?.state === "open") : true);
+    // a failed call's short word: its exit code or HTTP status when its result holds one
+    function wfFailWord(a) {
+      const r = a.post?.tool_response || {}, code = r.exit_code ?? r.exitCode, http = r.status ?? r.status_code;
+      return typeof code === "number" && code ? "exit " + code : typeof http === "number" && http >= 400 ? String(http) : "FAILED";
+    }
+    // the answer to a held call: [the record, who]
+    const wfAnswer = a => { const h = a.retryOf || a, r = h.approvals.filter(x => x.v2.approval in ANSWER).pop(); return r && { rec: r, word: ANSWER[r.v2.approval].toLowerCase(), who: r.v2.approver || "" }; };
+    function wfToolRow(a, i) {
+      let [cls, words] = callState(a);
+      const bars = wfBars(a), held = heldCall(a), ans = held && wfAnswer(a), badges = [], open = wfOpen(a);
+      if (!open && words === "RUNNING") [cls, words] = ["dim", "NO RESULT"];
+      else if (!open && words === "TO ANSWER") [cls, words] = ["s-flag", "NOT ANSWERED"];
+      const anyway = /RAN ANYWAY/.test(words), wait = bars.find(b => b[0] === "wait"), run = bars.find(b => b[0] !== "wait" && b[2] !== b[1]);
+      const waitDur = wait ? (wait[2] ?? null) : null, last = bars[bars.length - 1], end = last[2], size = wfSize(a);
+      const attempts = (S.byId?.get(a.id) || []).length, flags = a.flags.filter(f => f !== "denied" && f !== "error" && f !== "held_for_approval");
+      if (a.denied) badges.push(["deny", "DENIED", a.reasons.join("; ") || "refused by the signer's policy"]);
+      if (held) {
+        badges.push(["held", "HELD " + (wait && waitDur != null ? wfDur(waitDur - wait[1]) : ""), "held for a person", wait && waitDur == null ? wait[1] : null]);
+        if (ans) badges.push([ans.word === "approved" ? "ok" : "deny", ans.word, ans.who ? ans.word + " by " + ans.who : ans.word]);
+      }
+      if (anyway) badges.push(["deny", "RAN ANYWAY", "it has a result though the policy or the person did not let it run"]);
+      if (a.error && !a.denied) badges.push(["deny", wfFailWord(a), "the call failed"]);
+      if (a.retryOf) badges.push(["retry", "RETRY", "the agent's retry of " + a.retryOf.pre.v2.tool_use_id + ", under that call's approval"]);
+      else if (attempts > 1) badges.push(["retry", "×" + attempts, attempts + " attempts under this call's id"]);
+      if (flags.length) badges.push(["flag", "⚑ " + flags[0].replace(/_/g, " ") + (flags.length > 1 ? " +" + (flags.length - 1) : ""), "flagged: " + flags.join(", ")]);
+      const failed = a.denied || a.error || cls === "s-deny" || anyway, running = bars.some(b => b[2] == null), noResult = !a.post && a.end == null && !held && !a.denied && !running;
+      return { key: "a" + i, kind: "tool", x: a, i, agent: a.agent, start: a.start, end, bars, name: a.tool, arg: a.target, badges, held: !!held, denied: !!a.denied, failed: !!a.error || anyway,
+        retry: !!(a.retryOf || attempts > 1), running, noResult, state: failed ? "fail" : running ? "run" : held || a.retryOf || attempts > 1 ? "retry" : "done", words: [cls, words],
+        size, sizeText: size == null ? "–" : wfBytes(size),
+        dur: running || noResult ? null : run ? run[2] - run[1] : wait && waitDur != null ? waitDur - wait[1] : a.denied ? null : end - a.start, durFrom: running ? (run || wait)[1] : null, bad: failed };
+    }
+    // a model turn records no start: its bar runs from the agent's previous record (approx), unless the gateway's request was recorded (started)
+    function wfLlmRow(l, j) {
+      const n = l.rec.v2?.tool_ids?.length, real = l.started != null && l.started < l.ts, from = real ? l.started : l.from < l.ts ? l.from : null;
+      return { key: "m" + j, kind: "llm", x: l, j, agent: l.agent, start: from ?? l.ts, end: l.ts, bars: [["llm", from ?? l.ts, l.ts]], name: l.model || "model", arg: n == null ? "" : n ? "→ " + plural(n, "tool call") : "no tool calls",
+        badges: [], held: false, denied: false, failed: false, retry: false, running: false, noResult: false, state: "done", words: ["dim", "MODEL TURN"], size: l.tin + l.tout, sizeText: wfTok(l.tin + l.tout),
+        dur: from == null ? null : l.ts - from, approx: !real && from != null, real, durFrom: null, bad: false };
+    }
+    const wfIn = (r, c) => c === "all" || c === "llm" && r.kind === "llm" || c === "tool" && r.kind === "tool" || c === "held" && r.held || c === "deny" && r.denied || c === "err" && r.failed || c === "retry" && r.retry;
+    function wfRows() {
+      const rows = [];
+      S.actList.forEach((a, i) => actMatch(a) && rows.push(wfToolRow(a, i)));
+      if (!(F.tool || F.file || F.flag)) S.llm.forEach((l, j) => agentMatch(l.agent) && (!F.find || (l.model || "").toLowerCase().includes(F.find.toLowerCase())) && rows.push(wfLlmRow(l, j)));
+      return rows;
+    }
+    const WFCMP = { name: (x, y) => x.name.localeCompare(y.name), agent: (x, y) => wfAgent(x.agent).localeCompare(wfAgent(y.agent)), size: (x, y) => (x.size ?? -1) - (y.size ?? -1),
+                    time: (x, y) => (x.dur ?? -1) - (y.dur ?? -1), start: (x, y) => x.start - y.start };
+    // the view's numbers: every row the filters (AGT, TOOL, FILE, FLAG, FIND) keep, the chips' counts, the rows the chip and the
+    // window keep, in the order asked, and the axis. Times in seconds from the run's first record
+    function wfModel() {
+      const all = wfRows(), base = S.firstTs ?? 0, now = nowTs(), live = wfLive(), counts = {};
+      for (const [c] of WFCHIPS) counts[c] = all.filter(r => wfIn(r, c)).length;
+      let lo = Infinity, hi = -Infinity;
+      for (const r of R || []) if (r.event === "PreToolUse" || r.event === "PostToolUse" || r.v2?.approval in ANSWER) { lo = Math.min(lo, r.ts); hi = Math.max(hi, r.ts); }
+      if (!R) for (const r of all) for (const [, f, t] of r.bars) { lo = Math.min(lo, f); hi = Math.max(hi, t ?? (live ? now : f)); }
+      if (lo > hi) { lo = hi = base; }
+      const pad = Math.max(hi - lo, .01) * .02, o0 = lo - pad - base, os = hi - lo + 2 * pad;
+      const wlo = WFR ? Math.max(WFR[0], o0) : 0, whi = WFR ? Math.min(WFR[1], o0 + os) : 0, win = WFR && whi > wlo ? [base + wlo, base + whi] : null;   // a link's window is clamped into the run
+      const t0 = (win ? win[0] : lo - pad) - base, span = win ? win[1] - win[0] : os;
+      const rows = all.filter(r => wfIn(r, WFCHIP) && (!win || r.start <= win[1] && (r.end ?? Infinity) >= win[0])).sort((x, y) => WFSORT.dir * (WFCMP[WFSORT.k](x, y) || x.start - y.start));
+      // the overview's segments in a few lanes, each in the first lane free at its start
+      const free = [], segs = [];
+      for (const r of [...all].sort((x, y) => x.start - y.start)) for (const [k, f, t] of r.bars) {
+        const to = t ?? (live ? now : f);
+        const at = free.findIndex(e => e <= f - base + .0001), ln = at < 0 ? (free.length < 6 ? free.length : 5) : at;
+        free[ln] = Math.max(to - base, f - base + os * .004);
+        segs.push({ k: r.kind === "llm" ? "llm" : k === "deny" ? "bad" : k === "wait" ? "wait" : "tool", a: f - base, e: t == null ? null : t - base, lane: ln, key: r.key });
+      }
+      return { all, rows, counts, segs, base, now: now - base, live, win: !!win, wr: win && [wlo, whi], t0, span, o0, os, hi: hi - base, lo: lo - base };
+    }
+    const wfTokens = rows => rows.reduce((n, r) => n + (r.kind === "llm" ? r.size : 0), 0);
+    // what a row says to a screen reader, as the bars say it
+    const wfLabel = (r, base) => [wfAgent(r.agent), r.kind === "llm" ? "model turn " + r.name : r.name + (r.arg ? " " + r.arg : ""), r.words[1].toLowerCase(), ...r.badges.map(b => b[1]), r.dur == null ? "" : r.approx ? "about " + wfDur(r.dur) + " since the previous record" : wfDur(r.dur), "at +" + wfDur(r.start - base)].filter(Boolean).join(", ");
+    const WFI = {
+      terminal: '<path d="M5 8l4.5 4L5 16M12 17h7"/>', file: '<path d="M7 3.5h7l4 4V20H7z"/><path d="M14 3.5v4h4"/>', pencil: '<path d="M4.5 19.5l1-4.2L16 4.8l3.2 3.2L8.7 18.5z"/><path d="M14 7l3 3"/>',
+      globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c3 3 3 14 0 17M12 3.5c-3 3-3 14 0 17"/>', plug: '<path d="M9 4v4M15 4v4M6.5 8h11v3a5.5 5.5 0 01-11 0zM12 16.5V20"/>',
+      agent: '<circle cx="6.5" cy="6.5" r="2.3"/><circle cx="17.5" cy="6.5" r="2.3"/><circle cx="12" cy="17.5" r="2.3"/><path d="M8.3 8l2.5 7.6M15.7 8l-2.5 7.6"/>', search: '<circle cx="10.5" cy="10.5" r="5.5"/><path d="M15 15l5 5"/>',
+      spark: '<path d="M12 3.5l2.1 6.4 6.4 2.1-6.4 2.1L12 20.5l-2.1-6.4L3.5 12l6.4-2.1z"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>', chev: '<path d="M7 10l5 5 5-5"/>',
+      swap: '<path d="M5 9h13l-3-3M19 15H6l3 3"/>', fail: '<circle cx="12" cy="12" r="8.5"/><path d="M9 9l6 6M15 9l-6 6"/>', pause: '<circle cx="12" cy="12" r="8.5"/><path d="M10 9v6M14 9v6"/>',
+      stop: '<circle cx="12" cy="12" r="8.5"/><path d="M6.5 17.5l11-11"/>', db: '<ellipse cx="12" cy="6.5" rx="6.5" ry="2.7"/><path d="M5.5 6.5v11c0 1.5 3 2.7 6.5 2.7s6.5-1.2 6.5-2.7v-11M5.5 12c0 1.5 3 2.7 6.5 2.7s6.5-1.2 6.5-2.7"/>',
+      clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>', copy: '<rect x="8.5" y="8.5" width="10" height="11" rx="2"/><path d="M5.5 15.5v-9a2 2 0 012-2h8"/>', check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    };
+    const wfSvg = (n, s = 14) => `<svg viewBox="0 0 24 24" width="${esc(s)}" height="${esc(s)}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` + (WFI[n]) + `</svg>`;
+    // a model's provider as a monogram tile: its letter and colour token (a model name after an optional provider prefix); null: the sparkle
+    const WFMODELS = [[/^claude/, "C", "claude"], [/^(gpt|o[134](?![a-z])|chatgpt|codex)/, "O", "openai"], [/^gemini/, "G", "google"], [/^qwen/, "Q", "qwen"], [/^llama/, "L", "meta"], [/^(mistral|codestral)/, "M", "mistral"], [/^deepseek/, "D", "deepseek"]];
+    function wfModelMark(name) {
+      const n = String(name || "").toLowerCase();
+      for (const m of [n, n.replace(/^[^/:]+[/:]/, "")]) { const hit = WFMODELS.find(([re]) => re.test(m)); if (hit) return { letter: hit[1], tone: hit[2] }; }
+      return null;
+    }
+    // a row's or the drawer's icon tile: a model turn's provider monogram, else the glyph
+    function wfIconBox(r, size, role) {
+      const mark = r.kind === "llm" && wfModelMark(r.name), at = role ? ' role="cell"' : "";
+      return mark ? '<span class="ic llm mono m-' + esc(mark.tone) + '"' + at + ">" + esc(mark.letter) + "</span>"
+        : '<span class="ic ' + esc(r.kind) + '"' + at + ">" + wfSvg(wfIconOf(r), size) + "</span>";
+    }
+    const wfIconOf = r => r.kind === "llm" ? "spark" : { exec: "terminal", read: /^(Grep|Glob|LS)$/.test(r.name) ? "search" : "file", write: "pencil", net: /^mcp__/.test(r.name) ? "plug" : "globe", agent: "agent", bad: "terminal" }[category({ ...r.x, denied: false, error: false })] || "terminal";
+    // a row's bars on the shared axis (positions are CSS: --a and --e in seconds from the run's first record, the axis in --t0 and --span)
+    function wfBarHtml(r, base) {
+      const at = (f, t) => `--a:${+(f - base).toFixed(3)};--e:${t == null ? "var(--now)" : +(t - base).toFixed(3)}`;
+      let h = "";
+      if (r.x.retryOf) { const f = r.x.retryOf.start; h += `<i class="mk tick" style="${esc(at(f, f))}" title="the first try: held"></i><i class="dash" style="${esc(at(f, r.start))}"></i>`; }
+      for (const [k, f, t] of r.bars) {
+        const dur = t == null ? "still going" : wfDur(t - f);
+        if (r.kind === "llm") h += `<i class="b llm" style="${esc(at(f, t))}" title="${esc(r.approx ? "model turn · about " + dur + ", since the agent's previous record" : "model turn · " + dur)}"></i>`;
+        else if (k === "wait") h += `<i class="b wait" style="${esc(at(f, t))}" title="held for a person · ${esc(dur)}"></i>`;
+        else if (k === "deny" && t === f && !/RAN ANYWAY/.test(r.words[1])) h += `<i class="mk" style="${esc(at(f, f))}" title="${esc(r.denied ? "denied: it never ran" : r.x.error ? "failed" : "refused: it never ran")}"></i>`;
+        else if (r.noResult && k !== "wait") continue;   // no end and no result: nothing ran that the records show
+        else h += `<i class="b ${k === "deny" ? "fail" : "ok"}${k === "flag" ? " flag" : ""}" style="${esc(at(f, t))}" title="${esc((k === "deny" ? /RAN ANYWAY/.test(r.words[1]) ? "ran anyway" : "failed" : "ran") + " · " + dur)}"></i>`;
+      }
+      return h;
+    }
+    function wfRowHtml(r, base) {
+      const m = wfMark(wfAgent(r.agent)), name = wfAgent(r.agent);
+      const badges = r.badges.map(([c, t, title, from]) => `<span class="bd ${esc(c)}${from != null ? " tn-live" : ""}" title="${esc(title)}"${from != null ? ` data-pre="HELD " data-from="${esc(+(from - base).toFixed(3))}"` : ""}>${esc(t)}</span>`).join("");
+      return `<div class="tn-r" role="row" tabindex="-1" data-k="${esc(r.key)}" ${r.kind === "llm" ? `data-wfl="${esc(r.j)}"` : `data-wf="${esc(r.i)}"`} aria-label="${esc(wfLabel(r, base))}">`
+        + `<span class="dot ${esc(r.state)}" role="cell" title="${esc(r.words[1].toLowerCase())}"></span>` + wfIconBox(r, 15, true)
+        + `<span class="nm" role="cell"><b>${esc(r.name)}</b>${r.arg ? `<span class="ar">${esc(r.arg)}</span>` : ""}` + (badges) + `</span>`
+        + `<span class="ag" role="cell"><svg viewBox="0 0 11 11" width="11" height="11" aria-hidden="true" style="color:var(${esc(m.hue)})">` + (m.on.map((o, i) => o ? `<rect x="${esc((i % 3) * 4)}" y="${esc(Math.floor(i / 3) * 4)}" width="3" height="3" rx=".6" fill="currentColor"/>` : "").join("")) + `</svg><span>${esc(name)}</span></span>`
+        + `<span class="sz" role="cell">${esc(r.sizeText)}</span><span class="tm${r.bad ? " bad" : ""}${r.durFrom != null ? " tn-live" : ""}" role="cell"${r.approx ? ' title="since the agent\'s previous record: the model\'s time and the harness\'s"' : ""}${r.durFrom != null ? ` data-pre="" data-from="${esc(+(r.durFrom - base).toFixed(3))}"` : ""}>${esc(r.durFrom != null ? "" : (r.approx ? "~" : "") + wfDur(r.dur))}</span>`
+        + `<span class="wf" role="cell">` + (wfBarHtml(r, base)) + `</span></div>`;
+    }
+    const wfSortWord = k => ({ name: "Name", agent: "Agent", size: "Size", time: "Time", start: "Waterfall" })[k];
+    function wfHeadHtml(m) {
+      const cell = (k, cls) => {
+        const arrow = WFSORT.k === k ? '<span class="ar2' + (WFSORT.dir < 0 ? " dn" : "") + '">' + wfSvg("chev", 10) + "</span>" : "";
+        return `<span class="thc ${esc(cls)}" role="columnheader" aria-sort="${esc(WFSORT.k === k ? (WFSORT.dir > 0 ? "ascending" : "descending") : "none")}"><button type="button" class="th" data-wfs="${esc(k)}">${esc(wfSortWord(k))}` + arrow + `</button></span>`;
+      };
+      const step = tickStep(m.span, 4), cw = Math.min(560, Math.max(200, .36 * ($("wf").clientWidth - 2)));
+      let ticks = "";
+      for (let t = Math.ceil((m.t0 + .0001) / step) * step, k = 0; t < m.t0 + m.span && k < 40; t += step, k++) {   // a count bounds the loop: a huge window must not hang the tab
+        const w = wfRel(t, step).length * 6.4 + 10, x = (t - m.t0) / m.span * cw;
+        if (x - w / 2 >= 100 && x + w / 2 <= cw - 2) ticks += `<span class="tk" style="--a:${esc(+t.toFixed(3))}">${esc(wfRel(t, step))}</span>`;   // whole, and clear of "Waterfall"
+      }
+      return `<span></span><span></span>` + cell("name", "nm") + cell("agent", "ag") + cell("size", "sz") + cell("time", "tm") + `<span class="wf wh">` + cell("start", "wfb") + `<span class="tks">` + ticks + `</span></span>`;
+    }
+    function wfChipsHtml(m) {
+      return WFCHIPS.map(([c, w]) => `<button type="button" class="chip2${WFCHIP === c ? " on" : ""}" data-wfc="${esc(c)}" aria-pressed="${esc(WFCHIP === c)}">${esc(w)} <span class="n">${esc(m.counts[c])}</span></button>`).join("");
+    }
+    function wfStripHtml(m) {
+      const step = tickStep(m.os, 7), width = $("tnov").clientWidth || 800;
+      let ticks = "";
+      for (let t = Math.ceil((m.o0 + .0001) / step) * step, k = 0; t < m.o0 + m.os && k < 40; t += step, k++) if ((t - m.o0) / m.os * width + 8 + wfRel(t, step).length * 6.4 <= width) ticks += `<span class="tk" style="--a:${esc(+t.toFixed(3))}"><em>${esc(wfRel(t, step))}</em></span>`;
+      return ticks;
+    }
+    // what the page may say of a run's check: v2: its run's own verdict, and only a final run's; v1: a file the server verified, a page
+    // whose records the browser chained (signatures not checked), or a live ledger
+    function wfSeal(m) {
+      const run = V2 && scope && RUNS.get(scope), seal = (c, t, title) => `<span class="seal ${esc(c)}"${title ? ` title="${esc(title)}"` : ""}>` + t + `</span>`, tick = wfSvg("check", 13);
+      if (run) {
+        if (run.state === "open") return m.live ? seal("live", "<i></i>Live") : "";
+        if (run.state !== "final") return run.state === "closing" ? seal("", "Closing") : "";
+        if (ENDED) return "";
+        if (run.verdict === "failed") return seal("bad", wfSvg("fail", 13) + "Run failed its check", run.label);
+        if (run.verdict === "verified") return STOPPED ? seal("", "Verified earlier · checks stopped", STOPPED) : seal("ok", "Verified " + tick, "the viewer's verifier passed this run's bundle");
+        return seal("", run.verdict === "pending" ? "Checking…" : "Not checked", run.label);
+      }
+      if (V2 || ENDED) return "";
+      if (chainState.ok === false) return seal("bad", wfSvg("fail", 13) + "Chain ✗", "the hash chain check failed");
+      if (BOOT || document.URL.startsWith("file:")) return chainState.ok === true && chainState.n > 0 ? seal("", "Chain ✓ (signatures not checked)", "this page chained the records' hashes itself; it checked no signature") : "";
+      if (SOURCE === "bundle") return chainState.ok === true && chainState.n > 0 ? seal("ok", "Verified " + tick, "the server verified the bundle before it opened it") : "";
+      return m.live ? seal("live", "<i></i>Live") : "";
+    }
+    function wfFoot(m) {
+      const rows = m.rows, item = (ic, t, cls = "") => `<span class="fi ${esc(cls)}">` + wfSvg(ic, 14) + `<span>${esc(t)}</span></span>`;
+      const tok = wfTokens(rows), nf = rows.filter(r => r.failed).length, nh = rows.filter(r => r.held).length, nd = rows.filter(r => r.denied).length;
+      const calls = rows.filter(r => r.kind === "tool").length, allCalls = m.all.filter(r => r.kind === "tool").length, turns = rows.length - calls, allTurns = m.all.length - allCalls;
+      const said = (c, t, a, at) => (c === a ? plural(c, "call") : `${c}/${a} calls`) + (at ? " · " + (t === at ? plural(t, "model turn") : `${t}/${at} model turns`) : "");
+      return `<div class="fl">` + item("swap", said(calls, turns, allCalls, allTurns)) + item("fail", nf + " failed", nf ? "bad" : "")
+        + (m.counts.held ? item("pause", nh + " held", nh ? "held" : "") : "") + (m.counts.deny ? item("stop", nd + " denied", nd ? "bad" : "") : "")
+        + (wfTokens(m.all) ? item("db", (tok >= 1000 ? +(tok / 1000).toFixed(1) + "K" : tok) + " tokens") : "") + item("clock", wfDur(Math.max(0, m.hi - m.lo)), "dur") + `</div>` + wfSeal(m);
+    }
+    // the drawer's tab bodies
+    const wfRule = x => `<div class="rl"><b>${esc(x.id)}</b> ${esc(x.reason || "(not in a policy this viewer has)")}${x.remedy ? `<div class="rm">what to do: ${esc(x.remedy)}</div>` : ""}</div>`;
+    const wfCode = (v, cls = "") => `<pre class="cb ${esc(cls)}">${esc(j(v).slice(0, 6000))}</pre>`;
+    // a call's phases, each only if its records hold it: [label, what, from, to (null: a moment), to now while it still waits or runs]
+    function wfPhases(r) {
+      const a = r.x, out = [];
+      if (r.kind === "llm") {
+        if (r.real) out.push(["Model exchange", "the gateway's request to its response, as recorded", a.started, a.ts]);
+        else out.push(a.from < a.ts ? ["Since the agent's previous record", "the model's time and the harness's", a.from, a.ts] : ["No earlier record of this agent", "so the span before the turn is not known", a.ts, null]);
+        out.push(["Turn recorded", `seq ${lseq(a.rec)}`, a.ts, null]);
+        return out;
+      }
+      const v = a.v2 || {}, ans = wfAnswer(a), held = heldCall(a), done = a.post || a.ranBy?.post, ran = a.ranBy || a, open = wfOpen(a), stop = wfStop(a);
+      const nothing = open ? ["Running", "no result yet", a.start, null, true] : ["No result recorded", "the run ended before one was signed", a.start, null];
+      out.push(["Decided by the policy", (V2 ? String(v.decision || "").toUpperCase() : a.denied ? "DENY" : "ALLOW") + (v.rules?.length ? " · " + v.rules.map(x => x.id).join(", ") : ""), a.start, null]);
+      if (held) {
+        out.push(["Held for a person", ans ? `${ans.word}${ans.who ? " by " + ans.who : ""} at ${fmtT(ans.rec.ts)}` : open ? "no answer recorded yet" : "no answer recorded before the run ended", a.start, ans?.rec.ts ?? (open ? null : stop), !ans && open]);
+        if (ans?.rec.v2.approval === "approve") out.push(done ? [a.ranBy ? `Ran, as the agent's retry ${a.ranBy.pre.v2.tool_use_id}` : "Ran", "with the approved arguments", a.ranBy ? ran.start : ans.rec.ts, ran.end] : [nothing[0], nothing[1], ans.rec.ts, null, nothing[4]]);
+        else if (done) out.push(["Ran anyway", ans ? `though it was ${ans.word}` : "with no answer to its hold", ans?.rec.ts ?? a.start, a.end]);
+        else if (ans) out.push(["Did not run", "no result is recorded for it", ans.rec.ts, null]);
+      } else if (a.denied) out.push(a.post ? ["Ran anyway", "though denied: its result is recorded", a.start, a.end] : ["Did not run", "a denied call is not run", a.start, null]);
+      else out.push(a.post || a.end != null ? ["Ran", a.error ? "failed" : "", a.start, a.end] : nothing);
+      if (done) out.push(["Result recorded", `seq ${lseq(done)} · ${a.error ? "failed" : "ok"}`, done.ts, null]);
+      return out;
+    }
+    // the Timing tab. Its bars sit on CSS variables (--a, --e from the run's first record; --dlo, --dsp, --dnow set on the drawer) and what still
+    // runs is a .tn-dlive span: a tick changes their text and the variables, never the drawer
+    function wfTimingHtml(r, base) {
+      const ph = wfPhases(r), lo = Math.min(...ph.map(p => p[2])), openNow = ph.some(p => p[4] && p[3] == null), fin = Math.max(lo + .001, ...ph.map(p => p[3] ?? p[2])), rel = t => +(t - base).toFixed(3);
+      const first = r.kind === "llm" ? r.real ? "The gateway recorded this exchange's request and its response: the span between them is the model's." : "A model turn has no recorded start time: its bar runs from the agent's previous record to the turn, so it holds the model's time and the harness's." : "";
+      const dlive = from => `<span class="pv tn-dlive" data-pre="" data-from="${esc(rel(from))}"></span>`;
+      const rows = ph.map(([l, what, f, t, open]) => {
+        const going = open && t == null, spans = going || t != null && t > f;
+        const bar = spans ? `<i class="pb ${esc(/^Held/.test(l) ? "wait" : r.kind === "llm" ? "llm" : r.bad && /^Ran/.test(l) ? "fail" : "ok")}" style="--a:${esc(rel(f))};--e:${esc(going ? "var(--dnow)" : rel(t))}"></i>` : `<i class="pm" style="--a:${esc(rel(f))}"></i>`;
+        return `<div class="ph"><span class="pl">${esc(l)}<small>${esc(what)}</small></span><span class="pt">` + bar + `</span>` + (going ? dlive(f) : `<span class="pv">${esc(spans ? wfDur(t - f) : "at +" + wfDur(f - base))}</span>`) + `</div>`;
+      }).join("");
+      const when = r.kind === "llm" ? r.real ? ", at the exchange's request" : ", at the agent's previous record" : ", as the policy's decision was signed";
+      const total = r.kind === "llm" ? r.dur : ph.some(p => p[3] != null || p[4]) ? fin - lo : null;
+      return `<p class="mu">${r.kind === "llm" && !r.real ? "Its bar starts" : "Started"} at +${esc(wfDur(lo - base))} into the run${esc(when)}</p>${first ? `<p class="mu">${esc(first)}</p>` : ""}<div class="phs" data-lo="${esc(rel(lo))}" data-hi="${esc(rel(fin))}"${openNow ? ' data-open="1"' : ""}>` + rows + `</div>`
+        + `<div class="ph tot"><span class="pl">Total</span><span class="pt mu">${esc(r.sizeText)}</span>` + (openNow && r.kind !== "llm" ? dlive(lo) : `<span class="pv">${esc(r.kind === "llm" && total == null ? "not known" : wfDur(total))}</span>`) + `</div>`;
+    }
+    function wfDecisionHtml(r) {
+      const a = r.x, v = a.v2 || {};
+      if (r.kind === "llm") return `<p class="mu">A model turn is a record of what the model used; the policy decides tool calls, not turns.</p>`;
+      const ans = wfAnswer(a);
+      return `<div class="kv2"><span>Verdict</span><b class="${esc(a.denied ? "deny" : v.decision === "ask" ? "held" : "ok")}">${esc(V2 ? String(v.decision).toUpperCase() : a.denied ? "DENY" : "ALLOW")}</b><span>Outcome</span><b>${esc(r.words[1])}</b>`
+        + (ans ? `<span>Answered</span><b>${esc(ans.word + (ans.who ? " by " + ans.who : "") + " · " + fmtT(ans.rec.ts))}</b>` : "") + (a.flags.length ? `<span>Flags</span><b>${esc(a.flags.join(", "))}</b>` : "")
+        + (v.policy_hash ? `<span>Policy</span><b title="${esc(v.policy_hash)}">${esc(short(v.policy_hash))}</b>` : "") + `</div>`
+        + (v.rules?.length ? `<div class="sec2">Rules that matched</div>` + (v.rules.map(wfRule).join("")) : a.reasons.length ? `<div class="sec2">Reasons</div>` + (a.reasons.map(x => `<div class="rl">${esc(x)}</div>`).join("")) : `<p class="mu">No rule matched: the call was allowed.</p>`);
+    }
+    function wfEvidenceHtml(r) {
+      const recs = r.kind === "llm" ? [["model turn", r.x.rec]] : [["decision", r.x.pre], ...r.x.approvals.map(x => ["approval · " + (x.v2.approval || ""), x]), ...r.x.post ? [["result", r.x.post]] : [], ...r.x.ranBy?.post ? [["retry's result", r.x.ranBy.post]] : []];
+      const run = V2 && scope && RUNS.get(scope), who = r.x.pre || r.x.rec;
+      return `<div class="kv2">` + recs.map(([w, x]) => `<span>${esc(w)}</span><b><a href="#" data-tkseq="${esc(lseq(x))}">seq ${esc(lseq(x))}</a> <code title="${esc(x.hash || "")}">${esc(String(x.hash || "").replace(/^sha256:/, "").slice(0, 12))}</code></b>`).join("") + `</div>`
+        + `<div class="sec2">Does it check out</div><p class="mu">` + (run ? esc(run.verdict === "verified" ? "Yes: the viewer's verifier passed this run (signatures, hash chain, checkpoint). That check is the server's; this page checks nothing itself." : `The run is ${run.verdict}: ${run.label || ""}`) : chainState.ok === true ? BOOT ? "This page chained the records' hashes itself; it checked no signature." : "The viewer's server checked this ledger, signatures included; this page checks nothing itself." : "Not checked yet.") + `</p>`
+        + `<button type="button" class="lk" data-rv="evidence">Open the run's evidence view</button>`;
+    }
+    function wfRetriesHtml(r) {
+      const a = r.x;
+      return a.retryOf ? `<p>The agent's retry of ${esc(a.retryOf.pre.v2.tool_use_id)}, run under that call's approval.</p>` : a.ranBy ? `<p>The agent sent this call again as ${esc(a.ranBy.pre.v2.tool_use_id)}, which ran with the approved arguments.</p>`
+        : `<p>${esc(plural((S.byId?.get(a.id) || []).length, "attempt"))} under this call's id.</p>`;
+    }
+    // the pill: the page's own words for the call's state (callState), and how they colour
+    function wfPill(r) {
+      if (r.kind === "llm") return ["Done", "ok"];
+      const [cls, w] = r.words, t = w.replace(/^⚑ /, "");
+      return [{ OK: "Done", RUNNING: "Running", "TO ANSWER": "Held" }[t] || t[0] + t.slice(1).toLowerCase(), { "s-ok": "ok", "s-err": "bad", "s-deny": "bad", "s-flag": "held", "s-run": "run" }[cls] || "none"];
+    }
+    function wfDrawerHtml(r, tab, base) {
+      const a = r.x, llm = r.kind === "llm", tabs = llm ? ["request", "response", "timing", "evidence"] : WFTABS.filter(t => t !== "retries" || r.retry);
+      const T = tab in { request: 1, response: 1, timing: 1, decision: 1, evidence: 1, retries: 1 } && tabs.includes(tab) ? tab : "request";
+      let body;
+      if (T === "request") body = llm ? `<div class="kv2"><span>Model</span><b>${esc(r.name)}</b><span>Exchange</span><b>${esc(a.rec.v2?.exchange_id ?? "–")}</b></div><p class="mu">The prompt sent to the model is not part of this record.</p>`
+        : Object.keys(a.input).length ? wfCode(a.input) + `<p class="mu">The arguments the signer kept and this viewer reads; the signed record holds their commitment.</p>`
+        : a.v2 ? `<p>This record holds only a salted commitment to the arguments${a.v2.args_commitment ? ` (<code>${esc(short(a.v2.args_commitment))}</code>)` : ""}. The content vault opens it: <code>tracekit signer reveal --record ${esc(lseq(a.pre))}</code> gives an auditor the salt.</p>` : `<p class="mu">No arguments recorded.</p>`;
+      else if (T === "response") body = llm ? `<div class="kv2"><span>Input</span><b>${esc(a.tin.toLocaleString("en-US"))} tokens${a.cr ? ` <small>(${esc(a.cr.toLocaleString("en-US"))} read from cache)</small>` : ""}</b><span>Output</span><b>${esc(a.tout.toLocaleString("en-US"))} tokens</b>${a.cw ? `<span>Cache written</span><b>${esc(a.cw.toLocaleString("en-US"))} tokens</b>` : ""}</div>`
+        : wfHashed(a) ? (r.failed ? `<div class="err">The agent reported this call as failed (status error).</div>` : "") + `<p>This record holds only a commitment to the result (${esc(wfBytes(+wfHashed(a)[1]))}), not the result. The content vault opens it.</p>`
+        : a.post ? (a.post.tool_response != null && !(typeof a.post.tool_response === "object" && !Object.keys(a.post.tool_response).length)
+          ? (r.failed ? `<div class="err"><b>${esc(String(typeof a.post.tool_response === "string" ? a.post.tool_response : a.post.tool_response.error || a.post.tool_response.output || wfFailWord(a)).split("\n")[0].slice(0, 200))}</b></div>` : "") + wfCode(a.post.tool_response, r.failed ? "bad" : "")
+          : `<p>This record holds no result content: only its commitment, or nothing was kept. The content vault opens it.</p>`)
+        : `<p class="mu">${esc(r.denied ? "A denied call has no result: it never ran." : r.running ? "No result yet." : "No result is recorded for this call.")}</p>`;
+      else if (T === "timing") body = wfTimingHtml(r, base);
+      else if (T === "decision") body = wfDecisionHtml(r);
+      else if (T === "evidence") body = wfEvidenceHtml(r);
+      else body = wfRetriesHtml(r);
+      const [word, pc] = wfPill(r);
+      return `<header>` + wfIconBox(r, 16, false) + `<div class="hd"><div class="t"><b>${esc(r.name)}</b>${r.arg ? `<span class="ar">${esc(r.arg)}</span>` : ""}</div>`
+        + `<div class="s">${esc([llm ? "Model turn" : "Tool call", wfAgent(r.agent), llm || /^(⚑ )?ok$/i.test(r.words[1]) ? "" : r.words[1].toLowerCase(), r.dur == null ? "" : r.approx ? "~" + wfDur(r.dur) + " since the previous record" : wfDur(r.dur)].filter(Boolean).join(" · "))}</div></div>`
+        + `<span class="pill ${esc(pc)}">${esc(word)}</span><button type="button" class="x" data-wfx aria-label="Close the details">` + (wfSvg("x", 16)) + `</button></header>`
+        + `<div class="tabs" role="tablist">` + (tabs.map(t => `<button type="button" role="tab" class="${t === T ? "on" : ""}" aria-selected="${esc(t === T)}" data-wft="${esc(t)}">${esc(t[0].toUpperCase() + t.slice(1))}</button>`).join("")) + `</div><div class="pn" role="tabpanel">` + (body) + `</div>`;
+    }
+    // the row the drawer is of: the selected call, or the model turn whose record is selected
+    function wfSelected() {
+      if (!selected) return null;
+      if (selected.pre) { const i = S.actList.indexOf(selected); return i < 0 ? null : wfToolRow(selected, i); }
+      const j = S.llm.findIndex(l => l.rec === selected); return j < 0 ? null : wfLlmRow(S.llm[j], j);
+    }
+    // a run's page starts afresh: nothing unseen, and the table opens at its first call
+    function wfReset() {
+      WF.keys = new Set(); WF.unseen = 0; WF.n = null; WF.cur = WF.last = WF.sel = null; $("tnin")._h = "";
+    }
+    // arrivals since the last draw: the calls and model turns the run grew by (a filter or a window clearing is none)
+    const wfGrown = (before, rows) => before == null ? 0 : rows.filter(r => r.kind === "tool" ? r.i >= before.a : r.j >= before.m).length;
+    // a row's key: arrows, Home, End and the pages move between rows (one row is tabbable); Enter and Space open it
+    function wfRowKey(e, rows) {
+      const r = e.target.closest?.(".tn-r"); if (!r) return;
+      const i = rows.indexOf(r), to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: rows.length - 1, PageDown: i + 8, PageUp: i - 8 }[e.key];
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation?.(); r.click(); }
+      else if (to !== undefined) { e.preventDefault(); rows[Math.min(rows.length - 1, Math.max(0, to))]?.focus(); }
+    }
+    // the window's keys: arrows move it, Shift and arrows resize it, Escape clears it; null without a window starts one in the middle
+    function wfRangeKey(win, [o0, os], key, shift) {
+      if (key === "Escape" || key === "Delete" || key === "Backspace") return null;
+      const step = os / 20, mid = o0 + os / 2, [a, b] = win || [mid - os / 8, mid + os / 8];
+      if (!win && key !== "Enter" && key !== "ArrowLeft" && key !== "ArrowRight") return win;
+      const d = key === "ArrowLeft" ? -step : key === "ArrowRight" ? step : 0;
+      let lo = shift ? a : a + d, hi = b + d;
+      if (shift && hi - lo < step / 2) hi = lo + step / 2;
+      return [Math.max(o0, 0, lo), Math.min(o0 + os, hi)].sort((x, y) => x - y);
     }
     function renderWaterfall() {
       const on = PAGE === "run" && RV === "waterfall", by = on && WFBY === "call", wf = $("wf");
-      $("wfby").hidden = !on; $("lanes").hidden = by; wf.hidden = !by; $("lanelegend").hidden = by; $("wflegend").hidden = !by;
+      $("wfby").hidden = !on; $("lanes").hidden = by; wf.hidden = !by; $("lanelegend").hidden = by;
       $("lanetitle").textContent = by ? "TIMELINE · ONE ROW PER CALL" : "TIMELINE · ONE LANE PER AGENT";
       document.querySelectorAll("[data-wfby]").forEach(b => b.classList.toggle("on", b.dataset.wfby === WFBY));
       if (!by) return;
-      const all = [];
-      S.actList.forEach((a, i) => actMatch(a) && all.push(i));
-      const rows = all.slice(-WFMAX).map(i => [i, S.actList[i], wfBars(S.actList[i])]), more = all.length - rows.length;
-      // the axis fits the calls drawn; a replay's fits its whole run, so the bars keep their place as it plays
-      let lo = Infinity, hi = -Infinity;
-      for (const r of R || []) if (r.event === "PreToolUse" || r.event === "PostToolUse" || r.v2?.approval in ANSWER) { lo = Math.min(lo, r.ts); hi = Math.max(hi, r.ts); }
-      if (!R) for (const [, , bars] of rows) for (const [, f, t] of bars) { lo = Math.min(lo, f); hi = Math.max(hi, t ?? f); }
-      const kinds = new Set(rows.flatMap(r => r[2].map(b => b[0])));
-      put("wflegend", Object.entries(WFK).filter(([k]) => kinds.has(k)).map(([k, w]) => `<span class="wk-${esc(k)}">${esc(w)}</span>`).join(""));
-      if (!rows.length || lo > hi) return put("wf", `<div class="empty">${esc(S.actList.length ? "No call matches the filters." : "No calls yet.")}</div>`);
-      const W = wf.clientWidth, LW = Math.min(340, Math.round(W * .4)), TW = Math.max(60, W - LW), RH = 18;
-      const span = Math.max(hi - lo, .01), t0 = lo - span * .03, t1 = lo + span * 1.03, x = t => (t - t0) / (t1 - t0) * TW;
-      const step = tickStep(t1 - t0, Math.max(2, TW / 90)), ticks = [];
-      for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) ticks.push([x(t).toFixed(1), tickText(t, step)]);
-      const grid = ticks.map(([xx]) => `<line x1="${esc(xx)}" x2="${esc(xx)}" y1="0" y2="${esc(RH)}"/>`).join("");
-      const dur = d => d < 1 ? Math.round(d * 1000) + " ms" : fmtDur(d);
-      const bar = (a, [k, f, t]) => {
-        const x0 = x(f), x1 = Math.max(x0 + 3, t == null ? TW : x(t));
-        return `<rect class="wk-${esc(k)}" x="${esc(x0.toFixed(1))}" y="4" width="${esc((x1 - x0).toFixed(1))}" height="${esc(RH - 8)}"><title>${esc((k === "wait" ? "held for a person" : callState(a)[1].toLowerCase()) + (t != null && t > f ? " · " + dur(t - f) : ""))}</title></rect>`;
-      };
-      wf.style.setProperty("--lw", LW + "px");
-      put("wf", `<div class="wfr wfh"><span class="wl"><span class="wa">AGENT · </span>TOOL · TARGET</span><svg width="${esc(TW)}" height="${esc(RH)}"><defs><pattern id="wfhatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect class="hatch-b" width="6" height="6"/><rect class="hatch-a" width="2" height="6"/></pattern></defs>`
-        + grid + ticks.filter(([xx, w]) => +xx + 3 + w.length * 6 <= TW).map(([xx, w]) => `<text x="${esc(+xx + 3)}" y="12">${esc(w)}</text>`).join("") + `</svg></div>`
-        + (more ? `<div class="wfmore">${esc(`${more} earlier ${more === 1 ? "call is" : "calls are"} not drawn: the newest ${WFMAX} are. Narrow them with AGT, TOOL, FIND or FLAG.`)}</div>` : "")
-        + rows.map(([i, a, bars]) => `<div class="wfr${selected === a ? " on" : ""}" data-wf="${esc(i)}" tabindex="0" title="${esc(`${label(a.agent)} · ${(a.tool + " " + a.target).trim()} · ${callState(a)[1]}`)}"><span class="wl"><span class="dim wa">${esc(label(a.agent))} </span><b>${esc(a.tool)}</b> <span class="dim">${esc(a.target)}</span></span><svg width="${esc(TW)}" height="${esc(RH)}">`
-          + grid + bars.map(b => bar(a, b)).join("") + `</svg></div>`).join(""));
+      const m = wfModel(), base = S.firstTs ?? 0, rowsEl = $("tnrows"), byStart = WFSORT.k === "start", newestFirst = byStart && WFSORT.dir < 0;
+      const shown = m.rows.slice(byStart && WFSORT.dir > 0 ? -WFMAX : 0, byStart && WFSORT.dir > 0 ? undefined : WFMAX), more = m.rows.length - shown.length;
+      wf.style.setProperty("--t0", +m.t0.toFixed(3)); wf.style.setProperty("--span", +m.span.toFixed(3)); wf.style.setProperty("--now", +m.now.toFixed(3));
+      wf.style.setProperty("--o0", +m.o0.toFixed(3)); wf.style.setProperty("--os", +m.os.toFixed(3));
+      wf.dataset.live = m.live ? "1" : "";
+      wf.dataset.empty = m.all.length ? "" : "1";
+      // focus inside the chips, the header or the drawer is not taken away by a tick: while it stays, only their changing numbers are written
+      const inside = id => { const a = document.activeElement; return !!a && !!$(id).contains?.(a); };
+      if (inside("tnchips") && $("tnchips")._k === WFCHIP) $("tnchips").querySelectorAll(".n").forEach((n, i) => { n.textContent = m.counts[WFCHIPS[i][0]]; });
+      else { put("tnchips", wfChipsHtml(m)); $("tnchips")._k = WFCHIP; }
+      const hk = WFSORT.k + WFSORT.dir;
+      if (!(inside("tnth") && $("tnth")._k === hk)) { put("tnth", wfHeadHtml(m)); $("tnth")._k = hk; }
+      put("tnticks", wfStripHtml(m)); put("tnfoot", wfFoot(m));
+      WF.ov = { o0: m.o0, os: m.os };
+      put("tnsegs", m.segs.map(s => `<i class="s ${esc(s.k)}" style="--a:${esc(+s.a.toFixed(3))};--e:${esc(s.e == null ? "var(--now)" : +s.e.toFixed(3))};--l:${esc(s.lane)}"></i>`).join(""));
+      const sel = $("tnsel"), rl = $("tnrl");
+      sel.hidden = rl.hidden = !m.wr;
+      if (m.wr) { sel.style.setProperty("--a", +m.wr[0].toFixed(3)); sel.style.setProperty("--e", +m.wr[1].toFixed(3)); put("tnrl", `<span>${esc(wfRel(m.wr[0], 1) + " – " + wfRel(m.wr[1], 1))}</span><button type="button" data-wfclr aria-label="Clear the selected window">Clear ×</button>`); }
+      if (document.activeElement !== $("tnq") && $("tnq").value !== (F.find || "")) $("tnq").value = F.find || "";
+      const calls = m.rows.length - shown.length ? m.rows.filter(r => !shown.includes(r)) : [], nc = calls.filter(r => r.kind === "tool").length, nt = calls.length - nc;
+      const hid = [nc ? plural(nc, "call") : "", nt ? plural(nt, "model turn") : ""].filter(Boolean).join(" and ");
+      const empty = m.all.length ? (shown.length ? "" : `<div class="tn-empty">No call matches the filters${m.win ? " in this window" : ""}.</div>`) : `<div class="tn-empty">${esc(S.actList.length ? "No call matches the filters." : "No calls yet.")}</div>`;
+      const inEl = $("tnin"), atEnd = newestFirst ? rowsEl.scrollTop <= 24 : rowsEl.scrollTop + rowsEl.clientHeight >= rowsEl.scrollHeight - 24;
+      const follow = m.live && byStart && (!inEl._h || atEnd), fk = document.activeElement?.dataset?.k, was = inEl._h, grown = wfGrown(WF.n, m.rows);
+      WF.n = { a: S.actList.length, m: S.llm.length };
+      put("tnin", (more ? `<div class="tn-more">${esc(`${hid} ${more === 1 ? "is" : "are"} not drawn: the ${byStart && WFSORT.dir > 0 ? "earlier ones" : "later ones"}, past the ${WFMAX} that are. Narrow them with AGT, TOOL, FIND or FLAG.`)}</div>` : "")
+        + shown.map(r => wfRowHtml(r, base)).join("") + empty + `<i class="tn-now"></i>`);
+      if (inEl._h !== was) {
+        const first = !WF.keys.size;
+        if (follow) { rowsEl.scrollTop = newestFirst ? 0 : rowsEl.scrollHeight; WF.unseen = 0; } else if (first && !m.live) rowsEl.scrollTop = 0; else if (!first && m.live && byStart) WF.unseen += grown;
+        WF.keys = new Set(shown.map(r => r.key));
+        const cur = rowsEl.querySelector(`.tn-r[data-k="${CSS.escape(fk ?? WF.cur ?? "")}"]`) || rowsEl.querySelector(".tn-r");   // one row is tabbable
+        cur?.setAttribute("tabindex", "0");
+        if (fk) cur?.focus({ preventScroll: true });
+      }
+      if (!m.live || !byStart) WF.unseen = 0;
+      const nb = $("tnnew"); nb.hidden = !WF.unseen; nb.textContent = `${newestFirst ? "↑" : "↓"} ${WF.unseen} new`;
+      rowsEl.querySelector(".tn-r.on")?.classList.remove("on");
+      const sr = wfSelected(), srow = sr && rowsEl.querySelector(`[data-k="${CSS.escape(sr.key)}"]`);
+      srow?.classList.add("on");
+      if (sr) WF.last = sr.key;
+      if (sr?.key !== WF.sel) { WF.sel = sr?.key; srow?.scrollIntoView({ block: "nearest" }); }
+      // a live tick moves the bars by the axis' variables above; the counts of what still runs are the only words that change
+      rowsEl.querySelectorAll(".tn-live").forEach(e => { e.textContent = e.dataset.pre + wfDur(m.now - +e.dataset.from); });
+      const dr = $("tndrawer"), open = !!sr, held = inside("tndrawer");
+      if (sr) {
+        const a = document.activeElement, was = held && a?.dataset ? ["wft", "wfx", "rv", "tkseq"].find(k => a.dataset[k] !== undefined) : null, next = wfDrawerHtml(sr, WFTAB, base), changed = dr._h !== next;
+        put("tndrawer", next);
+        if (changed && was) dr.querySelector?.(`[data-${was === "wft" ? "wft" : was === "wfx" ? "wfx" : was === "rv" ? "rv" : "tkseq"}="${CSS.escape(a.dataset[was])}"]`)?.focus();
+      }
+      const phs = sr && dr.querySelector?.(".phs");
+      if (phs?.dataset) {
+        const dlo = +phs.dataset.lo, dsp = Math.max(.001, Math.max(+phs.dataset.hi, phs.dataset.open ? m.now : 0) - dlo);
+        dr.style.setProperty("--dlo", dlo); dr.style.setProperty("--dsp", +dsp.toFixed(3)); dr.style.setProperty("--dnow", +m.now.toFixed(3));
+      }
+      dr.querySelectorAll?.(".tn-dlive").forEach(e => { e.textContent = e.dataset.pre + wfDur(m.now - +e.dataset.from); });
+      dr.classList.toggle("open", open); dr.setAttribute("aria-hidden", open ? "false" : "true");
+      if (open && !WF.open) { dr.inert = false; dr.querySelector?.(".tabs .on")?.focus(); }   // it opens with focus inside
+      if (!open && WF.open && (held || !document.activeElement || document.activeElement === document.body)) rowsEl.querySelector(`[data-k="${CSS.escape(WF.last ?? "")}"]`)?.focus();   // and closes with it back on the row
+      dr.inert = !open; WF.open = open;
     }
     function renderReason() {
       const list = S.reasoning.filter(r => agentMatch(r.agent) && (!F.find || r.text.toLowerCase().includes(F.find.toLowerCase()))).slice(-80).reverse();
@@ -6193,7 +7771,7 @@
       if (navigator.clipboard?.writeText) navigator.clipboard.writeText(b.dataset.copy).then(() => done(true), fallback); else fallback();
     }, true);
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-i],[data-wf],[data-al],[data-grp],[data-grpmore],[data-orun],[data-agent],[data-tool],[data-file],[data-seq],[data-tkseq],[data-clear],[data-run],[data-kind],[data-jump],[data-older]"); if (!t) return;
+      const t = e.target.closest("[data-i],[data-wf],[data-wfl],[data-al],[data-grp],[data-grpmore],[data-orun],[data-agent],[data-tool],[data-file],[data-seq],[data-tkseq],[data-clear],[data-run],[data-kind],[data-jump],[data-older]"); if (!t) return;
       if (t.dataset.orun !== undefined) return openRec(t.dataset.orun, t.dataset.oseq);
       if (t.dataset.grp !== undefined) { OPENGRP.has(t.dataset.grp) ? OPENGRP.delete(t.dataset.grp) : OPENGRP.set(t.dataset.grp, 1); return schedule(); }
       if (t.dataset.grpmore !== undefined) { OPENGRP.set(t.dataset.grpmore, OPENGRP.get(t.dataset.grpmore) + 1); return schedule(); }
@@ -6212,6 +7790,7 @@
       if (t.dataset.clear) { F[t.dataset.clear] = t.dataset.clear === "flag" ? false : null; return schedule(); }
       if (t.dataset.i) { const row = S.tape[+t.dataset.i]; return row && select(row.act || row.rec); }
       if (t.dataset.wf) return select(S.actList[+t.dataset.wf]);
+      if (t.dataset.wfl) return select(S.llm[+t.dataset.wfl].rec);
       if (t.dataset.al) { const al = S.alerts[+t.dataset.al]; return select(al.ref?.pre ? al.ref : al.ref?.rec); }
       if (t.dataset.agent) { F.agent = F.agent === t.dataset.agent ? null : t.dataset.agent; return schedule(); }
       if (t.dataset.tool) { F.tool = F.tool === t.dataset.tool ? null : t.dataset.tool; return schedule(); }
@@ -6225,6 +7804,35 @@
       if (best) select(best.act);
     });
     $("lanewrap").addEventListener("scroll", renderLanes);   // the axis' words follow the scroll
+    // TIMELINE BY CALL: a window of time dragged on the overview (or moved with its keys), the search box (FIND), rows by arrow keys
+    {
+      const ov = $("tnov"), at = e => { const b = ov.getBoundingClientRect(); return Math.max(0, WF.ov.o0 + Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)) * WF.ov.os); };
+      ov.addEventListener("pointerdown", e => {
+        if (e.target.closest("[data-wfclr]")) return;
+        ov.setPointerCapture(e.pointerId); WF.drag = { x: e.clientX, t: at(e), moved: false };
+      });
+      ov.addEventListener("pointermove", e => {
+        const d = WF.drag; if (!d) return;
+        if (Math.abs(e.clientX - d.x) > 4) d.moved = true;
+        if (d.moved) { WFR = [d.t, at(e)].sort((x, y) => x - y); schedule(); }
+      });
+      ov.addEventListener("pointerup", () => { const d = WF.drag; WF.drag = null; if (d && !d.moved && WFR) { WFR = null; schedule(); } });
+      ov.addEventListener("keydown", e => {
+        if (e.target !== ov || !["ArrowLeft", "ArrowRight", "Enter", "Escape", "Delete", "Backspace"].includes(e.key)) return;
+        e.preventDefault(); e.stopPropagation();
+        const w = wfRangeKey(WFR, [WF.ov.o0, WF.ov.os], e.key, e.shiftKey);
+        if (w !== WFR) { WFR = w; schedule(); }
+      });
+      $("tnq").addEventListener("input", e => { F.find = e.target.value.trim() || null; schedule(); });
+      $("tnq").addEventListener("keydown", e => { if (e.key === "Escape") e.target.blur(); });
+      const rows = $("tnrows");
+      rows.addEventListener("scroll", () => { if ((WFSORT.k === "start" && WFSORT.dir < 0 ? rows.scrollTop <= 24 : rows.scrollTop + rows.clientHeight >= rows.scrollHeight - 24) && WF.unseen) { WF.unseen = 0; schedule(); } });
+      rows.addEventListener("keydown", e => wfRowKey(e, [...rows.querySelectorAll(".tn-r")]));
+      rows.addEventListener("focusin", e => {
+        const r = e.target.closest(".tn-r"); if (!r) return;
+        rows.querySelector('.tn-r[tabindex="0"]')?.setAttribute("tabindex", "-1"); r.setAttribute("tabindex", "0"); WF.cur = r.dataset.k;
+      });
+    }
     // record n's row; a record with no row of its own (a call's decision, a checkpoint): the row before it; never a row the viewer made
     function openSeq(n) {
       const r = S.recs.reduce((b, r) => lseq(r) != null && lseq(r) <= n && (!b || lseq(r) > lseq(b)) ? r : b, null);
@@ -6261,7 +7869,7 @@
       if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
       // a run, tape row or alert reached with Tab opens with Enter, as a click does
       // lean: a panel redrawn as records arrive loses the focus inside it; keep the focused row's key across redraws if that bites
-      if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex],[data-ingrp][tabindex]")) e.target.click();
+      if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],[data-wfl][tabindex],[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex],[data-ingrp][tabindex]")) e.target.click();
       else if (e.key === "/") { e.preventDefault(); $("cmd").focus(); }
       else if (V2 && !BOOT && scope && rpKeys(e)) return;
       else if (PAGE === "horizon" && hzZoomOf(e)) hzZoomKey(hzZoomOf(e));
@@ -6274,11 +7882,11 @@
     $("help").addEventListener("click", e => { if (e.target.id === "help") $("help").hidden = true; });
     /* ---------------- theme: auto (this computer's setting), light or dark, kept in this browser ---------------- */
     const THEMES = ["auto", "light", "dark"];
-    function setTheme(t) {
+    function setTheme(t, keep = true) {
       t = THEMES.includes(t) ? t : "auto";
       if (t === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
       $("theme").textContent = "THEME " + t.toUpperCase();
-      try { localStorage.setItem("tracekit-theme", t); } catch { }   // storage refused (a private window): the theme still applies
+      try { if (keep) localStorage.setItem("tracekit-theme", t); } catch { }   // storage refused (a private window): the theme still applies
       schedule();   // the lanes are drawn on a canvas, in the theme's colours
     }
     $("theme").addEventListener("click", () => setTheme(THEMES[(THEMES.indexOf(document.documentElement.dataset.theme || "auto") + 1) % THEMES.length]));
@@ -6455,6 +8063,7 @@
       if (R) stopRun(true);
       // the why views follow the run selected here, from the start of its own graph
       if (id !== scope) { WRUN = WPICK = WNODE = null; GV.focus = null; wvKey = ""; tapeMax = TAPE_PAGE; }
+      if (id !== scope) { WFR = null; WFTAB = "request"; wfReset(); }
       scope = id; selected = null; rebuild(); loadRun(id); updRp(); schedule();
     }
     function updRp() {
@@ -6544,10 +8153,15 @@
       const c = WHY && WHY.calls, hit = c && r.v2 && (c[`${r.session_id}|${r.v2.run_seq}`] || a.post && c[`${r.session_id}|${a.post.v2?.run_seq}`]);
       return hit ? { run: hit[0], node: hit[1] } : null;
     }
+    // a signed run's why import: the run of a call that has a record (a call held and not answered has none), else the
+    // import named for it (tk-<run id>-<hash>)
+    function whyRunOf(id) {
+      return Object.entries(WHY.calls).find(([k]) => k.startsWith(id + "|"))?.[1][0] || WHY.runs.find(r => r.run_id.startsWith("tk-" + id + "-"))?.run_id || null;
+    }
     function whyAlerts() {
       if (!WHY) return [];
-      const runs = V2 && scope ? new Set(Object.entries(WHY.calls).filter(([k]) => k.startsWith(scope + "|")).map(([, v]) => v[0])) : null;
-      return WHY.alerts.filter(a => !runs || runs.has(a.run_id));
+      const run = V2 && scope ? whyRunOf(scope) : null;
+      return WHY.alerts.filter(a => !V2 || !scope || a.run_id === run);
     }
     function whySource(d, p) {
       if (p.status === "hashed") return `<span class="dim">content hashed: can't trace</span>`;
@@ -6714,7 +8328,7 @@
       if (!WHY) { el.innerHTML = `<div class="empty">This view needs why logs: none are loaded (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why).</div>`; return; }
       const runs = WHY.runs.map(r => r.run_id), run = V2 && scope ? RUNS.get(scope) : null;
       // a selected signed run shows its own why run (or says why it has none), never another run's
-      if (!runs.includes(WRUN)) WRUN = run ? Object.entries(WHY.calls).find(([k]) => k.startsWith(scope + "|"))?.[1][0] || null
+      if (!runs.includes(WRUN)) WRUN = run ? whyRunOf(scope)
         : whyRef(selected)?.run || WHY.runs.find(r => r.tests)?.run_id || runs[0] || null;
       // Equal counts can hide replaced effects or changed links after ingestion or live-buffer eviction.
       const fx = VIEW === "graph" ? JSON.stringify([...S.effects].filter(([, e]) => e.call)
@@ -6762,11 +8376,13 @@
       $("wvsum").textContent = `${R.length} runs`;
     }
     // OVERVIEW: what the agents did, what needs attention, the run's numbers, how to read the evidence (Causeway's)
+    // a call held for a person and not answered has no result: the why log leaves it out, CALLS lists it
+    const noCalls = (none) => V2 && scope && RUNS.get(scope)?.decisions?.ask ? "The why log has no tool call yet. Calls held for a person show in CALLS." : none;
     function overviewView(el, d) {
       const s = d.summary, acts = d.nodes.filter(n => n.type === "action"), flagged = new Set(d.alerts.filter(a => a.severity === "high").map(a => a.node));
       const tok = (s.usage.input_tokens || 0) + (s.usage.output_tokens || 0);
       el.innerHTML = runHead(d) + `<div class="sec">WHAT THE AGENTS DID</div><div class="wflow">`
-        + (acts.map(a => `<span class="wstep${flagged.has(a.id) ? " unt" : ""}" data-wwhy="${esc(a.id)}" data-wr="${esc(d.run_id)}" title="${esc(JSON.stringify(a.args))}">${esc(`${a.agent} · ${a.label}${flagged.has(a.id) ? " ⚑" : ""}`)}</span>`).join(" ") || `<span class="dim">No tool calls.</span>`) + `</div>`
+        + (acts.map(a => `<span class="wstep${flagged.has(a.id) ? " unt" : ""}" data-wwhy="${esc(a.id)}" data-wr="${esc(d.run_id)}" title="${esc(JSON.stringify(a.args))}">${esc(`${a.agent} · ${a.label}${flagged.has(a.id) ? " ⚑" : ""}`)}</span>`).join(" ") || `<span class="dim">${esc(noCalls("No tool calls."))}</span>`) + `</div>`
         + `<div class="sec">NEEDS ATTENTION</div>` + (d.alerts.map(a => {
           const c = a.node && d.actions[a.node] ? d.actions[a.node].candidates.filter(c => c.status === "confirmed") : [];
           return `<div class="al"><span class="sev ${esc(a.severity === "review" ? "med" : a.severity)}">${esc(String(a.severity).toUpperCase())}</span><span class="tx">${esc(a.title)}</span><span class="sub">${esc(a.detail)}</span>`
@@ -6800,7 +8416,7 @@
     // WHY DID IT HAPPEN?: the run's tool calls, flagged first, and the one picked (Causeway's tWhy)
     function whyView(el, d) {
       const acts = d.nodes.filter(n => n.type === "action");
-      if (!acts.length) { el.innerHTML = runHead(d) + `<div class="empty">This run has no tool calls to investigate.</div>`; return; }
+      if (!acts.length) { el.innerHTML = runHead(d) + `<div class="empty">${esc(noCalls("This run has no tool calls to investigate."))}</div>`; return; }
       const sev = dict(), rank = { high: 0, review: 1, info: 2 };
       d.alerts.forEach(a => { if (a.node && !(a.node in sev)) sev[a.node] = a.severity; });
       const ordered = [...acts].sort((a, b) => (rank[sev[a.id]] ?? 3) - (rank[sev[b.id]] ?? 3) || a.seq - b.seq);
@@ -6961,11 +8577,11 @@
     const kindName = k => KIND[k] || (String(k).startsWith("tool:") ? "output of " + String(k).slice(5) : String(k));
     const many = (n, w) => Number(n).toLocaleString("en-US") + " " + w + (n === 1 ? "" : "s");
     // how a call content led to ended, worst first, and its chip's class
-    const ENDS = [["blocked", "blk"], ["held", "held"], ["flagged", "flag"]];
-    // a tool a row led to: {tool, runs, confirmed, tested, ruled_out, effect, ended: {blocked, held, flagged},
+    const ENDS = [["blocked", "blk"], ["rejected", "blk"], ["held", "held"], ["flagged", "flag"]];
+    // a tool a row led to: {tool, runs, confirmed, tested, ruled_out, effect, ended: {blocked, rejected, held, flagged},
     // stopped_runs}; a confirmed cause, or a call it led to that was blocked or held, is always shown (flagged ones are
     // common: they come first among the rest)
-    const stopped = t => t.confirmed || t.ended.blocked || t.ended.held;
+    const stopped = t => t.confirmed || t.ended.blocked || t.ended.rejected || t.ended.held;
     // a tool's class (its chip's, and its line's in the flow), how the calls ended, and all it says
     const tone = t => t.confirmed ? "deny" : ENDS.find(([k]) => t.ended[k])?.[1] || (t.tested && t.ruled_out ? "ruled" : "");
     const endWords = t => ENDS.filter(([k]) => t.ended[k]).map(([k]) => `${Number(t.ended[k]).toLocaleString("en-US")} ${k}`).join(" · ");
@@ -7000,24 +8616,138 @@
       const all = Object.values(T);
       return all.filter(t => t.marked).sort(order).concat(all.filter(t => !t.marked).sort((a, b) => b.runs - a.runs || a.tool.localeCompare(b.tool)));
     }
-    // The answer, first: the untrusted content that came before calls blocked or held, or that a replay confirmed caused
-    // calls, the worst INFLSAY (a confirmed cause, then the most calls stopped, the most runs), each opening its row as
-    // its line in the flow does (its data-* are indices into IFL.keys and IFL.tools, as the flow's)
-    const INFLSAY = 3;
-    function inflAnswer(groups, tools) {
-      const at = dict(tools.map((t, j) => [t.tool, j]));
-      const risky = groups.flatMap((g, k) => g.trust !== "untrusted" ? [] : g.reach.filter(stopped).map(t => ({ g, k, t, n: (t.ended.blocked || 0) + (t.ended.held || 0) })))
-        .sort((a, b) => b.t.confirmed - a.t.confirmed || b.n - a.n || (b.t.stopped_runs || 0) - (a.t.stopped_runs || 0) || a.t.tool.localeCompare(b.t.tool));
-      const line = ({ g, k, t, n: stopped }) => {
-        const name = kindName(g.kind), stops = ENDS.slice(0, 2).filter(([w]) => t.ended[w]).map(([w, c]) => `<b class="${esc(c)}">${esc(Number(t.ended[w]).toLocaleString("en-US") + " " + w)}</b>`).join(" and ");
-        const n = g.mine.filter(s => (s.confirmed_tools || []).includes(t.tool)).length, cause = `a replay confirmed ${n > 1 ? n : "one"} of these caused ${t.tool} calls`;
-        return `<div class="ans" role="button" tabindex="0" data-ifk="${esc(k)}" data-ift="${esc(at[t.tool])}"><b>${esc(name.charAt(0).toUpperCase() + name.slice(1))}</b> <span class="bad">(untrusted)</span>`
-          + (stops ? ` came before ${stops} ${esc(t.tool)} ${stopped === 1 ? "call" : "calls"}${t.stopped_runs ? esc(` in ${many(t.stopped_runs, "run")}`) : ""}` + (t.confirmed ? esc("; " + cause) : "") : esc(": " + cause))
-          + (t.confirmed ? ` <b class="blk">${esc(`(effect ${sgn(t.effect)})`)}</b>` : "") + `</div>`;
-      };
-      return `<div class="inans"><div class="q">DID SOMETHING YOUR AGENTS READ COME BEFORE A BLOCKED OR HELD CALL?</div>`
-        + (risky.some(x => x.n) ? "" : `<div class="none">Nothing untrusted came before a blocked or held call.</div>`) + risky.slice(0, INFLSAY).map(line).join("")
-        + (risky.length > INFLSAY ? `<div class="dim">${esc(`and ${risky.length - INFLSAY} more in the rows below`)}</div>` : "") + `</div>`;
+    // The answer, first: each risky call (stopped, flagged, or with an argument or cause from what the agents read), the
+    // ones that serve no step of the task first, in the server's words, then its chain drawn top to bottom: a thin hop
+    // per step (in a model call's context, or asked for by it), and from a step to the call a solid line where the
+    // signer's provenance traced an argument to it (exact) and a double line where a replay showed it changed the call
+    // (measured). Hints (text overlap) are never an influence: off unless asked for (IFL.hint), then dashed and listed.
+    // WHY opens the call in its run
+    const BASIS = { recorded: "the agent's runtime recorded its context", gateway: "the LLM gateway recorded the request sending it",
+                    reconstructed: "observed earlier in the run: the import reconstructs the context" };
+    function inflChain(c, W) {
+      // asked for, the hints off the chain are rows of their own below the call, each a dashed line up to it. A step's
+      // line to the call curves left of the dots, beside the steps it joins, each a little wider than the one below it
+      const on = new Set(c.chain.map(x => x.node)), more = (IFL.hint ? c.hints : []).filter(h => !on.has(h.src) && on.add(h.src));
+      const st = [...c.chain, ...more.map(h => ({ node: h.src, text: "read " + h.label, trust: h.trust, hint: true }))];
+      const RH = 24, DX = 40, last = c.chain.length - 1, f = x => x.toFixed(1), y = i => i * RH + RH / 2;
+      const hinted = new Set(IFL.hint ? c.hints.map(h => h.src) : []);
+      let s = `<svg class="ichain" width="${esc(W)}" height="${esc(st.length * RH)}" viewBox="${esc(`0 0 ${W} ${st.length * RH}`)}">`;
+      for (let i = 0; i < last; i++) s += `<path class="hop" d="${esc(`M${DX},${f(y(i) + 6)}V${f(y(i + 1) - 6)}`)}"/>`;
+      st.forEach((x, i) => {
+        const bend = f(Math.max(2, DX - 10 - 3 * Math.abs(i - last))), arc = `M${DX - 5},${f(y(i))} C${bend},${f(y(i))} ${bend},${f(y(last))} ${DX - 5},${f(y(last))}`;
+        if (i !== last && x.grade === "exact") s += `<path class="g-exact" d="${esc(arc)}"/>`;
+        else if (i !== last && x.grade === "measured") s += `<path class="g-measured" d="${esc(arc)}"/><path class="g-gap" d="${esc(arc)}"/>`;
+        else if (i !== last && hinted.has(x.node)) s += `<path class="g-hint" d="${esc(arc)}"/>`;
+        s += `<circle class="${esc(x.trust === "untrusted" ? "dot bad" : "dot")}" cx="${esc(DX)}" cy="${esc(f(y(i)))}" r="3.5"/>`
+          + `<text${x.hint ? ` class="dim"` : ""} x="${esc(DX + 12)}" y="${esc(f(y(i) + 4))}">${esc(fit(x.text + (x.how ? ` (${x.how})` : "") + (x.hint ? " (hint)" : ""), Math.floor((W - DX - 16) / 6.6)))}</text>`;
+      });
+      return s + `</svg>`;
+    }
+    // what a call's WHY shows: its words, its chain, and each link and replay in a line
+    function inflWhy(c, W) {
+      // an argument the signer traced twice (as an address and as a string, say) is one line
+      const by = g => c.edges.filter(e => e.grade === g), seen = by("seen");
+      const lines = [
+        ...by("exact").map(e => `exact: ${e.label} holds its \`${e.field}\`, and nothing the signer indexed as trusted does (the call's signed records, which this viewer verified${e.bound ? "" : "; the call's arguments here are the log's, not checked against them"})`),
+        ...by("claimed").map(e => e.basis === "local replay"
+          ? `claimed (local replay): the log's own test says a replay without ${e.label} changed it, effect ${sgn(e.effect)}; no signed replay this viewer verified backs it`
+          : `claimed by the log, not checked against the signer: its \`${e.field}\` from ${e.label}`),
+        ...by("measured").map(e => `measured: a replay without ${e.label} changed it, effect ${sgn(e.effect)}` + (e.ci ? ` [${sgn(e.ci[0])}, ${sgn(e.ci[1])}]` : "")),
+        c.seen ? `seen: ${plural(c.seen, "source")} in the context of the model call that asked for it (${[...new Set(seen.map(e => BASIS[e.basis] || e.basis))].join("; ")})` : "",
+        ...c.edges.filter(e => e.why).map(e => `${e.grade}: ${e.why}`),
+        c.ruled_out.length ? `a replay ruled out: ${c.ruled_out.join(", ")}` : "",
+        ...(IFL.hint ? c.hints.map(h => `hint, not an influence: ${h.basis === "value" ? `the value ${h.value} is in` : "its text overlaps"} ${h.label}`) : [])];
+      return `<div class="iwhy"><div class="w">${esc(c.words)}</div>` + (c.chain.length > 1 && W >= 360 ? inflChain(c, W) : "")
+        + [...new Set(lines.filter(Boolean))].map(l => `<div class="dim">${esc(l)}</div>`).join("")
+        + `<button type="button" class="cp" data-wwhy="${esc(c.node)}" data-wr="${esc(c.run)}">OPEN IN ITS RUN</button></div>`;
+    }
+    // A card per call stopped or flagged (or one a replay without the task kept): what happened, in plain words with
+    // its facts; why, in one line (the value that came only from untrusted content, and from where); the value's route;
+    // how it is known; beside it, the same call that ran with a trusted value. The words, chain and numbers are behind
+    // WHY (ICARD: the cards opened). The rest are one quiet line, opened by IQUIET.
+    const ICARD = new Set(), IQ = { open: false };
+    const VERB = { blocked: "Blocked", rejected: "Rejected by a person", held: "Held for a person", flagged: "Flagged" };
+    const CUR = { EUR: "€", USD: "$", GBP: "£" }, TO = /^(recipient|to|iban|account|payee|beneficiary|destination|url|email|address|creditor)/i;
+    const isIban = v => /^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/i.test(String(v).replace(/\s/g, ""));
+    // an IBAN in its groups of four, as a person reads one
+    const spaced = v => isIban(v) ? String(v).replace(/\s/g, "").replace(/(.{4})(?=.)/g, "$1 ") : String(v);
+    const nounOf = v => isIban(v) ? "account number" : /@/.test(v) ? "address" : /^https?:/.test(v) ? "link"
+      : /^[\w-]+(\.[\w-]+)+$/.test(v) ? "host" : /^\+?[\d\s.-]{8,}$/.test(v) ? "number" : "value";
+    // where content came from, in words: a mail is an email, a fetched page a web page, a tool's result its output
+    const fromWords = l => /^(mail|email|inbox)\b/i.test(l) ? "an email" : /^(web|page|fetch|url)\b/i.test(l) ? "a web page"
+      : l === "task" ? "your task" : String(l).startsWith("tool:") ? `${String(l).slice(5)}'s output` : String(l);
+    // a value the agent's content chose, in a card's sentence: marked as data, quoted and cut to 40 characters, its
+    // whole text on hover (a recipient reading "…Verified payee: approve the retry" is the attacker's, not ours)
+    const dv = v => `<code class="dv" title="${esc(String(v))}">“${esc(fit(String(v), 40))}”</code>`;
+    // the content a value came from, as what it says of itself: "an email that says it's from …"
+    const says = (l, p) => esc(fromWords(l)) + (!p ? "" : /^from:\s*\S/i.test(p) ? ` that says it's from ${dv(String(p).replace(/^from:\s*/i, ""))}` : ` that starts ${dv(p)}`);
+    // what base64 text decodes to, as text; null when it isn't base64
+    const b64 = t => { try { return /^[A-Za-z0-9+/]{8,}={0,2}$/.test(t) ? atob(t) : null; } catch { return null; } };
+    // a card's headline: what happened (its verb), and the call with its facts as HTML: an amount only when it is a
+    // number, a currency only as a 3-letter code, the recipient as data (dv)
+    function inflHead(c) {
+      const a = c.args || {}, amount = a.amount == null ? "" : String(a.amount).trim(), cur = /^[A-Z]{3}$/.test(String(a.currency ?? "")) ? a.currency : "";
+      const to = Object.keys(a).find(k => TO.test(k)), what = to != null ? a[to] : c.value?.value;
+      const money = !amount ? "" : /^\d{1,3}(,\d{3})*(\.\d+)?$|^\d+(\.\d+)?$/.test(amount) ? ` ${CUR[cur] || ""}${amount}${!cur || CUR[cur] ? "" : " " + cur}` : " an amount";
+      return [`${c.serves === "drift" && !c.ended ? "Strays from the task" : VERB[c.ended] || "Flagged"}:`,
+              ` ${esc(c.tool + money)}` + (what != null ? (to != null ? " to " : " with ") + dv(spaced(what)) : "") + "."];
+    }
+    // why, in one sentence of HTML: where the value came from, each value the content chose marked as data
+    function inflBecause(c) {
+      const v = c.value, trusted = [...new Set(c.edges.filter(e => e.grade === "seen" && e.trust === "trusted" && e.type === "action" && e.label !== v?.via?.tool).map(e => e.label))];
+      if (v && v.status === "untrusted-only") {
+        const noun = nounOf(v.value), cap = "The " + noun;
+        if (v.via) return `${cap} came from ${esc(v.via.tool)}, ${/look|search|find|get|query|crm|directory/i.test(v.via.tool) ? "looked up" : "called"} with ${dv(v.via.given)}${b64(v.via.given) === v.value ? ` (base64 of the ${isIban(v.value) ? "IBAN" : noun})` : ""}, which appeared only in ${says(v.via.origin[0] || v.via.from[0], v.preview)}.`;
+        return `${cap} came from ${says(v.from, v.preview)}, not from your task${trusted.length ? " or " + esc(trusted.join(", ")) : ""}.`;
+      }
+      if (c.serves === "drift") return "A replay without your task still made this call: it serves no step of the task.";
+      const u = c.untrusted;
+      if (u) return `Its ${u.field ? dv(u.field) : "argument"} came from ${esc(fromWords(u.label))} (${esc(u.grade)}).`;
+      return "Nothing it was given came only from untrusted content.";
+    }
+    // the value's route: the content it came from (untrusted marked), the call that turned it into the value, the value,
+    // the call
+    function inflPath(c) {
+      const v = c.value;
+      if (!v || v.status !== "untrusted-only") return "";
+      const hop = (t, bad) => `<span class="${esc(bad ? "hop bad" : "hop")}" title="${esc(t)}">${esc(t)}</span>`, arrow = bad => `<span class="${bad ? "ar bad" : "ar"}">→</span>`;
+      const origin = v.via ? v.via.origin[0] || v.via.from[0] : v.from;
+      const src = fromWords(origin).replace(/^an? /, "") + (v.preview ? ` “${v.preview}”` : "");
+      return `<div class="ipath">` + hop(src, true) + arrow(true)
+        + (v.via ? hop(`${v.via.tool}(${v.via.given})`, false) + arrow(false) : "")
+        + hop((isIban(v.value) ? "IBAN " : "") + spaced(v.value), false) + arrow(false) + `<span class="hop end">${esc(c.tool)}</span></div>`;
+    }
+    // how the card's answer is known, at its best: exact (the signer traced it), measured (a replay), seen (in context)
+    const GRADES = { exact: "the signer traced this argument to that content, in signed records this viewer verified",
+                     measured: "a replay without that content changed the call", claimed: "the log says so; nothing checked it against the signer",
+                     seen: "that content was in front of the model when it decided; nothing traced or replayed it further" };
+    const gradeOf = c => ["exact", "measured", "claimed"].find(g => c.edges.some(e => e.grade === g)) || "seen";
+    // the same call that ran with a value trusted content gave (the payment with the CRM's account number), if any
+    const twinOf = (c, all) => c.value?.status === "untrusted-only" && all.find(t => t !== c && !t.ended && t.tool === c.tool && t.value?.status === "trusted"
+      && JSON.stringify(t.args?.amount ?? null) === JSON.stringify(c.args?.amount ?? null));
+    function inflCard(c, all, W) {
+      const tw = twinOf(c, all), g = gradeOf(c), open = ICARD.has(c.node);
+      const cls = c.ended === "held" ? "c-held" : c.ended === "flagged" || !c.ended ? "c-flag" : "c-blk";
+      const [verb, head] = inflHead(c);
+      // head and inflBecause are HTML built of esc'd words and dv'd values
+      return `<div class="icard ${esc(cls)}"><div class="main"><div class="ih"><span class="vb">${esc(verb)}</span>` + head
+        + ` <span class="why">` + inflBecause(c) + `</span></div>` + inflPath(c)
+        + `<div class="imeta"><span class="tag" title="${esc(GRADES[g])}">${esc(g)}</span><button type="button" class="cp" data-icard="${esc(c.node)}">${open ? "WHY ▾" : "WHY ▸"}</button></div></div>`
+        + (tw ? `<div class="itwin"><span class="vb">Ran:</span> ${esc(`the same ${c.tool === "send_money" || /pay|transfer/i.test(c.tool) ? "payment" : "call"} with ${tw.value.from === "task" ? "the" : tw.value.from + "'s"} ${nounOf(tw.value.value)}` + (tw.value.from === "task" ? " your task gave." : "."))}</div>` : "")
+        + (open ? inflWhy(c, W) : "") + `</div>`;
+    }
+    function inflCalls(I, W) {
+      // a card: a call stopped, one a replay without the task kept, or one the signer or a replay tied to untrusted content
+      const calls = I.calls || [], cards = calls.filter(c => c.ended || c.serves === "drift" || c.untrusted), rest = calls.filter(c => !cards.includes(c));
+      const quiet = c => `${c.tool}` + (c.value?.status === "untrusted-only" ? `: called with ${fit(String(c.value.value), 40)}, from ${fromWords(c.value.from)}` : ": nothing untrusted in its arguments");
+      return `<div class="inans"><div class="q">WHAT WAS STOPPED OR FLAGGED, AND WHY</div>`
+        + (cards.length ? `<div class="icards">` + cards.map(c => inflCard(c, calls, W - 36)).join("") + `</div>`
+          : `<div class="none">No risky call: nothing was stopped or flagged, and no model call had untrusted content in front of it.</div>`)
+        + (rest.length ? `<div class="iquiet"><button type="button" class="cp" data-iquiet="">${esc(`${IQ.open ? "▾" : "▸"} ${many(rest.length, "other call")} ran without a stop or a flag`)}</button>`
+          + (IQ.open ? rest.map(c => `<div>${esc(quiet(c))}</div>`).join("") : "") + `</div>` : "")
+        + (I.calls_total > calls.length ? `<div class="dim">${esc(`and ${I.calls_total - calls.length} more`)}</div>` : "")
+        + (calls.some(c => c.hinted) || I.sources.length ? `<div class="wbar glegend"><span><button type="button" class="cp" data-inhint="">${esc(IFL.hint ? "hide hints" : "show hints")}</button></span></div>` : "")
+        + `</div>`;
     }
     // INFLUENCE's flow: a node per kind of content (the table's rows, in its order) and per tool, a line per kind and
     // tool it came before, as thick as its runs (log scale: one busy line leaves the rest readable), coloured as its
@@ -7025,10 +8755,10 @@
     // for the content or tool pointed at or clicked. The marked tools first (INFLTOOLS at most), then INFLQUIET quiet
     // ones, the rest one "+N more" node. Its data-* are indices into IFL.keys and IFL.tools ("+" for the rest), never a
     // name an agent chose. IFL.mark: the content, tool or line clicked ({key, tool}); IFL.go: the row to scroll to once
-    // drawn; IFL.hov: the node or line under the pointer
-    const INFLTOOLS = 16, INFLQUIET = 4, IFL = { keys: [], tools: [], mark: null, go: null, hov: null };
+    // drawn; IFL.hov: the node or line under the pointer; IFL.hint: the answers show their hints
+    const INFLTOOLS = 16, INFLQUIET = 4, IFL = { keys: [], tools: [], mark: null, go: null, hov: null, hint: false };
     // lean: every kind is a node (12 read well, past about 30 the flow grows tall); gather the rest as the tools are if a store has that many kinds
-    function inflFlow(groups, tools, W) {
+    function inflFlow(groups, tools, W, calls = []) {
       const name = g => kindName(g.kind), cl = (...c) => c.filter(Boolean).join(" "), nm = tools.filter(t => t.marked).length;
       let n = nm > INFLTOOLS ? INFLTOOLS : nm + INFLQUIET;
       if (tools.length - n <= 1) n = tools.length;   // never "+1 more" in place of the tool itself
@@ -7060,7 +8790,7 @@
       for (const l of [...L].sort((a, b) => RANK.indexOf(tone(a.t)) - RANK.indexOf(tone(b.t)))) {
         const mx = (KW + X2) / 2, d = `M${KW},${f(l.ky)} C${mx},${f(l.ky)} ${mx},${f(l.jy)} ${X2},${f(l.jy)}`, w = .8 + 3 * Math.log1p(l.t.runs) / big, g = groups[l.k];
         s += `<g class="${esc(cl("ln", tone(l.t) || "pl", lit(l) && "on"))}" data-ifk="${esc(l.k)}" data-ift="${esc(l.hid ? "+" : l.j)}"><path class="hit" d="${esc(d)}"/><path class="v" d="${esc(d)}" stroke-width="${esc(f(l.t.confirmed ? Math.max(4, w) : w))}"/>`
-          + (l.t.confirmed ? `<text class="fx" x="${esc(f(mx))}" y="${esc(f((l.ky + l.jy) / 2 - 5))}" text-anchor="middle">${esc(sgn(l.t.effect))}</text>` : "")
+          + (l.t.confirmed ? `<text class="fx" x="${esc(f(mx))}" y="${esc(f((l.ky + l.jy) / 2 - 5))}" text-anchor="middle">caused it<title>${esc(`a replay without it changed the call: effect ${sgn(l.t.effect)}`)}</title></text>` : "")
           + `<title>${esc(`${name(g)}: ` + (l.hid ? `came before calls to ${plural(l.hid.length, "tool")} not shown: ${l.hid.map(t => t.tool).join(", ")}` : said(l.t)))}</title></g>`;
       }
       groups.forEach((g, k) => {
@@ -7076,6 +8806,23 @@
       });
       if (rest.length) s += `<g class="${esc(cl("nd tl more", onJ.has(shown.length) && "on"))}" data-ift="+" transform="${esc(`translate(${X2},${f(ty(shown.length) - TH / 2)})`)}"><rect class="box" width="${esc(TW)}" height="${esc(TH)}" rx="6"/>`
         + `<text x="14" y="15">${esc(`+${rest.length} more`)}</text><title>${esc(`${plural(rest.length, "tool")} not shown: ${rest.map(t => t.tool).join(", ")}`)}</title></g>`;
+      // the value's route through a tool (mail → lookup_supplier → send_money): for each stopped call whose value a
+      // trusted call's answer gave, the content that call was given, the call, and the call it led to, in the middle
+      const V = [];
+      for (const c of calls) {
+        const v = c.value, k = v?.via ? groups.findIndex(g => g.kind === (v.via.origin[0] || v.via.from[0]) || g.mine.some(x => (x.labels || []).includes(v.via.origin[0] || v.via.from[0]))) : -1;
+        if (k < 0 || !(c.tool in at) || !(c.ended || c.serves === "drift") || V.some(x => x.k === k && x.via === v.via.tool && x.j === at[c.tool])) continue;
+        V.push({ k, via: v.via.tool, j: at[c.tool], c });
+      }
+      const VW = 150, VX = KW + (X2 - KW) * .3 - VW / 2;   // left of the middle, where a line's effect is said
+      V.forEach((x, i) => {
+        const y = HEAD + (i + .5) * (H - HEAD) / V.length, mx1 = (KW + VX) / 2, mx2 = (VX + VW + X2) / 2, y1 = ky(x.k), y2 = ty(x.j), v = x.c.value.via;
+        const d1 = `M${KW},${f(y1)} C${f(mx1)},${f(y1)} ${f(mx1)},${f(y)} ${f(VX)},${f(y)}`, d2 = `M${f(VX + VW)},${f(y)} C${f(mx2)},${f(y)} ${f(mx2)},${f(y2)} ${X2},${f(y2)}`;
+        const said2 = `${groups[x.k].kind} → ${x.via} (called with ${v.given}) → ${x.c.tool} (${x.c.ended || "flagged"}): the ${nounOf(x.c.value.value)} came from ${x.via}`;
+        s += `<g class="ln blk via"><path class="v" d="${esc(d1)}" stroke-width="2"/><path class="v" d="${esc(d2)}" stroke-width="2"/><title>${esc(said2)}</title></g>`
+          + `<g class="nd tl blk vt" transform="${esc(`translate(${f(VX)},${f(y - TH / 2)})`)}"><rect class="box" width="${esc(VW)}" height="${esc(TH)}" rx="6"/><rect class="bar" x="5" y="5" width="3" height="${esc(TH - 10)}" rx="1.5"/>`
+          + `<text x="14" y="15">${esc(fit(x.via, Math.floor((VW - 22) / 6.6)))}</text><title>${esc(said2)}</title></g>`;
+      });
       const plain = L.filter(l => !tone(l.t)).length;
       return s + `</svg>` + (plain ? `<p class="dim iflnote">${esc(`${many(plain, "grey line")} hidden: content before calls that ran with no flag. Point at content or a tool to see all its lines; click it to keep them.`)}</p>` : "");
     }
@@ -7093,7 +8840,7 @@
       const groups = (I.groups || []).map(g => {
         const key = g.kind + "|" + g.trust, tools = dict();
         // its sources: a confirmed cause first, then those that came before calls blocked or held, then the most cited
-        const stops = x => (bySrc.get(x.id) || []).reduce((n, e) => n + ((e.ended || {}).blocked || 0) + ((e.ended || {}).held || 0), 0);
+        const stops = x => (bySrc.get(x.id) || []).reduce((n, e) => n + ((e.ended || {}).blocked || 0) + ((e.ended || {}).rejected || 0) + ((e.ended || {}).held || 0), 0);
         const mine = S2.filter(s => s.kind === g.kind && s.trust === g.trust)
           .sort((a, b) => b.confirmed_tools.length - a.confirmed_tools.length || (stops(b) > 0) - (stops(a) > 0) || b.cited_by - a.cited_by);
         for (const t of Object.keys(g.reach)) tools[t] = { tool: t, runs: g.reach[t], confirmed: false, tested: false, ruled_out: true, effect: null, ended: (g.ended || {})[t] || {}, stopped_runs: (g.stopped_runs || {})[t] || 0 };
@@ -7113,24 +8860,24 @@
       const where = (o, n) => `<div>${esc(`${o.agent || "agent"} · run ${String(o.run).slice(0, n)}` + (o.seq != null ? ` · record ${o.seq}` : o.pos != null ? ` · event ${o.pos}` : ""))}`
         + `<br><span class="dim">${esc(Date.parse(o.ts) ? `read ${fmtD(Date.parse(o.ts) / 1000)} ${fmtT(Date.parse(o.ts) / 1000)} ${TZ}` : "")}</span> `
         + (o.seq != null && RUNS.has(o.run) ? `<button type="button" class="cp" data-orun="${esc(o.run)}" data-oseq="${esc(o.seq)}">OPEN</button>` : `<button type="button" class="cp" data-wgo="${esc(o.run)}">OPEN</button>`) + `</div>`;
-      // in front of the agent for how many decisions (a phone's card, which has no column names, says what the number is)
-      const front = n => `<span class="ph">in front of the agent </span>${esc("for " + many(n, "decision"))}`;
+      // read before how many decisions (a phone's card, which has no column names, says what the number is)
+      const front = n => `<span class="ph">read before </span>${esc(many(n, "decision"))}`;
       const src = (x, n, mark) => `<tr class="insrc"><td>` + (x.seen || []).map(o => where(o, n)).join("") + (x.runs > (x.seen || []).length ? `<div class="dim">${esc(`and ${x.runs - x.seen.length} more`)}</div>` : "")
         + (x.preview ? `<div class="dim">${esc(String(x.preview).slice(0, 110))}</div>` : "") + `</td><td class="${x.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(x.trust)}</td><td></td><td>${esc(many(x.runs, "run"))}</td><td>` + front(x.cited_by) + `</td>`
         + `<td class="reach">` + chips((bySrc.get(x.id) || []).map(link), x.id, mark) + `</td></tr>`;
       // the tool marked in a row's chips: the one clicked in the flow or the answer, in its kind's row (a tool: in every row)
       const M = IFL.mark, markOf = key => M && (M.key == null || M.key === key) ? M.tool : null;
       // the flow, from a panel 600 px wide (a phone has the answer and each kind as a card); its line in each item of the key
-      const flow = S2.length && el.clientWidth >= 600 ? inflFlow(groups, tools, el.clientWidth - 16) : "";
+      const flow = S2.length && el.clientWidth >= 600 ? inflFlow(groups, tools, el.clientWidth - 16, I.calls || []) : "";
       const sw = cls => flow ? `<svg class="ifl" width="22" height="8"><g class="${esc(cls ? "ln " + cls : "ln")}"><path class="v" d="M0,4H22" stroke-width="${esc(cls === "deny" ? 3.5 : 2)}"/></g></svg>` : "";
-      put("whyv", !S2.length ? `<div class="empty">Nothing yet: no model call in these runs had content the agents read in front of it, so there is nothing to show. Runs that record their model calls show here what the agents read before each tool call.</div>`
-        : inflAnswer(groups, tools)
-          + `<p class="dim" style="padding:0 8px">${esc(`${WHY.runs.length === 1 ? "In this run" : `Across all ${many(WHY.runs.length, "run")}`}: what the agents read, and the tools they called after it. Content in front of an agent when it decided came before that call; only a replay can show it caused one.`)}</p>`
-          + flow + `<div class="wbar glegend"><span>` + sw("") + `<span class="tag">tool N</span> came before its calls in N runs${flow ? ", the more the thicker" : ""}</span><span>` + sw("blk") + `<span class="tag blk">tool N blocked</span> calls blocked</span>`
+      const answers = S2.length || I.calls_total ? inflCalls(I, el.clientWidth) : "";
+      put("whyv", !S2.length ? answers || `<div class="empty">Nothing yet: no model call in these runs had content the agents read in front of it, so there is nothing to show. Runs that record their model calls show here what the agents read before each tool call.</div>`
+        : answers + `<p class="dim" style="padding:0 8px">What the agents read, and the calls that followed. Red lines led to a stopped call.</p>`
+          + flow + (!IFL.hint ? "" : `<div class="wbar glegend"><span>` + sw("") + `<span class="tag">tool N</span> came before its calls in N runs${flow ? ", the more the thicker" : ""}</span><span>` + sw("blk") + `<span class="tag blk">tool N blocked</span> calls blocked</span>`
           + `<span>` + sw("held") + `<span class="tag held">tool N held</span> held for a person</span><span>` + sw("flag") + `<span class="tag flag">tool N flagged</span> flagged</span>`
           + `<span>` + sw("deny") + `<span class="tag deny">tool +effect</span> a replay confirmed it caused them</span><span>` + sw("ruled") + `<span class="tag ruled">tool N</span> a replay ruled it out</span>`
-          + `<span><span class="s-deny">untrusted</span> by the harness's word</span><span>a row opens to its sources</span></div>`
-          + `<table class="wt infl"><thead><tr><th>CONTENT</th><th>TRUST</th><th>SOURCES</th><th>RUNS</th><th>IN FRONT OF THE AGENT</th><th>LED TO</th></tr></thead><tbody>`
+          + `<span><span class="s-deny">untrusted</span> by the harness's word</span><span>a row opens to its sources</span></div>`)
+          + `<table class="wt infl"><thead><tr><th>CONTENT</th><th>TRUST</th><th>SOURCES</th><th>RUNS</th><th>READ BEFORE</th><th>LED TO</th></tr></thead><tbody>`
           + groups.map(g => `<tr class="row ingrp${M && M.key === g.key ? " on" : ""}" data-ingrp="${esc(g.key)}" tabindex="0"><td>${esc(INFL.has(g.key) ? "▾ " : "▸ ")}<b>${esc(kindName(g.kind))}</b>${kindName(g.kind) !== g.kind ? ` <span class="dim">(${esc(g.kind)})</span>` : ""}</td>`
             + `<td class="${g.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(g.trust)}</td><td>${esc(Number(g.mine.length).toLocaleString("en-US"))}<span class="ph">${esc(g.mine.length === 1 ? " source" : " sources")}</span></td><td>${esc(many(g.runs, "run"))}</td><td>` + front(g.cited) + `</td><td class="reach">` + chips(g.reach, g.key, markOf(g.key)) + `</td></tr>`
             + (INFL.has(g.key) ? (g.mine.some(x => !x.preview) ? `<tr class="insrc"><td colspan="6" class="dim">${esc("Content not in the log: a signed run's record holds only its hash, so each source is named by where it was read.")}</td></tr>` : "")
@@ -7141,7 +8888,7 @@
       $("wvsum").textContent = [many(groups.length, "kind") + " of content", many(S2.length, "source"), many(T.length, "tool")].join(" · ");
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-ifk],[data-ift],[data-ifl],[data-tipsre],[data-lrec]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-wfby],[data-wfs],[data-wfc],[data-wft],[data-wfx],[data-wfclr],[data-wfnew],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-inhint],[data-icard],[data-iquiet],[data-ifk],[data-ift],[data-ifl],[data-tipsre],[data-lrec]"); if (!t) return;
       e.preventDefault();
       // INFLUENCE's flow and answer: content, a line or an answer opens its row and marks it (a line to "+N more": every
       // tool in the row), a tool is marked in every row, and empty space clears the mark
@@ -7151,6 +8898,9 @@
         if (key != null) { INFL.add(key); IFL.go = key; if (t.dataset.ift === "+") INFLMORE.add(key); }
         wvKey = ""; return schedule();
       }
+      if (t.dataset.inhint !== undefined) { IFL.hint = !IFL.hint; wvKey = ""; return schedule(); }
+      if (t.dataset.icard) { ICARD.has(t.dataset.icard) ? ICARD.delete(t.dataset.icard) : ICARD.add(t.dataset.icard); wvKey = ""; return schedule(); }
+      if (t.dataset.iquiet !== undefined) { IQ.open = !IQ.open; wvKey = ""; return schedule(); }
       if (t.dataset.inmore) { INFLMORE.has(t.dataset.inmore) ? INFLMORE.delete(t.dataset.inmore) : INFLMORE.add(t.dataset.inmore); wvKey = ""; return schedule(); }
       if (t.dataset.ingrp) { INFL.has(t.dataset.ingrp) ? INFL.delete(t.dataset.ingrp) : INFL.add(t.dataset.ingrp); wvKey = ""; return schedule(); }
       if (t.dataset.page) { show(t.dataset.page); wvKey = ""; return schedule(); }
@@ -7167,6 +8917,12 @@
       if (t.dataset.ppage) { PERM.page = Math.max(0, PERM.page + +t.dataset.ppage); return schedule(); }
       if (t.dataset.wtab) { WTAB = t.dataset.wtab; return schedule(); }
       if (t.dataset.wfby) { WFBY = t.dataset.wfby; return schedule(); }
+      if (t.dataset.wfs) { WFSORT = WFSORT.k === t.dataset.wfs ? { k: WFSORT.k, dir: -WFSORT.dir } : { k: t.dataset.wfs, dir: ["start", "name", "agent"].includes(t.dataset.wfs) ? 1 : -1 }; return schedule(); }
+      if (t.dataset.wfc) { WFCHIP = t.dataset.wfc; WF.keys = new Set(); return schedule(); }
+      if (t.dataset.wft) { WFTAB = t.dataset.wft; return schedule(); }
+      if (t.dataset.wfx) { selected = null; return schedule(); }
+      if (t.dataset.wfclr !== undefined) { WFR = null; return schedule(); }
+      if (t.dataset.wfnew !== undefined) { const el = $("tnrows"); WF.unseen = 0; el.scrollTop = WFSORT.k === "start" && WFSORT.dir < 0 ? 0 : el.scrollHeight; return schedule(); }
       if (t.dataset.gfit !== undefined) { GV.fit = !!t.dataset.gfit; return schedule(); }
       if (t.dataset.wgo) { WRUN = t.dataset.wgo; show("overview"); return schedule(); }
       if (t.dataset.wpick) { WPICK = t.dataset.wpick; return schedule(); }
@@ -7230,7 +8986,7 @@
     });
 
     reset();
-    try { setTheme(localStorage.getItem("tracekit-theme")); } catch { setTheme("auto"); }
+    try { const linked = new URLSearchParams(location.hash.slice(1)).get("theme"); if (linked) setTheme(linked, false); else setTheme(localStorage.getItem("tracekit-theme")); } catch { setTheme("auto"); }
     if (BOOT) startReplay(); else startLive();
     schedule();
   </script>

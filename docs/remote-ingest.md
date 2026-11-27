@@ -99,7 +99,9 @@ deny or ask with 200.
 `Retry-After` is `retry_after_ms` rounded up to whole seconds; the frame keeps the milliseconds. Every answer carries a
 `Request-Id` header (`req_` and 24 hex digits) of its own, not the `request_id` a call sends: the signer logs one line
 per answer at INFO on the `tracekit.transport.http` logger with that id, the status, method, identity, error code and
-time taken.
+time taken. `tracekit signer serve --config signer.yaml --log-level info` prints these lines on stderr (`debug` prints
+Tracekit's debug lines too); without `--log-level` the signer prints only warnings and errors. Other libraries print
+only warnings and errors at every level, since a library's debug log can carry credentials (botocore's does).
 
 The SDKs send an event call (`decide`, `complete`, `observe`, `state_write`, `model_event`) again after `unavailable`
 or a `quota_exceeded` with `retry_after_ms`, at most three tries within the call's timeout: they wait
@@ -109,9 +111,13 @@ anything, and rebuilds that from the records after a restart or a disk error, so
 (`client_seq_reused`: a try the signer answered `unavailable` was written after all). Then the SDK raises that first
 `unavailable`, as it did before it retried, so the caller takes its outage path (the run's fail mode). Refusals that
 run out are the signer's error, as before; lost connections are counted apart, three tries of their own, and end in
-`SignerUnavailable`. No other call is sent again: its `request_id` is remembered in memory only and forgotten with a
-write that failed, so a retry after `unavailable` could be recorded twice. Don't let a proxy in front of the signer
-retry its requests either.
+`SignerUnavailable`. The error of a write call has `recorded`: `False` when nothing was recorded (refused, or never
+sent), `None` when a try went out and got no answer, or the signer answered `unavailable`, so it may have been (the
+message says so; once the run closes, its bundle shows whether it was, so don't send it again as a new call), and
+`True` when a retry was refused `client_seq_reused` after such a try, so that try was recorded. TypeScript has the
+same field (`false`, `null`, `true`). No other call is sent again: its `request_id` is remembered in memory only and
+forgotten with a write that failed, so a retry after `unavailable` could be recorded twice. Don't let a proxy in
+front of the signer retry its requests either.
 
 ## Downloading a run
 
@@ -174,7 +180,7 @@ another identity's runs, forge signer records (gaps, tamper, checkpoints, approv
 
 ## Migrating from `tracekit ingest`
 
-`tracekit ingest` (the v1 ingest gateway) is deprecated and is removed in tracekit 0.5; it prints a warning when run.
+`tracekit ingest` (the v1 ingest gateway) is deprecated; it prints a warning when run.
 
 | v1 | v2 |
 |---|---|

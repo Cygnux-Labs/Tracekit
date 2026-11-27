@@ -86,7 +86,7 @@ class Executor(unittest.TestCase):
     def setUp(self):
         self.dir = tmpdir(self)
         self.s = svc.SignerService(self.dir, policy=POLICY, gateways=["mtls:spiffe://acme/*"],
-                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR),
+                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get", "export_run", svc.ON_BEHALF} - svc.OPERATOR),
                                               "mtls:spiffe://acme/executor": ["decide", "complete", "approval_request",
                                                                               "approval_wait", "approval_consume"]})
         self.closed = False
@@ -275,7 +275,9 @@ class Executor(unittest.TestCase):
         cfg["actions"][0]["settings"] = {"x-api-version": "2022-06-28"}
         with open(self.cfg, "w") as f:
             json.dump(cfg, f)
-        pay = executor.serve(executor.load_config(self.cfg), self.signer).executor["actions"]["pay"]
+        srv = executor.serve(executor.load_config(self.cfg), self.signer)
+        self.addCleanup(srv.server_close)
+        pay = srv.executor["actions"]["pay"]
         self.assertEqual(pay["headers"], {"x-api-version": "2022-06-28", "authorization": API_KEY})
         self.assertNotIn("2022-06-28", pay["cut"])
         self.assertIn(API_KEY, pay["cut"])

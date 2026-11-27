@@ -19,8 +19,13 @@ _INT = re.compile(r"^[-+]?\d+$")
 _FLOAT = re.compile(r"^[-+]?(\d+\.\d*|\.\d+)([eE][-+]?\d+)?$")
 
 
-def _strip_comment(line):
-    out, q = [], None
+def _strip_comment(line, depth=0):
+    """`line` without its comment; `depth`: the flow brackets an earlier line left open. A quote opens a string only where a scalar starts (the line's start, after `- `,
+    `: `, a flow `[`, `{` or `,`, or a quoted key's `:`); inside a plain scalar it is text, as in PyYAML."""
+    if "#" not in line:
+        return line.rstrip()
+
+    out, q, start, dash, closed = [], None, True, False, False
     i = 0
     while i < len(line):
         c = line[i]
@@ -30,18 +35,30 @@ def _strip_comment(line):
                 if i + 1 < len(line) and line[i + 1] == "'":
                     out.append("'"); i += 1
                 else:
-                    q = None
+                    q, closed = None, True
             elif q == '"' and c == "\\":
                 if i + 1 < len(line):
                     out.append(line[i + 1]); i += 1
             elif q == '"' and c == '"':
-                q = None
+                q, closed = None, True
+            i += 1
+            continue
+        if c == "#" and (i == 0 or line[i - 1] in " \t" or closed):
+            break
+        if c in "'\"" and start:
+            q = c
+        elif c in " \t":
+            start = start or out[-1:] == [":"] or (out[-1:] == ["-"] and dash)
+        elif (c in "[{" and start) or (c == "," and depth):
+            depth += c != ","
+            start = True
+        elif c == ":" and closed:
+            start = True
         else:
-            if c == "#" and (i == 0 or line[i - 1] in " \t"):
-                break
-            if c in "'\"" and (not out or "".join(out).rstrip()[-1:] in ("", ":", "-", "[", ",", "{") ):
-                q = c
-            out.append(c)
+            depth -= c in "]}" and depth > 0
+            dash, start = c == "-" and start, False
+        closed = False
+        out.append(c)
         i += 1
     return "".join(out).rstrip()
 
@@ -89,34 +106,65 @@ def _scalar(tok, lineno):
     return t
 
 
+def _quoted(s):
+    """Per character of flow text `s`: part of a quoted string? And is one still open at the end."""
+    marks, q, start, closed, prev, i = [], None, True, False, "", 0
+    while i < len(s):
+        c = s[i]
+        marks.append(bool(q) or (c in "'\"" and start))
+        if q:
+            if (q == '"' and c == "\\") or (q == c == "'" and s[i + 1:i + 2] == "'"):
+                marks.append(True)
+                i += 1
+            elif c == q:
+                q, closed = None, True
+            i += 1
+            continue
+        if marks[-1]:
+            q = c
+        elif c.isspace():
+            start = start or prev == ":"
+        else:
+            start = c in "[{," or (c == ":" and closed)
+        closed = False
+        prev = c if not c.isspace() else prev
+        i += 1
+    return marks[:len(s)], q is not None
+
+
 def _split_flow(s, lineno):
     """The comma-separated items of a flow list or mapping body, nested [] and {} kept whole."""
-    parts, cur, q, depth = [], [], None, 0
-    for c in s:
-        if q:
-            cur.append(c)
-            if c == q:
-                q = None
-        elif c in "'\"":
-            q = c; cur.append(c)
-        elif c == "," and not depth:
-            parts.append("".join(cur)); cur = []
-        else:
-            depth += (c in "[{") - (c in "]}")
-            cur.append(c)
-    if q:
+    marks, open_ = _quoted(s)
+    if open_:
         raise YAMLError(f"line {lineno}: unterminated string in flow list")
+    parts, cur, depth = [], [], 0
+    for c, quoted in zip(s, marks):
+        if not quoted and c == "," and not depth:
+            parts.append("".join(cur)); cur = []
+            continue
+        if not quoted:
+            depth += (c in "[{") - (c in "]}")
+        cur.append(c)
     parts.append("".join(cur))
+    if len(parts) > 1 and not parts[-1].strip():   # a trailing comma, as in [a, b,]
+        parts.pop()
+    if any(not x.strip() for x in parts):
+        raise YAMLError(f"line {lineno}: empty item in flow list")
+    if any(x.strip().startswith("#") for x in parts):
+        raise YAMLError(f"line {lineno}: a flow item can't start with #")
     return parts
 
 
 def _split_key(text, lineno):
     """'key: value' -> (key, value_text) or None if not a mapping entry."""
-    if text[:1] in "'\"":
-        end = text.find(text[0], 1)
-        if end < 0:
-            raise YAMLError(f"line {lineno}: unterminated key")
-        key, rest = text[1:end], text[end + 1:]
+    if text[:1] in ("'", '"'):
+        marks, open_ = _quoted(text)   # only the key's own string counts: a quote in the value is the value's
+        if False not in marks:
+            if open_:
+                raise YAMLError(f"line {lineno}: unterminated key")
+            return None
+        end = marks.index(False) - 1
+        key, rest = _scalar(text[:end + 1], lineno), text[end + 1:]
         if not rest.startswith(":"):
             return None
         return key, rest[1:]
@@ -127,35 +175,31 @@ def _split_key(text, lineno):
 
 
 def _unclosed(text, lineno):
-    """Whether the flow list or mapping that `text`'s value starts goes on past the line."""
+    """How many brackets of the flow list or mapping that `text`'s value starts are still open at the line's end."""
     kv = None if text.startswith("- ") else _split_key(text, lineno)
     v = (kv[1] if kv else text[2:] if text.startswith("- ") else text).strip()
     if v[:1] not in ("[", "{"):
-        return False
-    depth, q = 0, None
-    for c in v:
-        if q:
-            q = None if c == q else q
-        elif c in "'\"":
-            q = c
-        else:
-            depth += (c in "[{") - (c in "]}")
-    return depth > 0
+        return 0
+    marks, open_ = _quoted(v)
+    if open_:
+        raise YAMLError(f"line {lineno}: a quoted string in a flow list ends on its line")
+    return max(0, sum((c in "[{") - (c in "]}") for c, quoted in zip(v, marks) if not quoted))
 
 
 def loads(text):
-    lines, open_ = [], None   # open_: a line whose flow list or mapping the next lines continue
+    lines, open_ = [], None   # open_: a line whose flow list or mapping the next lines continue, and its open depth
     for n, raw in enumerate(text.splitlines(), 1):
         if "\t" in raw[:len(raw) - len(raw.lstrip())] and open_ is None:
             raise YAMLError(f"line {n}: tabs are not allowed for indentation")
-        s = _strip_comment(raw)
+        s = _strip_comment(raw, open_[3] if open_ else 0)
         if open_ is not None:
             ind, s, n = open_[0], open_[1] + " " + s.strip(), open_[2]
         elif s.strip() in ("", "---"):
             continue
         else:
             ind, s = len(s) - len(s.lstrip()), s.strip()
-        open_ = (ind, s, n) if _unclosed(s, n) else None
+        depth = _unclosed(s, n)
+        open_ = (ind, s, n, depth) if depth else None
         if open_ is None:
             lines.append((ind, s, n))
     if open_ is not None:
@@ -262,4 +306,7 @@ def load_any(text):
         if text.lstrip().startswith("{"):
             return json.loads(text)
         return loads(text)
-    return yaml.safe_load(text)
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise YAMLError(str(e)) from e

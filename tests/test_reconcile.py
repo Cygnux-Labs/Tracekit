@@ -113,6 +113,19 @@ class Wording(unittest.TestCase):
                 self.assertEqual(found, [("args_mismatch", "decided other arguments than the model asked for (the "
                                           "decide says a framework coerced them)")] if gateway else [])
 
+    def test_a_gateways_copy_of_a_deep_agents_call_gets_no_alias(self):
+        put = lambda d, k, v: d.__setitem__(k, v)
+        for source, found in (("sdk", []), ("gateway", [("args_mismatch", "decided deepagents:write_file, the model "
+                                                                           "asked for write_file")])):
+            with self.subTest(l3=source):
+                run = {"rec": reconcile.new(), "digests": {}}
+                reconcile.observe(put, run, {"type": "model.exchange", "source": source, "data": {"tool_uses": [
+                    use("tc-1", "write_file")]}})
+                reconcile.observe(put, run, {"type": "policy.decision", "tool_call_id": "tc-1", "args_source": "parsed",
+                                             "source": "sdk", "data": {"tool": "deepagents:write_file",
+                                                                       "decision": "allow", "rule_ids": []}})
+                self.assertEqual([(k, detail) for k, _, _, detail in reconcile._found(run, False)], found)
+
 
 class TestReconcile(Reconcile):
     def handoff_run(self):

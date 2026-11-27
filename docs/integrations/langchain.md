@@ -12,11 +12,12 @@ The older callback adapter in `tracekit.adapters.langchain` ([adapters.md](../ad
 ## Install
 
 ```bash
-pip install tracekit-ai "langchain>=1.4,<1.5" "langgraph>=1.2,<1.3"
+pip install tracekit-ai "langchain>=1.4,<2" "langgraph>=1.2,<1.3"
 pip install langgraph-checkpoint-sqlite   # optional: a durable checkpointer for approvals
 ```
 
-Python 3.10 or newer (LangChain v1's own requirement).
+Tested with LangChain 1.4 and 1.5 and LangGraph 1.2. A later LangChain 1.x installs; a LangGraph outside 1.2 warns
+once. Python 3.10 or newer (LangChain v1's own requirement).
 
 ## Setup
 
@@ -46,6 +47,33 @@ graph.add_edge(START, "model")
 graph.add_conditional_edges("model", tools_condition)
 graph.add_edge("tools", "model")
 app = graph.compile(checkpointer=TracekitCheckpointer(InMemorySaver(), signer, run))
+```
+
+## Deep Agents filesystem tools
+
+With Deep Agents 0.7.41, Tracekit recognizes tools built by Deep Agents' `FilesystemMiddleware`.
+The adapter recognizes them by their implementation and argument names and sends them to the signer as `deepagents:<name>`, which the signer decides as the matching Claude Code tool.
+
+| Deep Agents tool | Policy name |
+|---|---|
+| `read_file` | `Read` |
+| `write_file` | `Write` |
+| `edit_file` | `Edit` |
+| `ls` | `LS` |
+| `glob` | `Glob` |
+| `grep` | `Grep` |
+| `execute` with a string `command` and its declared arguments | `Bash` |
+
+A URL in the text of a `write_file` call is treated as file content. The policy still checks the destination path.
+Decisions are recorded with names such as `deepagents:write_file`, so the signer can reconcile them with the original
+model call. The tool receives the original arguments. Custom tools keep their own names and policy behavior.
+`LS` follows the active pack's treatment of `LS`, which the shipped packs leave unclassified.
+
+To run the Deep Agents regression tests in a separate Python 3.11 or newer environment, use:
+
+```bash
+python -m pip install -e . pytest "deepagents==0.7.41" "langgraph>=1.2.24,<1.3"
+python -m pytest -q tests/test_deepagents.py
 ```
 
 ## What is recorded
@@ -115,7 +143,8 @@ after its tool asked the person itself is claimed from the signer (`call_claim`)
 again. After a signer restart such a call must be approved again: its resume is refused (`the signer restarted since
 this call's approval was used; ask again`). An identity with an explicit `authorize` list needs `call_state` and
 `call_claim` granted beside `decide` and
-`approval_consume`; without them the node decides each call again. Single calls under `create_agent` keep their own
+`approval_consume`; without them the node decides each call again, or refuses a paused call, and warns once, naming
+the grant. Single calls under `create_agent` keep their own
 task and the per-call gate.
 
 Exceptions raised by the tool are recorded and re-raised unchanged.

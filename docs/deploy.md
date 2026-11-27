@@ -103,9 +103,9 @@ To leave the system Python alone, run init from a root-owned clone of the releas
 runs the copy in the current directory, and init builds `/opt/tracekit` from it:
 
 ```bash
-# v1.7.2 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
-sudo git clone --depth 1 --branch v1.7.2 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.7.2
-cd /usr/local/src/tracekit-1.7.2
+# v1.8.0 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
+sudo git clone --depth 1 --branch v1.8.0 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.8.0
+cd /usr/local/src/tracekit-1.8.0
 sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
     [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
 sudo /opt/tracekit/bin/python -I -m tracekit doctor
@@ -140,8 +140,9 @@ What `init --v2` sets up ([system mode](quickstart-v2.md#system-mode-linux-macos
   be set up, init says so and each Claude Code session's run records a `tailer_lost` gap instead.
 
 An agent that runs through the SDK, such as a daemon that calls `tracekit.instrument()`, needs no hook: add
-`--no-hooks`. Another coding agent gets its own hook with `--agent` (`codex`, `cursor`, `gemini`, `opencode`, `goose`,
-`qwen`, `droid`, `antigravity`; [coding agents](coding-agents.md)). The SDK finds the system signer through
+`--no-hooks`. Another coding agent gets its own hook with `--agent` (`codex`, `cursor`, `gemini`, `opencode`, `kilo`,
+`goose`, `qwen`, `droid`, `antigravity`, `crush`, `devin`, `cline`, `gptme`, `openhands`, `copilot`, `codebuddy`,
+`jcode`, `kiro` or `interpreter`; [coding agents](coding-agents.md)). The SDK finds the system signer through
 `/etc/tracekit/client.json`. Init still sets up the tailer's user, ACL and sudo rule, but only the Claude Code hook
 starts the tailer, so the SDK's runs record no `tailer_lost` gap. Doctor's `D-HOOKS-PRESENT` check warns `no hooks
 recorded in client.json`; that is expected.
@@ -153,20 +154,22 @@ restart the unit. Approve from ADMIN's account with `/opt/tracekit/bin/python -I
 On the system-pip route, `sudo /usr/bin/python3 -m pip uninstall tracekit-ai` removes the system copy (pip leaves its
 dependencies); on the clone route, delete the clone.
 
-Each init run writes `/etc/tracekit/signer.yaml` again from its flags. It drops anything you added by hand, such as
-`witnesses:` or `content:` (without `content:`, new runs keep no content), and doesn't say so. To upgrade:
+Each init run writes its own keys in `/etc/tracekit/signer.yaml` again from its flags (`data_dir`, `socket`,
+`socket_mode`, `tenant`, `tenants`, `approvals`, `authorize`, `policy`, `harness_binding` and `witnesses`), keeps
+every other key you added, such as `content:` or `metrics:`, and says which it kept. Kept keys are written back as
+JSON, so comments in the file are not kept. A `witnesses:` list of your own is kept as it is, so add `public` to it
+yourself if you want the public witness too. Init reads the file as the signer does, before it changes anything, and
+stops with `/etc/tracekit/signer.yaml: can't keep what you added to it (<why>); fix or move it, then run init again`
+when the file isn't UTF-8 text in the YAML subset the signer reads, is a symlink or not a regular file, has a key the
+signer doesn't know, or has a value that wouldn't load back as it is (such as `1.0e-5`, which JSON writes as `1e-05`
+and the signer reads back as text). To upgrade:
 
 1. Stop the signer: on Linux, `sudo systemctl stop tracekit-signer`; on macOS,
    `sudo launchctl bootout system/dev.tracekit.signer`. Until init starts it again, AGENT's tool calls are blocked.
    Init restarts the harness helper and the egress observer itself, so they run the new version.
-2. Keep a copy of the config in root's home (`/root` on Linux, `/var/root` on macOS):
-   `sudo cp /etc/tracekit/signer.yaml ~root/signer.yaml.bak`.
-3. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone route, clone
+2. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone route, clone
    the new release's tag into a new directory. On macOS, init bootstraps the signer and, with `--harness`, the helper
    again; no separate launchd command is needed here.
-4. Add your lines back to `/etc/tracekit/signer.yaml`, then restart the signer: on Linux,
-   `sudo systemctl restart tracekit-signer`; on macOS, `sudo launchctl kickstart -k system/dev.tracekit.signer`. A run
-   that starts before this keeps no content.
 
 Export and the trust config read the signer's data dir, which only root and the signer's user can open. So AGENT
 can't export its own runs; only root can. Export as root, and name AGENT's tenant: init puts AGENT's runs in a tenant
@@ -269,6 +272,7 @@ own Deployment (one replica per data volume; the signer holds its storage lock) 
 (Kubernetes TokenReview, a SPIFFE CA for mTLS, or named tokens), and optionally Postgres
 (`storage: {postgres: {dsn_file}}`), an AWS KMS log key (`log_key: {aws_kms: {key_id, region}}`) and a
 [record-key issuer](issuer.md).
+The requests the signer accepts, and the answers it gives, are in the [signer API reference](api.md).
 
 ```yaml
 # signer.yaml: central, agents identified by their Kubernetes service account
@@ -447,6 +451,10 @@ as it needs nothing the schema lacks:
   a 1.4 or 1.5 verifier, which reports them `not interpreted`; one with a grant the run's own user issued needs a 1.6
   verifier. A same-user dev signer from 1.5 is replaced by the first 1.6 client that finds it. The store's schema is
   unchanged.
+- **1.7** speaks signer protocol 26. A 1.7 signer serves clients and gateways from protocol 15 up (1.2 to 1.6
+  included), but a 1.7 client or gateway refuses a 1.6 signer: upgrade the signer first, then the agents' Tracekit.
+  Bundles add nothing a 1.6 verifier doesn't read. A same-user dev signer from 1.6 is replaced by the first 1.7
+  client that finds it. The store's schema is unchanged.
 
 Helm (`tracekit-central`): migrate each replica's schema before upgrading the release with `signer.content.retain`
 set. Compose: the stack's init script runs only on an empty database, so on an existing stack run

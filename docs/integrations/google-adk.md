@@ -10,10 +10,11 @@ its `after_tool_callback` and `on_tool_error_callback` record the outcome. ADK's
 ## Install
 
 ```bash
-pip install tracekit-ai "google-adk>=2.12,<2.13"
+pip install tracekit-ai "google-adk>=2.12,<3"
 ```
 
-Tested with Google ADK 2.12, which needs Python 3.11+.
+Tested with Google ADK 2.12 and 2.15, which need Python 3.11+. A later 2.x installs and the hook says once that it
+is untested; CI runs the newest 2.x on every change.
 
 ## Setup
 

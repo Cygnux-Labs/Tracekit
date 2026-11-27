@@ -807,6 +807,24 @@ class Agreement(SignerBundles):
                                  [line])
                 self.assertEqual(line["status"], status)
 
+    def test_both_verifiers_read_an_approval_decision_alike(self):
+        """ext.approval.decision: the line passes as the signer writes it and warns otherwise, the same in both (the
+        kit scores exit codes and verdicts, which a warning doesn't change)."""
+        import test_bundle_v2 as b
+        trust = os.path.join(self.d, "approval-decision-trust.json")
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        for name, kw in b.APPROVAL_DECISIONS.items():
+            with self.subTest(name):
+                log = b.Log(os.path.join(self.d, f"approval-decision-{uuid.uuid4().hex}"))
+                self.addCleanup(log.store.close)
+                bundle = b.approval_decision_bundle(log, os.path.join(self.d, f"{uuid.uuid4().hex}.tkb"), **kw)
+                _, rep = self.agree(bundle, trust)
+                [line] = [c for c in rep.checks if c["check"] == "approval decision"]
+                self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "approval decision"],
+                                 [line])
+                self.assertEqual(line["status"], "warn" if kw else "pass")
+
     @unverified_bundles   # records no signer writes (schema-invalid ones among them), on purpose
     def test_strings_past_utf16_and_schema_invalid_records_read_alike(self):
         """Python counts and sorts strings by code point, JavaScript by UTF-16 unit, and a schema-invalid record must
@@ -1393,8 +1411,7 @@ class Agreement(SignerBundles):
         import run_kit as kit
         cases = kit.load()
         reports = ts_verify_many([[os.path.join(TESTS, c[k]) for k in ("input", "trust")] for c in cases])
-        with open(os.path.join(TS, "package.json")) as f:
-            version = json.load(f)["version"].split("-")[0]
+        version = v2.READS   # the newest format version it reads (test_the_verifier_is_the_package_version)
         for c, out in zip(cases, reports):
             with self.subTest(c["name"]):
                 ok, how = kit.score(c, {"exit": out["exit_code"], "verdict": kit.verdict(out["integrity"]),
@@ -1602,7 +1619,13 @@ class AgreementScripts(unittest.TestCase):
                 if call.args[1] == "another signer's trust config":
                     with open(call.kwargs["trust"]) as f:
                         pinned[call.args[0]] = json.load(f)["logs"][0].split("+")[0]
-        self.assertEqual(pinned, {name: e22._origin(name, corpus) for name in bundles})
+        # each base's own origin, or a key-derived one (the page's sample's) the forger's key names in its place
+        from tracekit.format import checkpoint as cp
+        self.assertEqual({n: o if not cp.KEY_ORIGIN.match(o) else bool(cp.KEY_ORIGIN.match(o) and
+                                                                    o != e22._origin(n, corpus))
+                          for n, o in pinned.items()},
+                         {n: e22._origin(n, corpus) if not cp.KEY_ORIGIN.match(e22._origin(n, corpus)) else True
+                          for n in bundles})
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ from tracekit.core import now_ts
 from tracekit.format import registry
 from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.schema import V2
-from tracekit.signer import detect, reconcile
+from tracekit.signer import detect, labels, reconcile
 from tracekit.signer.detect import epoch
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.runtoken import subject
@@ -64,17 +64,41 @@ def new_run(tenant, run_id):
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source", "streams", "writers",
               "tails", "replay")
 # a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold);
-# `refused`: the rule ids of a refused consume of its attempt; `ended`: [run_seq, ok] of its attempt's tool.result
+# `refused`: the rule ids of a refused consume of its attempt; `ended`: [run_seq, ok] of its attempt's tool.result;
+# `reason`: the one decide gave ("" for none), which call_state answers, None for a call replayed from its record, whose
+# call_state reads `reasons` (its record's) and its policy's instead (SignerService._recorded_reason); `run_labels`: the
+# run labels that made its run condition rules apply (a retry's decision records them again)
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "tool", "nondeterministic",
-             "detect_ids", "via", "caller", "refused", "ended", "policy_hash")
+             "detect_ids", "via", "caller", "refused", "ended", "reason", "reasons", "policy_hash", "run_labels",
+             "agent_id")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
+# the AI approver (approver_state): how long a person's answer counts as a precedent; the circuit breaker's agreement of
+# AI suggestions with people's answers, over the last AGREEMENT_PAIRS, read once there are AGREEMENT_MIN
+PRECEDENT_S = 30 * 86400
+AGREEMENT_PAIRS, AGREEMENT_MIN, AGREEMENT_BAR = 20, 10, 0.9
+CHANGED = "the reviewer's model, its identity, version or prompt changed since its last answer"   # repinned
+# the approvals of runs gone final that approval_get and approval_list still answer (RecordLog.ended): a day, the
+# newest ENDED_MAX
+ENDED_S, ENDED_MAX = 86400, 10000
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
 
 
+def prune_ended(pop, ended, now):
+    """Drop from `ended` (approval id -> an approval of a final run, with `ended`: when its run went final) those past
+    ENDED_S and the oldest past ENDED_MAX. `pop(d, k)`: the writer's undoable pop, or dict.pop."""
+    # lean: insertion order is the order runs went final, so only the oldest go; a signer that ends more than
+    # ENDED_MAX approvals a day keeps less than a day of them: raise ENDED_MAX if one does
+    for aid, a in list(ended.items()):
+        if a["ended"] >= now - ENDED_S and len(ended) <= ENDED_MAX:
+            break
+        pop(ended, aid)
+
+
 def final_run(run):
-    """What a final run keeps: enough to refuse late writes, check a token's run and answer its owner."""
-    return {k: run[k] for k in FINAL_KEYS}
+    """What a final run keeps: enough to refuse late writes, check a token's run and answer its owner, and its labels'
+    (a clear of one: labels.origin, labels.derived, and its requesters: labels.requesters)."""
+    return {**{k: run[k] for k in FINAL_KEYS}, **{k: run[k] for k in ("caller", "labels", "label_src") if run.get(k)}}
 
 
 def _monotonic(t):
@@ -89,9 +113,14 @@ def since(ts):
 
 def approval(tenant, run_id, data, ts):
     """The signer's state for the approval an `approval.request` record (`data`, written at `ts`) opened. `agent`: the
-    record's agent eligibility; `via`: the gateway whose call it is; `escalated`: only people answer it now
+    record's agent eligibility; `ai`: its `ai`, when the policy's approval_agent lists every rule it was held by (its
+    precedent key); `via`: the gateway whose call it is; `escalated`: only people answer it now
     (`escalation`: by whom and why); an answer adds `answered` (by, kind) and `answer` (its self_approved and person,
-    when the record has them); an agent's approval adds `kind` agent and the times it may be consumed between
+    when the record has them); an agent approver's latest answer, deciding or not, `agent_answer` (decision, mode,
+    by, its reason, an AI answer's `view`: the commitment to the view it answered, `precedent`: the first
+    person's approval it named, and `answers`: the models' answers, and once a yes is taken back `revoked`: by whom,
+    when and why); an agent's approval adds `kind`
+    agent and the times it may be consumed between
     (`not_before`, `consume_by`), and a revoke `revoked` (by whom); an answer or a revoke sets `answer_seq` (its
     record's run_seq); one a later call of the same arguments consumed adds `used_by` (ran); one a root PCM grant was
     minted from adds `granted`."""
@@ -103,7 +132,7 @@ def approval(tenant, run_id, data, ts):
             "executor": data.get("executor", "t1"), "passkey": data.get("passkey", False),
             "requester_person": data.get("requester_person"), "label": salt_label({"type": "approval.request", "data": data}),
             "agent": data.get("agent"), "escalated": False, "requested_at": ts, "incident_id": data.get("incident_id"),
-            "via": data.get("via")}
+            "via": data.get("via"), "ai": data.get("ai")}
 
 
 APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired", "approval.abandoned": "expired",
@@ -161,13 +190,21 @@ def degrade(tx, prov, state, reason):
         tx.set(prov, "reason", reason[:256])
 
 
-def agent_state(set_, log, run, e):
+def new_agent():
+    """The agent-approval state (agent_state), empty."""
+    return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}, "pins": {},
+            "label_seqs": {}, "switch": {}, "lessons": {}, "dropped": {}, "tried": {}}
+
+
+def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
     """Follow record `e` of `run` in the agent-approval state that budgets, review caps and the person-only set are
     counted from: `log.agent` {off: the kill switch, uses: approval id -> {requested, tenant, requester, rules,
-    approved, spent}} and the run's `person_only` and `agent_reviews`. `set_(d, k, v)`: the writer's undoable set, or a
-    plain one on replay. Called after the record's own state change."""
+    approved, spent}} and the run's `person_only` and `agent_reviews`; and the AI approver's (approver_state). `set_(d,
+    k, v)`: the writer's undoable set, or a plain one on replay; `pop(d, k)`: its pop of a key `d` has. Called after the
+    record's own state change."""
     typ, d = e["type"], e["data"]
     a = log.approvals.get(d.get("approval_id"))
+    approver_state(set_, log, run, e, a, pop)
     if typ == "approval.agents":
         set_(log.agent, "off", not d["enabled"])
     elif typ == "approval.request" and (d.get("agent") or {}).get("eligible"):
@@ -189,6 +226,17 @@ def agent_state(set_, log, run, e):
         set_(a, "escalation", {k: d[k] for k in ("by", "reason") if k in d})
     elif typ == "approval.revoked":   # by whom, for the held message of a retry (SignerService._said_no)
         set_(a, "revoked", d["by"])
+        if a.get("agent_answer"):   # and who took the agent's yes back, when and why, for people (SignerService._ai)
+            set_(a, "agent_answer", {**a["agent_answer"], "revoked": {
+                "by": d.get("person") or d["by"], "at": e["ts"], **({"reason": d["reason"]} if d.get("reason") else {})}})
+    if typ in ("approval", "approval.suggested") and d.get("approver_kind") == "agent" or \
+            typ == "approval.escalated" and d.get("by") == "agent":   # what it said, for people (SignerService._ai)
+        who, x = d["approver_identity"], d.get("relied_on") or {}
+        first = ((x.get("precedents") or {}).get("approve") or [None])[0]
+        set_(a, "agent_answer", {"decision": d.get("decision", "escalate"), "by": f"{who['scheme']}:{who['subject']}",
+                                 "mode": "shadow" if typ == "approval.suggested" else "enforce", "record": e["id"],
+                                 **{k: v for k, v in (("reason", d.get("reason")), ("view", x.get("view")),
+                                                      ("precedent", first), ("answers", x.get("answers"))) if v}})
     if typ == "approval":   # who answered, for the bridges; and as whom, for a root grant (SignerService._pcm_grant)
         set_(a, "answered", {"by": d["approver"], "kind": d.get("approver_kind", "person")})
         set_(a, "answer", {k: d[k] for k in ("self_approved", "person") if k in d})
@@ -197,6 +245,163 @@ def agent_state(set_, log, run, e):
     if typ in ("approval.escalated", "approval.revoked") or typ == "approval" and d["decision"] != "approve":
         # anyone's reject sticks: a person's veto as much as an agent's
         set_(run, "person_only", {**run.get("person_only", {}), **{k: True for k in person_only_keys(a)}})
+
+
+def approver_state(set_, log, run, e, a, pop):
+    """Follow record `e` of `run` (`a`: the approval it names) in the AI approver's state (docs/approvals.md#the-ai-
+    approver), in `log.agent`: `precedents` (approval id -> {tenant, requester, digest, key, rules, decision, at,
+    run, reason?, bad?}: people's answers to approvals whose `ai` says the run was clean, not self-approved, for
+    PRECEDENT_S; `key`, its precedent key as shown; `by`, the person); keyed by tenant and rule (joined by a NUL),
+    `demoted` (why the circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of
+    an AI suggestion with the person's answer) and `pins` (the model, version, prompt hash and playbook digest of
+    the AI's last answer, and each model's identity as its answers gave it: repinned); and `playbook` (tenant ->
+    {version, entries: {id: {text, key}}}); `switch` (tenant -> a person's approver.switched: {on, rules?, by, at,
+    reason?}; none: the policy and signer.yaml decide alone); and
+    `label_seqs` (each identity a run.label's run has as a requester -> the seq of the last such record, an add or a
+    clear, or of a decision that set a label for the run bound alone: SignerService._ai_state's label epoch); and
+    `tried` (labels.tried_state: the labels calls that didn't run set for the run bound alone). A precedent goes bad
+    when a person revokes it (precedent.revoked), an incident opens in its run, or a why finding is written about its
+    run; a rule is demoted when a person revokes an AI approval of it, a precedent of it goes bad, agreement falls under
+    AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an answer comes from another model, identity, version or prompt
+    than its pin (a person's playbook change is no such change); a person's approver.enabled restores it (the pin stays
+    the answer's that changed it)."""
+    typ, d, ag, tenant = e["type"], e["data"], log.agent, e["tenant"]
+
+    def demote(rules, why):
+        for r in rules:
+            if f"{tenant}\0{r}" not in ag["demoted"]:
+                set_(ag["demoted"], f"{tenant}\0{r}", why[:1024])
+
+    def spoil(found, why):   # precedents gone bad, and their rules demoted
+        for aid in found:
+            p = ag["precedents"][aid]
+            if not p.get("bad"):
+                set_(ag["precedents"], aid, dict(p, bad=why[:1024]))
+                demote(p["rules"], f"the person's approval it matched ({aid}) no longer counts: {why}")
+    ap = (a or {}).get("ai")
+    if log.labels:
+        labels.tried_state(set_, log, run, e)
+    # each requester a run.label, or a call that sets a label for the run bound alone, reaches (labels.requesters,
+    # labels_of's inputs): when, last
+    if typ == "run.label" or log.labels and log.labels.tried(e):
+        set_(ag, "label_seqs", {**ag.get("label_seqs", {}), **dict.fromkeys(labels.requesters(run), e["seq"])})
+    if typ in ("approval", "approval.suggested") and ap and d.get("approver_kind") == "agent" and "relied_on" in d:
+        for r in ap["key"]["rules"]:   # what answered: a change of it runs in shadow until a person enables the rule
+            k = f"{tenant}\0{r}"
+            pin, changed = repinned(ag["pins"].get(k), pinned(d))
+            if changed:
+                demote([r], CHANGED)
+            if ag["pins"].get(k) != pin:
+                set_(ag["pins"], k, pin)
+    if typ == "run.registered" and d.get("analyzes"):   # a findings run: its why findings are about that run
+        set_(run, "analyzes", d["analyzes"])
+    elif typ == "approval.suggested" and ap and d["decision"] in ("approve", "reject"):
+        set_(a, "suggested", d["decision"])
+    elif typ == "approval" and ap and d.get("approver_kind") != "agent" and d["decision"] in ("approve", "reject"):
+        # a person's own answer in a run clean when asked and when answered (run_clean); never a self-approval or a
+        # break-glass answer
+        if ap["clean"] and d.get("run_clean") is True and not d.get("self_approved") and not d.get("break_glass"):
+            for old in [k for k, p in ag["precedents"].items() if p["at"] < epoch(e["ts"]) - PRECEDENT_S]:
+                pop(ag["precedents"], old)
+            set_(ag["precedents"], d["approval_id"], {
+                "tenant": tenant, "requester": a["requester"], "digest": ap["digest"], "key": ap["key"],
+                "rules": ap["key"]["rules"], **({"wide_digest": ap["wide_digest"]} if "wide_digest" in ap else {}),
+                "decision": d["decision"], "at": epoch(e["ts"]), "run": f"{tenant}\0{e['run_id']}",
+                "by": d.get("person") or d["approver"], **({"reason": d["reason"]} if d.get("reason") else {})})
+        if a.get("suggested"):   # the person's answer to a call the AI answered in shadow mode
+            for r in ap["key"]["rules"]:
+                k = f"{tenant}\0{r}"
+                pairs = [*ag["pairs"].get(k, ()), a["suggested"] == d["decision"]][-AGREEMENT_PAIRS:]
+                set_(ag["pairs"], k, pairs)
+                if len(pairs) >= AGREEMENT_MIN and sum(pairs) < AGREEMENT_BAR * len(pairs):
+                    demote([r], f"the AI agreed with people on {sum(pairs)} of the last {len(pairs)} calls")
+            if a["suggested"] != d["decision"]:   # a disagreement: a lesson, for a person to accept or drop
+                lesson(set_, ag, tenant, a, d, e, "rejected" if d["decision"] == "reject" else "approved")
+        book = ag["playbook"].get(tenant)
+        flagged = {k: dict(v, contradicted={"approval_id": d["approval_id"], "by": d.get("person") or d["approver"],
+                                            "at": e["ts"], "decision": d["decision"]})
+                   for k, v in (book or {"entries": {}})["entries"].items()
+                   if v.get("digest") == ap["digest"] and v.get("decision") not in (None, d["decision"])}
+        if flagged:   # a person decided a call like it the other way: the entry is flagged for review
+            set_(ag["playbook"], tenant, {**book, "entries": {**book["entries"], **flagged}})
+    elif typ == "approval.revoked" and ap and a.get("kind") == "agent" and d["by"] != "signer":
+        demote(ap["key"]["rules"], f"{d.get('person') or d['by']} took back AI approval {d['approval_id']}")
+        lesson(set_, ag, tenant, a, {**d, "decision": "reject"}, e, "took back")
+    elif typ == "incident.opened":
+        spoil([k for k, p in ag["precedents"].items() if p["run"] == f"{tenant}\0{e['run_id']}"],
+              f"incident {d['incident_id']} opened in its run")
+    elif typ == "why.finding" and run.get("analyzes"):
+        spoil([k for k, p in ag["precedents"].items() if p["run"] == f"{tenant}\0{run['analyzes']}"],
+              "a why finding was written about its run")
+    elif typ == "precedent.revoked" and d["approval_id"] in ag["precedents"]:
+        spoil([d["approval_id"]], f"{d['by']} took it back" + (f": {d['reason']}" if d.get("reason") else ""))
+    elif typ == "approver.switched":
+        set_(ag.setdefault("switch", {}), tenant, {"on": d["on"], "by": d["by"], "at": epoch(e["ts"]),
+                                                   **{k: d[k] for k in ("rules", "reason", "person") if k in d}})
+    elif typ == "approver.enabled":
+        for r in d["rules"]:
+            for table in ("demoted", "pairs"):
+                if f"{tenant}\0{r}" in ag[table]:
+                    pop(ag[table], f"{tenant}\0{r}")
+    elif typ == "playbook.entry":
+        if d["id"] in ag.get("lessons", {}):   # accepted or dropped: proposed no more
+            pop(ag["lessons"], d["id"])
+        if d["action"] == "drop":   # a proposal a person doesn't want: not proposed again
+            set_(ag.setdefault("dropped", {}), tenant, sorted({*ag["dropped"].get(tenant, ()), d["id"]}))
+            return
+        book = ag["playbook"].get(tenant) or {"version": 0, "entries": {}}
+        entries = {k: v for k, v in book["entries"].items() if k != d["id"]}
+        if d["action"] == "accept":
+            entries[d["id"]] = {"text": d["text"], "key": d["key"],
+                                **{k: d[k] for k in ("digest", "decision", "evidence", "wide_digest") if k in d}}
+        set_(ag["playbook"], tenant, {"version": book["version"] + 1, "entries": entries})
+
+
+def lesson(set_, ag, tenant, a, d, e, did):
+    """Draft a lesson, in `ag["lessons"]`, from a person's answer `d` (record `e`) that went against the AI's on
+    approval `a`: what it holds in plain words, the precedent key and its digest (and the request's wide_digest: a no
+    binds calls like it in any project), the people's decision, and the evidence (the AI's answer's record id and the
+    person's). Its id is L- and 32 hex digits of its text and evidence's
+    sha256. A person accepts it into the playbook, or drops it (playbook.entry)."""
+    ap, ai = a["ai"], a.get("agent_answer") or {}
+    what = "; ".join(" ".join(v) for v in ap["key"]["target"].values())[:200] or f"{ap['key']['tool'][:64]} calls"
+    who, when = d.get("person") or d.get("approver") or d.get("by"), e["ts"][5:10]
+    text = (f"don't approve {what} ({', '.join(ap['key']['rules'])}) without a person, in any project: {who} {did} one "
+            f"on {when} that "
+            f"the AI {'approved' if ai.get('mode') == 'enforce' else 'would have approved'}"
+            if d["decision"] == "reject" else
+            f"{who} approved {what} ({', '.join(ap['key']['rules'])}) on {when}, which the AI would have "
+            f"{'rejected' if ai.get('decision') == 'reject' else 'handed to a person'}") + (
+        f" ({d['reason'][:300]})" if d.get("reason") else "")
+    evidence = [x for x in (ai.get("record"), e["id"]) if x]
+    lid = "L-" + hashlib.sha256(json.dumps([text, evidence]).encode("utf-8", "surrogatepass")).hexdigest()[:32]
+    set_(ag.setdefault("lessons", {}), lid, {
+        "tenant": tenant, "text": text, "key": ap["key"], "digest": ap["digest"], "decision": d["decision"],
+        **({"wide_digest": ap["wide_digest"]} if "wide_digest" in ap else {}), "evidence": evidence, "approval_id": a.get("id") or d["approval_id"], "by": who, "at": epoch(e["ts"])})
+
+
+def pinned(d):
+    """[model, version, prompt hash, playbook digest, {model name: its identity}] of an AI answer's record: what its
+    circuit breaker pins. The identities are the reviewer's answers' (relied_on.answers), None for a model whose answer
+    gave none."""
+    asserted = d.get("asserted") or {}
+    return [asserted.get("model"), asserted.get("version"), asserted.get("prompt_hash"),
+            d["relied_on"]["playbook"]["digest"],
+            {a["model"]: a.get("identity") for a in d["relied_on"].get("answers") or ()}]
+
+
+def repinned(old, new):
+    """(the pin after answer pin `new`, whether it changed pin `old`): another model, version or prompt, or another
+    identity of a model both name: a change no person chose. The playbook digest is kept with it, never compared: a
+    person changes the playbook (accept, retire) by a signed decision of their own, an entry that says people said no
+    binds on the signer (SignerService._bound_by_lesson), and one that says yes can't widen a bound. A model the answer
+    didn't ask (a no needs one answer) keeps its identity."""
+    if old is None:
+        return new, False
+    ids = old[4] if len(old) > 4 else {}
+    if old[:3] != new[:3] or any(m in ids and ids[m] != i for m, i in new[4].items()):
+        return new, True
+    return new[:4] + [{**ids, **new[4]}], False
 
 
 def new_contain():
@@ -360,9 +565,18 @@ class Tx:
         if typ == "run.registered":
             self.set(run, "registered", e["ts"])
         found = reconcile.observe(self.set, run, e, digests, log.handoff)
-        agent_state(self.set, log, run, e)
+        agent_state(self.set, log, run, e, self.pop)
         contain_state(self.set, log, run, e, self.pop)
         grant_state(self.set, run, e)
+        labels.state(self.set, run, e)
+        labels.carry(self.set, log, run, e, self.pop)
+        # the run labels this record sets, each a signer's run.label right after it, before the run's next call (a
+        # final run's state keeps no calls: nothing it records runs a call)
+        new = log.labels.sets(e, log.approvals.get, run["calls"].get) - set(run.get("labels") or ()) \
+            if log.labels and "calls" in run else ()
+        for label in sorted(new):
+            self.emit(run, "run.label", {"label": label, "action": "add", "by": "signer", "source": e["run_seq"]},
+                      source="signer")
         for t, d in incidents:   # first, as detect.backtest feeds them; an enforced incident is the responder's to write
             if t == "incident.opened" and d["mode"] == "enforce" and log.respond:
                 log.respond(self, run, e, d)
@@ -434,16 +648,18 @@ class Tx:
 
 
 class RecordLog:
-    def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None, certify=None, detector=None):
+    def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None, certify=None, detector=None,
+                 labels=None):
         """`storage` is open (and holds its lock); `open_storage()` reopens it after a disk error. `sign` is a
         format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from; `metrics` a
         signer.metrics.SignerMetrics. `bridge`: the v1 ledger this log continues (signer.epoch `bridge`), refused
         unless the log is empty or already starts with it. `certify(log_id)` -> (RecordSigner, issuance entry): a
         fresh certified record key (tracekit.issuer.certify), taken instead of `sign` once the log is replayed; its
         signer.epoch retires the key before it. `detector`: a detect.Detector, or None when the policy detects nothing.
+        `labels`: a labels.Sources, or None when the policy reads no label (its runs carry none).
         `respond(tx, run, e, incident)`, set by the service: writes an enforced incident.opened that record `e` fired
         and acts on it, or (incident None) acts on a decision `e` whose detection state is unavailable."""
-        self.detector, self.respond = detector, None
+        self.detector, self.labels, self.respond = detector, labels, None
         self.storage, self.open_storage, self.sign, self.quotas, self.salt = storage, open_storage, sign, quotas, salt
         self.metrics = metrics
         self.observers = []   # f(records), called on the writer once storage has taken a batch: must not block
@@ -473,7 +689,8 @@ class RecordLog:
 
     def _state(self):
         """The run state as replay rebuilds it, as JSON: no deny sets, args digests, pending arguments or claims
-        (SignerService._call_claim); monotonic times as wall clock times."""
+        (SignerService._call_claim); monotonic times as wall clock times; and a call's reason as decide gave it, which
+        replay can't (CALL_KEYS)."""
         wall, runs = time.time() - time.monotonic(), []
         for run in self.runs.values():
             r = {k: v for k, v in run.items() if k not in ("denied", "digests", "prov", "claims")}
@@ -487,8 +704,9 @@ class RecordLog:
         return {"log_id": self.log_id, "closed": self.head["closed"], "runs": runs, "tenants": sorted(self.tenants),
                 "open_runs": self.open_runs, "approvals": self.approvals, "index": [[*k, a] for k, a in
                                                                                    self.approval_index.items()],
+                "ended": self.ended,
                 "registry": {t: size for t, (size, _) in self.storage.tail_state()["registry"].items()},
-                "keys": self.keys, "agent": self.agent, "contain": self.contain,
+                "keys": self.keys, "agent": self.agent, "contain": self.contain, "carry": self.carry,
                 **({"detect": self.det} if self.detector else {})}
 
     def snapshot(self):
@@ -500,6 +718,7 @@ class RecordLog:
             if not tx.records and not self.down:
                 if self.detector:
                     self.detector.prune(self.det, time.time())
+                labels.prune(self, time.time())
                 self.storage.snapshot_put(self._state())
         self.write(fn)
 
@@ -510,10 +729,10 @@ class RecordLog:
         s = self.storage
         tail = s.tail_state()
         size = tail["tree_size"]
-        runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
+        runs, prev, leaves, approvals, index, tenants, closed, ended = {}, ZERO_HASH, {}, {}, {}, set(), False, {}
         open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
         unsnapped = set()   # the runs the snapshot doesn't hold: registered since it (all of them without one)
-        agent, contain = {"off": False, "uses": {}}, new_contain()
+        agent, contain, carry = new_agent(), new_contain(), {}
         policy = self.detector and self.detector.engine.policy_hash
         det = detect.new(policy)
 
@@ -541,19 +760,21 @@ class RecordLog:
                     r.setdefault("results", {})   # before 1.3: results recorded since the snapshot are checked
                     r.setdefault("replay", False)   # before 1.4: set already in a findings or replay run's state
                     calls = [c for c in (*r["calls"].values(), *r["decisions"].values())
-                             if c and not {"tool", "policy_hash"} <= c.keys()]
-                    if calls:   # before 1.7 a call had no tool or policy_hash: its decision's record names them
+                             if c and not {"tool", "policy_hash", "reasons"} <= c.keys()]
+                    if calls:   # before 1.7 a call had no tool or policy_hash, up to 1.7.2 no reasons: its record has them
                         named = {x["event"]["data"].get("decision_id"): x["event"]["data"]
                                  for x in s.iter_run(r["tenant"], r["run_id"]) if x["event"]["type"] == "policy.decision"}
                         for c in calls:
                             d = named.get(c["decision_id"]) or {}
-                            c["tool"], c["policy_hash"] = d.get("tool"), d.get("policy_hash")
+                            c["tool"], c["policy_hash"], c["reasons"] = (d.get("tool"), d.get("policy_hash"),
+                                                                         d.get("reasons"))
                     if any("ended" not in c for c in r["calls"].values()):   # before call_state (RPC 24)
                         for x in s.iter_run(r["tenant"], r["run_id"]):
                             outcome(r["calls"], x["event"])
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
-            agent, contain = st.get("agent", agent), st.get("contain", contain)
+            ended = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st.get("ended", {}).items()}   # 1.8
+            agent, contain, carry = {**agent, **st.get("agent", {})}, st.get("contain", contain), st.get("carry", carry)
             index = {tuple(k[:4]): k[4] for k in st["index"]}
             for aid, a in approvals.items():
                 by_run.setdefault(a["run_key"], []).append(aid)
@@ -596,6 +817,8 @@ class RecordLog:
                 run["registered"] = e["ts"]
                 run["principal"] = e.get("principal")
                 run["people"] = (e["data"]["identity"].get("person"), e.get("principal") if e.get("principal_attested") else None)
+                if "caller" in e["data"]:   # a gateway's run of a client (SignerService._register_run)
+                    run["caller"], run["quota"] = e["data"]["caller"], json.dumps([run["owner"], e["data"]["caller"]])
                 h = e["data"].get("harness")
                 run["harness"] = (h["pid"], h["start_time"]) if h else None   # the process its owner's calls come from
                 if "session" in e["data"]:
@@ -604,7 +827,7 @@ class RecordLog:
                     run["box"] = e["ext"]["box"]
                 if {"replay_of", "analyzes"} & e["data"].keys():
                     run["replay"] = True
-                open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
+                open_runs[run.get("quota", run["owner"])] = open_runs.get(run.get("quota", run["owner"]), 0) + 1
                 if e["source"] == "import":   # not reconciled: no layer gates or reports its calls
                     run["rec"], run["spans"] = None, {}
                     if "request_id" in e:   # an importer's over RPC (tracekit follow, not OTLP): watched for its beats
@@ -623,13 +846,17 @@ class RecordLog:
                     del index[(*key, a["tool_call_id"], a["attempt"])]
                     if a.get("used_by"):
                         del index[(*key, *ran(a)[:2])]
+                    if epoch(e["ts"]) >= time.time() - ENDED_S:   # a log replayed whole keeps only the last day's
+                        ended[aid] = dict(a, ended=epoch(e["ts"]))
             elif e["type"] == "policy.decision":
                 d = e["data"]
                 call = {"tool_call_id": e["tool_call_id"], "attempt": e.get("attempt", 0), "decision": d["decision"],
                         "rule_ids": d["rule_ids"], "decision_id": d.get("decision_id"),
                         "commitment": d.get("args_commitment"), "tool": d.get("tool"), "via": d.get("via"),
                         "caller": d.get("caller"), "nondeterministic": bool(d.get("nondeterministic")),
-                        "detect_ids": d.get("detect", {}).get("rule_ids"), "policy_hash": d.get("policy_hash")}
+                        "detect_ids": d.get("detect", {}).get("rule_ids"), "policy_hash": d.get("policy_hash"),
+                        "reasons": d.get("reasons"), "run_labels": d.get("run_labels"),
+                        **({"agent_id": e["agent_id"]} if e.get("agent_id", "main") != "main" else {})}
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call
@@ -684,14 +911,21 @@ class RecordLog:
             if "calls" in run:   # a final run's state keeps none
                 outcome(run["calls"], e)
             if not run["final"]:
-                agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
+                agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent,
+                                                                    labels=self.labels), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
                 grant_state(dict.__setitem__, run, e)
+                labels.state(dict.__setitem__, run, e)
+                labels.carry(dict.__setitem__, types.SimpleNamespace(carry=carry, labels=self.labels, runs=runs), run,
+                             e, lambda d, k: d.pop(k, None))
+            if e["type"] == "run.writer":   # after labels.carry, which carries the run's labels to the new writer
+                run["writers"][e["data"]["stream"]] = e["data"]["identity"] + (
+                    " through a gateway" if e["data"].get("gateway") else "")
         for run in runs.values():   # a run's last result had no executed_against_policy gap after it
             if run.get("ran_under"):
                 run["decisions"].pop(run.pop("ran_under")[1], None)
         self.log_id = self.log_id or secrets.token_hex(16)
-        self.agent, self.contain = agent, contain
+        self.agent, self.contain, self.carry = agent, contain, carry   # carry: labels.carry's
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
         for (tenant, run_id), r in runs.items():   # open runs a fresh detection state never saw registered
             k = f"{tenant}\0{run_id}"
@@ -703,6 +937,8 @@ class RecordLog:
         # look them up in storage instead once a signer holds millions of runs
         self.live = {k: True for k, r in runs.items() if not r["final"] and k[1] != SIGNER_RUN[1]}   # the runs sweep visits
         self.approvals, self.approval_index = approvals, index   # approval_id -> state; (tenant, run, call, attempt) -> id
+        self.ended = ended   # approval_id -> the state of an approval of a final run, for people to read (prune_ended)
+        prune_ended(dict.pop, self.ended, time.time())
         self.open_runs = {k: n for k, n in open_runs.items() if n}
         keep, missing = {}, {}   # keep: past it, leaves of records a power loss lost (none under a note); set aside
         for tenant in sorted(set(leaves) | set(tail["registry"])):
@@ -848,6 +1084,10 @@ class RecordLog:
                 if last is None:
                     self.quotas.check_count("streams_per_run", len(run["streams"]))
                     if req["stream"] not in run["writers"]:
+                        if owner(identity) != run["owner"]:   # a requester of the run (labels.requesters): recorded
+                            tx.emit(run, "run.writer", {"identity": owner(identity), "stream": req["stream"],
+                                                        **({"gateway": True} if "caller" in req else {})},
+                                    source="signer")
                         tx.set(run["writers"], req["stream"], writer(identity, req))
                 elif req["client_seq"] <= last:
                     raise RPCError("client_seq_reused", f"{req['stream']}/{req['client_seq']}")

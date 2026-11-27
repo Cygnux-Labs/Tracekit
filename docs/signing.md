@@ -12,6 +12,8 @@
 
 The public key is `keys/signer.pub`; it is copied into every bundle. The key id is `ed25519:` + the first 16 hex characters of `sha256(pubkey)`.
 
+`sudo /opt/tracekit/bin/python -I -m tracekit uninstall --system --user <agent-user>` removes system mode: its hooks, services, `/opt/tracekit` and client configs. It keeps the key and the ledger in `/var/lib/tracekit`, and the `tracekit` user, unless you add `--purge` ([limits](limits.md)).
+
 **Why a separate OS user and not the OS keychain.** A keychain protects the key's bytes, but it signs whatever a process in the user's session asks it to. An agent running in that session could ask it to sign forged or rewritten records, and could still delete or rewrite the ledger file. A separate user owns both the key and the ledger, so the agent's user can only append through the socket and can never rewrite what is there.
 
 **Why system mode needs kernel peer credentials.** The signer identifies each caller with `SO_PEERCRED` (Linux) or `LOCAL_PEERCRED` and `LOCAL_PEERPID` (macOS): that is how it attests `os_user`, refuses `source=proxy` events from anyone but its own user, and checks approvers. System-mode installation is refused on platforms without them (Windows), and on macOS it needs `--experimental-macos` until it is validated on hardware ([platforms](portability.md)). Where there are no peer credentials, dev mode uses an authenticated loopback TCP transport, but caller identity remains unattested and proxy events and approvals are explicitly untrusted. A manually configured Unix socket is refused when peer credentials are unavailable.

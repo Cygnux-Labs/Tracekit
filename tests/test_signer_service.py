@@ -2,6 +2,7 @@
 Unix socket, refusals that leave no state, disk errors, restart with a torn tail, rollback detection, quotas, the CLI,
 and (with -m perf, Linux) the S1 performance gates."""
 import json
+import logging
 import os
 import shutil
 import socket
@@ -64,6 +65,23 @@ def tmpdir(case):
 def records(data_dir):
     with open(os.path.join(data_dir, "store", "records.jsonl"), "rb") as f:
         return [json.loads(line) for line in f.read().splitlines()]
+
+
+def drop_call_keys(data_dir, *keys):
+    """Rewrite the latest snapshot of the closed signer at `data_dir` as one written before its calls kept `keys`."""
+    snaps = os.path.join(data_dir, "store", "snapshots")
+    path = os.path.join(snaps, max(os.listdir(snaps), key=lambda n: int(n.split(".")[0])))
+    with open(path, "rb") as f:
+        snap = json.loads(f.read().partition(b"\n")[2])
+    for r in snap["state"]["runs"]:
+        for c in [*r.get("calls", {}).values(), *filter(None, r.get("decisions", {}).values())]:
+            for k in keys:
+                c.pop(k, None)
+    body = json.dumps(snap, separators=(",", ":")).encode()
+    with open(os.path.join(data_dir, "keys", "snapshot.key"), "rb") as f:
+        mac = file_storage._mac(f.read(), body)
+    with open(path, "wb") as f:
+        f.write(mac + b"\n" + body)
 
 
 class TestServiceContract(SignerContract, unittest.TestCase):
@@ -177,10 +195,17 @@ class TestService(unittest.TestCase):
         dev token by accident."""
         self.assertEqual(svc.DEFAULT_GRANTS | svc.NEVER_DEFAULT, set(REQUESTS))
         self.assertFalse(svc.DEFAULT_GRANTS & svc.NEVER_DEFAULT)
-        s = self.open()
+        s, other = self.open(), tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, other, True)
+        configured = svc.SignerService(other, policy=PAY_ASKS, approvals={"approvers": ["uid:1"]})
+        self.addCleanup(configured.close)
         for who in (OTHER, CallerIdentity("token", "dev", True)):
-            for method in sorted(svc.NEVER_DEFAULT):
+            for method in sorted(svc.NEVER_DEFAULT - {"run_label_clear"}):
                 self.refused("forbidden", s, method, {}, who)
+            # but a signer with no approvals config (a dev signer) lets its own user clear their run's label, as it
+            # lets them answer their run's approvals (self_cleared: tests/test_run_conditions.py)
+            self.refused("invalid_request", s, "run_label_clear", {}, who)
+            self.refused("forbidden", configured, "run_label_clear", {}, who)
 
     def test_refusals_leave_no_state(self):
         s = self.open()
@@ -196,6 +221,57 @@ class TestService(unittest.TestCase):
         self.assertEqual(self.state(s), before)
         out = s.decide(self.ev(run, 1, tool_call_id="tc2", tool="t", args_source="parsed", args={}))
         self.assertEqual(out["run_seq"], 2)   # no gap from the refused client_seq values 5, 7
+
+    def test_a_subagents_call_is_signed_with_its_agent_id(self):
+        """decide's agent_id (what the harness reported: Claude Code's subagent id) is signed on the call's decision
+        and, copied from that decision, on its result; a call without one stays the main agent's."""
+        s = self.open()
+        run = self.register(s)
+        sub = s.decide(self.ev(run, 0, tool_call_id="sub", tool="t", args_source="parsed", args={},
+                               agent_id="a272a0b95321d4c5d"))
+        s.complete(self.ev(run, 1, tool_call_id="sub", decision_id=sub["decision_id"], status="ok", result="x",
+                           args_digest=event_hash({"tool": "t", "args": {}})))
+        main = s.decide(self.ev(run, 2, tool_call_id="main", tool="t", args_source="parsed", args={}))
+        s.complete(self.ev(run, 3, tool_call_id="main", decision_id=main["decision_id"], status="ok", result="x",
+                           args_digest=event_hash({"tool": "t", "args": {}})))
+        s.close()
+        got = [(e["type"], e["data"]["tool_use_id"], e["agent_id"], e["parent_id"]) for e in
+               (r["event"] for r in records(self.dir)) if e["type"] in ("policy.decision", "tool.result")]
+        self.assertEqual(got, [("policy.decision", "sub", "a272a0b95321d4c5d", "main"),
+                               ("tool.result", "sub", "a272a0b95321d4c5d", "main"),
+                               ("policy.decision", "main", "main", None), ("tool.result", "main", "main", None)])
+
+    def test_a_result_after_a_restart_keeps_its_decisions_agent_id(self):
+        def open_signer(snapshot):   # Disk opens without a snapshot key, so it never reads one: the default storage
+            if not snapshot:
+                return self.open()
+            s = svc.SignerService(self.dir, policy=PAY_ASKS)
+            self.addCleanup(s.close)
+            return s
+        for snapshot in (False, True):   # the open call rebuilt from the log alone, or from a snapshot of the run state
+            with self.subTest(snapshot=snapshot):
+                self.dir = tmpdir(self)
+                s = open_signer(snapshot)
+                run = self.register(s)
+                d = s.decide(self.ev(run, 0, tool_call_id="sub", tool="t", args_source="parsed", args={},
+                                     agent_id="a1"))
+                if snapshot:
+                    s.log.snapshot()
+                    self.assertTrue(os.listdir(os.path.join(self.dir, "store", "snapshots")))
+                s.close()
+                s = open_signer(snapshot)
+                s.complete(self.ev(run, 1, tool_call_id="sub", decision_id=d["decision_id"], status="ok", result="x",
+                                   args_digest=event_hash({"tool": "t", "args": {}})))
+                s.close()
+                [res] = [r["event"] for r in records(self.dir) if r["event"]["type"] == "tool.result"]
+                self.assertEqual((res["agent_id"], res["parent_id"]), ("a1", "main"))
+
+    def test_an_agent_id_the_event_format_cannot_hold_is_refused(self):
+        s = self.open()
+        run = self.register(s)
+        for bad in ("", "a" * 201, 7):
+            self.refused("invalid_request", s, "decide", self.ev(run, 0, tool_call_id="t", tool="t",
+                                                                 args_source="parsed", args={}, agent_id=bad))
 
     def test_a_refused_item_inside_a_batch_leaves_the_rest(self):
         s = self.open()
@@ -293,19 +369,7 @@ class TestService(unittest.TestCase):
         """A snapshot written before call_state (RPC 24) keeps no call's refusal or result: the start reads them from
         the records, so a pay that ran isn't taken for one consumed and never ended."""
         states, before = self.call_states()
-        snaps = os.path.join(self.dir, "store", "snapshots")
-        path = os.path.join(snaps, max(os.listdir(snaps), key=lambda n: int(n.split(".")[0])))
-        with open(path, "rb") as f:
-            snap = json.loads(f.read().partition(b"\n")[2])
-        for r in snap["state"]["runs"]:   # as a snapshot written before 1.7.0's call_state holds them
-            for c in [*r.get("calls", {}).values(), *filter(None, r.get("decisions", {}).values())]:
-                c.pop("ended", None)
-                c.pop("refused", None)
-        body = json.dumps(snap, separators=(",", ":")).encode()
-        with open(os.path.join(self.dir, "keys", "snapshot.key"), "rb") as f:
-            mac = file_storage._mac(f.read(), body)
-        with open(path, "wb") as f:
-            f.write(mac + b"\n" + body)
+        drop_call_keys(self.dir, "ended", "refused")   # as a snapshot written before 1.7.0's call_state holds them
         s = self.snapshotting()
         self.assertIsNotNone(s.log.storage.snapshot)   # it started from the edited snapshot
         self.assertEqual(states(s), before)
@@ -624,6 +688,35 @@ class TestServeContract(SignerContract, unittest.TestCase):
         client = SocketSigner(cfg["socket"])
         self.addCleanup(client.close)
         return client
+
+
+class TestLogging(unittest.TestCase):
+    def setUp(self):
+        root, tk = logging.getLogger(), logging.getLogger("tracekit")
+        saved = root.handlers[:], root.level, tk.level
+
+        def restore():
+            root.handlers[:], level, tk_level = saved
+            root.setLevel(level)
+            tk.setLevel(tk_level)
+        self.addCleanup(restore)
+        root.handlers[:] = []   # pytest's capture handler would make basicConfig a no-op
+        root.setLevel(logging.WARNING)
+        tk.setLevel(logging.NOTSET)
+
+    @mock.patch("logging.basicConfig")
+    def test_serve_default_does_not_configure_logging(self, basic_config):
+        with mock.patch.object(svc, "_serve_dev"):
+            svc.main(["serve", "--dev"])
+        basic_config.assert_not_called()
+
+    def test_serve_log_level_reaches_tracekit_loggers_only(self):
+        for name, level in (("warning", logging.WARNING), ("info", logging.INFO), ("debug", logging.DEBUG)):
+            with self.subTest(name=name), mock.patch.object(svc, "_serve_dev"):
+                svc.main(["serve", "--dev", "--log-level", name])
+                self.assertEqual(logging.getLogger("tracekit.transport.http").getEffectiveLevel(), level)
+                # botocore's debug log prints AWS credentials when the log key is in KMS
+                self.assertFalse(logging.getLogger("botocore").isEnabledFor(logging.INFO))
 
 
 @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")

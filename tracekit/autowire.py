@@ -176,7 +176,7 @@ def _openai_agents(run):
     from agents import Agent
 
     from .integrations.openai_agents import TracekitAgents
-    tk = TracekitAgents(run.client, run.registered)
+    tk = run.openai_agents = TracekitAgents(run.client, run.registered)
 
     def gate(t):
         if getattr(t, "_tracekit", False):   # Agent.clone builds the agent again from its gated tools
@@ -369,7 +369,7 @@ def _crewai(run):
 FRAMEWORKS = (
     ("OpenAI Agents SDK", "openai-agents", (0, 23, 1), (0, 24), "openai-agents>=0.23.1,<0.24",
      "quickstarts/openai-agents", _openai_agents),
-    ("LangGraph", "langgraph", (1, 2), (1, 3), "langchain>=1.4,<1.5 langgraph>=1.2,<1.3", "quickstarts/langchain",
+    ("LangGraph", "langgraph", (1, 2), (1, 3), "langchain>=1.4,<2 langgraph>=1.2,<1.3", "quickstarts/langchain",
      _langgraph),
     ("Claude Agent SDK", "claude-agent-sdk", (0, 2, 165), (0, 3), "claude-agent-sdk>=0.2.165,<0.3",
      "quickstarts/claude-agent-sdk", _claude_agent_sdk),
@@ -377,7 +377,7 @@ FRAMEWORKS = (
     ("Browser Use", "browser-use", (0, 13, 11), (1, 1), "browser-use>=0.13.11,<1.1", "integrations/browser-use",
      _browser_use),
     ("CrewAI", "crewai", (1, 15, 27), (1, 16), "crewai>=1.15.27,<1.16", "integrations/crewai", _crewai),
-    ("Pydantic AI", "pydantic-ai-slim", (2, 57), (2, 58), "pydantic-ai-slim>=2.57,<2.58", "integrations/pydantic-ai",
+    ("Pydantic AI", "pydantic-ai-slim", (2, 57), (2, 72), "pydantic-ai-slim>=2.57,<2.72", "integrations/pydantic-ai",
      _pydantic_ai),
 )
 
@@ -420,13 +420,17 @@ def _close(run):
     try:
         autotrace.flush()
         try:
-            waiting = any(run.call("approval_list", state=state, limit=1)["approvals"] for state in ("requested",
-                                                                                                    "approved"))
+            held = {state: run.call("approval_list", state=state, limit=20)["approvals"]
+                    for state in ("requested", "approved")}
         except Exception:   # a listing that fails (no grant) waits for nothing
-            waiting = False
-        if waiting:
-            logging.getLogger("tracekit").warning("tracekit: run %s left open: approvals of it are waiting for a "
-                                                  "person or to be resumed", run.run_id)
+            held = {}
+        if any(held.values()):
+            lines = [f"  {a['approval_id']}  {a['tool']}\n    approve: tracekit approvals approve {a['approval_id']}\n"
+                     f"    reject:  tracekit approvals reject {a['approval_id']}" for a in held["requested"]]
+            lines += [f"  {a['approval_id']}  {a['tool']}: approved, waiting to be resumed" for a in held["approved"]]
+            logging.getLogger("tracekit").warning(
+                "tracekit: run %s left open: approvals of it are waiting for a person or to be resumed\n%s",
+                run.run_id, "\n".join(lines))
         else:
             run.close("process exit")
     except Exception:   # exiting: nothing left to tell

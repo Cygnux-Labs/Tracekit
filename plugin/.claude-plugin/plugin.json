@@ -1,7 +1,7 @@
 {
   "name": "tracekit",
-  "version": "1.7.2",
-  "description": "Signed, tamper-evident evidence of what Claude Code did: every tool call recorded in a hash-chained, Ed25519-signed ledger, with a policy gate that blocks dangerous calls before they run.",
+  "version": "1.8.0",
+  "description": "Signed, tamper-evident evidence of what your coding agent did: every tool call checked by a policy before it runs, risky ones held for you, and each one recorded in a hash-chained, Ed25519-signed log that verifies offline.",
   "author": {
     "name": "Cygnux Labs"
   },
@@ -14,6 +14,7 @@
     "provenance",
     "hooks"
   ],
+  "hooks": "./hooks/claude.json",
   "documentationUrl": "https://github.com/Cygnux-Labs/Tracekit/wiki",
   "supportUrl": "https://github.com/Cygnux-Labs/Tracekit/issues"
 }

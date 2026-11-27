@@ -34,18 +34,21 @@ def _hooks():
     return ["claude-code"] * any(h.get("events") for h in _installed_hooks()) + sorted(_dev_harnesses())
 
 
-def _week():
-    """tracekit report --share's 7 days of the dev signer's store, or None when there is none (said on stderr)."""
+def _week(config=None, data_dir=None):
+    """tracekit report --share's 7 days from the selected store, or None when it cannot be read."""
     from . import report
-    from .signer.service import dev_data_dir
     from .storage.base import StorageCorrupt, StorageUnavailable
     try:
+        cfg = report.store_config(config, data_dir)
         now = time.time()
-        rep = report.build({"data_dir": dev_data_dir(create=False)}, now - 7 * 86400, now,
+        rep = report.build(cfg, now - 7 * 86400, now,
                            say=lambda s: print(f"tracekit feedback: {s}", file=sys.stderr, flush=True))
     except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
-        print(f"tracekit feedback: no week's counts ({e}); `tracekit audit --share --since 7d` prints a replay's "
-              "counts", file=sys.stderr)
+        if config or data_dir:
+            print(f"tracekit feedback: cannot read the selected signer store ({e})", file=sys.stderr)
+        else:
+            print(f"tracekit feedback: no week's counts ({e}); `tracekit audit --share --since 7d` prints a replay's "
+                  "counts", file=sys.stderr)
         return None
     print(f"tracekit feedback: {report.SHARE_NOTE}", file=sys.stderr)
     return report.share(rep)
@@ -82,11 +85,10 @@ def _tool(name):
 KEYS = ("Tracekit", "OS", "Python", "Hooks installed", "Run by", "Anything you'd like to tell us (optional)")
 
 
-def report_file():
+def report_file(week):
     """A field report as a file, to send as a pull request (docs/field-reports/README.md): this machine's Tracekit, OS,
     Python and hooks, report --share's week (tool calls, and each rule's holds with what people did with them), who
     ran it, and one optional line."""
-    week = _week()
     return "\n".join([
         "# Tracekit field report", "", f"Tracekit: {__version__}", f"OS: {_os()}",
         f"Python: {platform.python_version()}", f"Hooks installed: {', '.join(_hooks()) or 'none'}",
@@ -126,16 +128,27 @@ def main(argv=None):
                    "arguments or paths; all of it is printed before anything is submitted")
     g.add_argument("--file", metavar="PATH", help="write a field report to this new file instead, to fill in and send as "
                    "a pull request (docs/field-reports/README.md)")
+    source = ap.add_mutually_exclusive_group()
+    source.add_argument("--dev", action="store_true", help="the same-user dev signer's store (the default)")
+    source.add_argument("--config", metavar="SIGNER_YAML", help="read the store configured by this signer.yaml")
+    source.add_argument("--data-dir", metavar="DIR", help="read a signer data dir (holds store/ and log.vkey)")
     ap.add_argument("--why", help="with --harmless, one line on why the call was harmless")
     ap.add_argument("--signer", help="with --harmless, " + SIGNER_HELP)
     ap.add_argument("--open", action="store_true", help="also open the link in your browser")
     a = ap.parse_args(argv)
     if a.why and not a.harmless:
         ap.error("--why goes with --harmless")
+    selected = bool(a.config or a.data_dir)
+    if a.harmless and (a.dev or selected):
+        ap.error("--dev, --config and --data-dir are for weekly field reports; use --signer with --harmless")
+    if not a.harmless:
+        week = _week(a.config, a.data_dir)
+        if selected and week is None:
+            return 1
     if a.file:
         try:
             with open(a.file, "x", encoding="utf-8") as f:
-                f.write(report_file())
+                f.write(report_file(week))
         except OSError as e:
             print(f"tracekit feedback: {e}", file=sys.stderr)
             return 1
@@ -168,8 +181,8 @@ def main(argv=None):
         # --signer's store may not be this machine's
         fields = {**_about("not included: a single false alarm"), **fields}
     else:
-        title, fields = "Field report", _about(_week() or "no dev store on this machine (tracekit audit --share "
-                                                          "--since 7d prints a replay's counts)")
+        title, fields = "Field report", _about(week or "no dev store on this machine (tracekit audit --share "
+                                              "--since 7d prints a replay's counts)")
     link = url(title, fields)
     print(link, "", "the link holds exactly this, and nothing is sent until you submit it on GitHub:",
           f"title: {title}", sep="\n")

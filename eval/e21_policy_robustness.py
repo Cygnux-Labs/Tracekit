@@ -139,9 +139,11 @@ def run(record=False):
     pools = {os.path.basename(p)[:-len(".jsonl")]: load(p) for p in sorted(glob.glob(os.path.join(BLIND, "*.jsonl")))}
     blind = [{**c, "pool": n} for n, cases in pools.items() for c in cases] or None
     sessions = load(SESSIONS)
-    e17 = [(c["tool"], c["args"]) for p in sorted(glob.glob(os.path.join(E17, "*", "*.jsonl"))) for c in load(p)]
+    # a case naming another pack alone ("packs": ["dev"]) is that pack's to decide, not a server or strict case here
+    server_case = lambda c: "server" in c.get("packs", ["server"])
+    e17 = [(c["tool"], c["args"]) for p in sorted(glob.glob(os.path.join(E17, "*", "*.jsonl"))) for c in load(p) if server_case(c)]
     calls = e17 + [(c["tool"], c["args"]) for c in (heldout or []) + sessions]
-    e17_benign = [c for p in sorted(glob.glob(os.path.join(E17, "benign", "*.jsonl"))) for c in load(p)]
+    e17_benign = [c for p in sorted(glob.glob(os.path.join(E17, "benign", "*.jsonl"))) for c in load(p) if server_case(c)]
     out = {"machine": machine(), "heldout_cases": len(heldout) if heldout is not None else None,
            "blind_cases": {n: len(cases) for n, cases in pools.items()},
            "session_calls": len(sessions), "profiles": {}, "latency": {}, "engine_mismatches": []}
@@ -189,6 +191,21 @@ def run(record=False):
     # 6.22 / 7.35, strict 5.91 / 7.06, dev 6.47 / 7.49 on RE2 / regex; this code 7.58 / 8.35, 7.15 / 8.01, 7.83 /
     # 8.62). Each max_p99_ref is 5% over the highest of that day's four runs (--record, 2026-11-14 for the loop and
     # pattern readings, a held-out call more caught); the results file's latency rows are its first run's.
+    # Recorded again (--record) on 2026-11-24 for 1.8: the plugin-everywhere reading of what a line writes costs +10 us p50 and
+    # +76 us p99 over main (server pack, RE2: 182 / 535 us against 172 / 459), the whole assembly 191 / 566 us; caps
+    # 9.93 to 13.98 times the reference (docs/limits.md, Queue 11-24 debt row says what is left).
+    # Recorded again the same day after TK-D007's reader was gated (engine.TracekitGate) and its subjects given once: p50 176 to
+    # 219 us, p99 489 to 664 us across the six rows, caps 9.13 to 12.6 times the reference. And again after the pushes, the forms a pattern may make and the roots below a folder were
+    # each read once: p50 173 to 211 us, p99 463 to 638 us, caps 8.99 to 12.5.
+    # Recorded again (--record) on 2026-11-25 after main's 1.7.3 line (its shell reading, the workdir and uv folders, #1141) was merged
+    # in: p50 184 to 225 us, p99 500 to 685 us, caps 9.55 to 12.98 times the reference, under CI's 14.
+    # Recorded again (--record) on 2026-11-26 for uv's and pipx's Windows folders: three more trust roots are read below a
+    # deleted home or / (`find ~ -delete` 452 to 762 us on the fallback engine), about +5% at p99 and none at p50 beside
+    # the assembly measured the same way (dev/regex p99 694 to 735 us); p50 180 to 230 us, p99 523 to 753 us, caps 9.97
+    # to 13.84 times the reference.
+    # Recorded again (--record) on 2026-11-27 after main's policy train (TK-A093, TK-F029, TK-A046 and TK-A084 cases) was
+    # merged into the 1.8 combine: p50 177 to 216 us, p99 516 to 683 us, caps 10.23 to 13.5 times the reference.
+    # And again after #1167 (TK-A052 and TK-A053 widened): p50 171 to 210 us, p99 500 to 671 us, caps 10.27 to 13.61 times the reference.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},

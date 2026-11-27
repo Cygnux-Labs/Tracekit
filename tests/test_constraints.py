@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 import test_bundle_v2 as b
-from factories import unverified_bundles
+from factories import serial, unverified_bundles
 from test_reviews import ME, Signed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -407,6 +407,7 @@ class Grammar(unittest.TestCase):
         claude_code.prompted(mock.Mock(call=lambda m, **kw: sent.append(kw["constraint"]) or {"run_seq": 1}), text)
         self.assertEqual(sent, [{"kind": "keep_away", "object": "billing.py"}])
 
+    @serial
     def test_a_64_kib_prompt_is_read_in_bounded_time(self):
         n = 1 << 16
         for unit in ("don't ", "leave ", "hands off ", "only ", "it ", '"', "`", "```", "nothing else ", "? ",
@@ -485,6 +486,7 @@ class Grammar(unittest.TestCase):
         self.assertEqual(constraints.breaks("read_only", f, None), "billing.py")
         self.assertIsNone(constraints.breaks("no_push", f, None))
 
+    @serial
     def test_hostile_text_is_read_in_linear_time(self):
         for text in ("don't " * 100_000 + "touch billing.py", "a/" * 300_000, "x.py " * 100_000, "." * 600_000):
             t0 = time.perf_counter()
@@ -511,8 +513,15 @@ class Grammar(unittest.TestCase):
                 ("keep them", lambda n: "Leave " + "a.py " * (2 * n) + "alone. " + "keep them, " * n, 750),
                 ("keep them, each file once", lambda n: f"Leave {files(n)} alone. " + "keep them, " * n, 750)):
             with self.subTest(label):   # linear: 4n takes 4 times as long as n, quadratic 16; in CPU time, which
-                best = [min(timeit.repeat(lambda: read(t), timer=time.process_time, number=3, repeat=3))   # load
-                        for t in (text(n), text(4 * n))]   # on the machine doesn't change; the best of three
+                # load on the machine doesn't change. Grow the timed loop until n is past Windows' ~15.6 ms
+                # process_time tick so one tick can't make 4n look worse than 8×n.
+                number = 3
+                while True:
+                    best = [min(timeit.repeat(lambda t=t: read(t), timer=time.process_time, number=number, repeat=3))
+                            for t in (text(n), text(4 * n))]
+                    if best[0] >= 0.05 or number >= 48:
+                        break
+                    number *= 2
                 self.assertLess(best[1], 8 * best[0], best)
         for text in ("Don't touch " + files(1400, " or "), "Don't change anything except " + files(1400),
                      "Don't change anything, except " + files(1400, ", except ")):

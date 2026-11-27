@@ -29,6 +29,8 @@ except ImportError:
 from .core import read_json, read_text
 from . import client, harness_helper
 from .deploy import files
+from . import yamlmini
+from .signer.config_keys import DEFAULT_GRANTS
 from .wiki import wiki_url
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -497,6 +499,50 @@ def record_hooks_settings(path):
     _write_client_dir(d, {**cfg, **({"hooks_settings": os.path.abspath(path)} if path else {"no_hooks": True})})
 
 
+def tool_venvs():
+    """The folders a uv tool or pipx install of tracekit-ai lives in, where uv (UV_TOOL_DIR) and pipx (PIPX_HOME) put it
+    as this process sees them, else by default: the plugin's hooks (plugin/scripts/tracekit-hook, and tracekit-hook.ps1
+    on Windows) read the same. On Windows uv keeps its tools in %APPDATA%\\uv\\data\\tools where %APPDATA%\\uv\\data is,
+    else %APPDATA%\\uv\\tools (uv-state's StateStore), and pipx its venvs in platformdirs' %LOCALAPPDATA%\\pipx\\pipx, or
+    ~\\pipx where that is (pipx's paths.py); each is a folder the policy keeps the agent from writing (TK-D007, TK-D013,
+    TK-A096)."""
+    home, share = os.path.expanduser("~"), os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    uv, pipx = os.environ.get("UV_TOOL_DIR"), os.environ.get("PIPX_HOME")
+    folders = [uv or os.path.join(share, "uv", "tools"), os.path.join(pipx or os.path.join(share, "pipx"), "venvs"),
+               os.path.join(home, ".local", "pipx", "venvs"), os.path.join(home, "Library", "Application Support", "pipx", "venvs")]
+    if os.name == "nt":
+        roaming = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
+        local = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        folders += [] if uv else [os.path.join(roaming, "uv", "tools"), os.path.join(roaming, "uv", "data", "tools")]
+        folders += ([] if pipx else [os.path.join(local, "pipx", "pipx", "venvs")]) + [os.path.join(home, "pipx", "venvs")]
+    return [os.path.join(v, "tracekit-ai") for v in folders]
+
+
+def record_hook_python(allow=False):
+    """Record the Python init runs with as hook_python in the client config (its other keys stay): the only Python the
+    plugin's hook runs in once there is one. Only that of a uv tool or pipx install of tracekit-ai is recorded, unless
+    `allow` (init's --allow-hook-python, which a person gives): a Python anywhere else is one an agent can put code in.
+    Returns None when it is recorded, else the line that says what to run."""
+    from . import __version__
+    python = sys.executable
+    inside = any(python.startswith(v + os.sep) for v in tool_venvs())
+    if not allow and not inside:
+        return (f"hook Python not recorded: {python} is not the Python of a uv tool or pipx install of tracekit-ai, the only "
+                f"kind the plugin's hook runs. Run: uv tool install tracekit-ai=={__version__} && tracekit init --dev "
+                f"--v2 --no-hooks (or pass --allow-hook-python to record {python}, which any program that can write "
+                f"its site-packages then controls)")
+    d = client.client_dir()
+    fd = files.open_dir(d)
+    try:
+        cfg = _read_config(fd)
+    finally:
+        files.close(fd)
+    cfg.pop("hook_python_allowed", None)
+    # hook_python_allowed: a person gave --allow-hook-python, which the hook then honours for a Python outside a tool install
+    _write_client_dir(d, {**cfg, "hook_python": python, **({} if inside else {"hook_python_allowed": True})})
+    return None
+
+
 AGENT_FILE_MAX = 4 << 20   # bytes of an agent's settings file doctor and init read at most
 
 
@@ -514,6 +560,20 @@ def agent_file(path):
     return data
 
 
+def agent_loads(text):
+    """JSON text from a file the agent's user controls, parsed; one nested too deep to parse is a ValueError, as a
+    malformed one is."""
+    try:
+        return json.loads(text)
+    except RecursionError as e:
+        raise ValueError("nested too deep to parse") from e
+
+
+def agent_json(path):
+    """A JSON file the agent's user controls, parsed (agent_file's limits)."""
+    return agent_loads(agent_file(path))
+
+
 def plugin_enabled(user=None, project=None):
     """The Claude Code settings file that enables the Tracekit plugin (plugin/, whose hooks are the ones init writes),
     or None. Reads `user` (default user_settings_all()), the project's (default: the working directory) project and
@@ -528,7 +588,7 @@ def plugin_enabled(user=None, project=None):
     for p in (*users, *(os.path.join(root, f) for f in ("settings.json", "settings.local.json")),
               managed):
         try:
-            enabled = json.loads(agent_file(p)).get("enabledPlugins", {})
+            enabled = agent_json(p).get("enabledPlugins", {})
         except (OSError, ValueError, AttributeError):   # missing, or not a settings file
             continue
         if not isinstance(enabled, dict):
@@ -542,6 +602,46 @@ def plugin_enabled(user=None, project=None):
                 else:
                     active.pop(key, None)
     return max(active.values(), key=lambda found: found[2])[:2] if active else None
+
+
+def _settings_env(name, project=None):
+    """`name` from the `env` of Claude Code's settings (user, project, local, managed: a later file wins), which Claude
+    Code puts in its hooks' environment; None when none sets it."""
+    root = os.path.join(os.path.abspath(project or os.getcwd()), ".claude")
+    found = None
+    for p in (*user_settings_all(), os.path.join(root, "settings.json"), os.path.join(root, "settings.local.json"),
+              MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]):
+        try:
+            env = agent_json(p).get("env")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(env, dict) and isinstance(env.get(name), str):
+            found = env[name]
+    return found
+
+
+def plugin_hook_python(project=None):
+    """The Python the plugin's hook script (plugin/scripts/tracekit-hook) runs in dev mode, found as it finds it: the
+    first of $TRACEKIT_PYTHON (the `env` of Claude Code's settings, else this process's), python3 and python on PATH
+    that imports tracekit (user site-packages added back); None when none does, and the hook then blocks every tool
+    call."""
+    chosen = _settings_env("TRACEKIT_PYTHON", project) or os.environ.get("TRACEKIT_PYTHON")
+    for name in (chosen, "python3", "python"):
+        exe = name and shutil.which(name)
+        try:
+            if exe and subprocess.run(
+                    [exe, "-I", "-c", "import site; site.addsitedir(site.getusersitepackages()); import tracekit"],
+                    capture_output=True, stdin=subprocess.DEVNULL, timeout=20).returncode == 0:
+                return exe
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+def plugin_python_fix():
+    """What lets the plugin's hook find the Python this process runs in (a venv, a uv tool or pipx install)."""
+    return (f"set TRACEKIT_PYTHON={shlex.quote(sys.executable)} where Claude Code starts (export it, or put it under "
+            '"env" in ~/.claude/settings.json), or install tracekit-ai for the python3 on PATH')
 
 
 def _plugin_config_dirs(settings_path, project=None):
@@ -568,20 +668,20 @@ def _installed_tracekit_plugin(plugin_id, settings_path, project=None):
     marketplace = plugin_id.rpartition("@")[2]
     for config_dir in _plugin_config_dirs(settings_path, project):
         try:
-            installed = json.loads(agent_file(os.path.join(config_dir, "plugins", "installed_plugins.json")))
+            installed = agent_json(os.path.join(config_dir, "plugins", "installed_plugins.json"))
             records = installed.get("plugins", {}).get(plugin_id)
             records = records if isinstance(records, list) else [records]
             if not any(isinstance(record, dict) and isinstance(record.get("installPath"), str)
                        and record.get("installPath")
                        for record in records):
                 continue
-            known = json.loads(agent_file(os.path.join(config_dir, "plugins", "known_marketplaces.json")))
+            known = agent_json(os.path.join(config_dir, "plugins", "known_marketplaces.json"))
             market = known.get(marketplace)
             location = market.get("installLocation") if isinstance(market, dict) else None
             location = location if isinstance(location, str) and os.path.isabs(location) else None
             source = market.get("source") if isinstance(market, dict) else None
             manifest_path = os.path.join(location, ".claude-plugin", "marketplace.json") if location else None
-            manifest = json.loads(agent_file(manifest_path)) if manifest_path else {}
+            manifest = agent_json(manifest_path) if manifest_path else {}
         except (OSError, ValueError, AttributeError, TypeError):
             continue
         plugins = manifest.get("plugins", ()) if isinstance(manifest, dict) else ()
@@ -634,7 +734,7 @@ def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, ex
 def _parse_settings(raw, settings_path):
     """The settings object in a file's bytes `raw` ({} for no file or an empty one); SettingsError if it isn't one."""
     try:
-        s = json.loads(raw.decode("utf-8")) if raw and raw.strip() else {}
+        s = agent_loads(raw.decode("utf-8")) if raw and raw.strip() else {}
     except ValueError as e:
         raise SettingsError(f"{settings_path} is not valid JSON ({e}); fix or remove it, then retry. "
                             "Tracekit did not change it.") from e
@@ -799,7 +899,7 @@ def _write_client_dir(path, cfg):
         files.close(parent)
     try:
         files.close(files.subdir(d, "runs", 0o755, _my_uid()))
-        files.write(d, "config.json", files.json_bytes(cfg))
+        files.write(d, "config.json", files.json_bytes(cfg, ensure_ascii=False))   # (the plugin's hook reads hook_python as it is)
     finally:
         files.close(d)
     return os.path.join(path, "config.json")
@@ -1200,7 +1300,7 @@ def _v2_client_keys():
         sc = client.system_config() or {}
     except client.SystemConfigError:
         sc = {}
-    return {k: sc[k] for k in ("signer", "hooks", "tailer") if k in sc}
+    return {k: sc[k] for k in ("signer", "hooks", "tailer", "replaced_approvers") if k in sc}
 
 
 def _write_root_file(path, data):
@@ -1479,7 +1579,7 @@ def setting(path, key):
     """A Claude Code settings file's `key`, or None when the file or the key is missing or unreadable (read as
     agent_file reads: a FIFO or a device can't hang or flood the reader)."""
     try:
-        s = json.loads(agent_file(path))
+        s = agent_json(path)
     except (OSError, ValueError):
         return None
     return s.get(key) if isinstance(s, dict) else None
@@ -1561,13 +1661,197 @@ def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=(), 
                                                 f"      script: {q(h['script'])}"] if h.get("script")
                                                else [f"    {q(h['name'])}: {q(h['exe'])}"])] if harnesses else []
     return "\n".join([
-        "# written by `tracekit init --v2`; re-run it to change this file", f"data_dir: {q(V2_DATA)}",
+        "# written by `tracekit init --v2`; a re-run writes its own keys again and keeps the others", f"data_dir: {q(V2_DATA)}",
         f"socket: {q(sock)}", 'socket_mode: "0666"', 'tenant: "local"', "tenants:", f"  {me}: {tenant}",
         f"  {approver}: {tenant}", *([f"  {q(f'uid:{egress_uid}')}: {tenant}"] if egress_uid is not None else []),
         "approvals:", '  self_approval: "deny"', "  approvers:", f"    - {approver}",
         "authorize:", f"  {q(f'uid:{tailer_uid}')}: [{', '.join(TAILER_METHODS)}]",
         *([f"  {q(f'uid:{egress_uid}')}: [observe_effect]"] if egress_uid is not None else []), f"policy: {q(policy)}",
         *binding, *(['witnesses: ["public"]'] if public_witness else []), ""])
+
+
+V2_INIT_KEYS = ("data_dir", "socket", "socket_mode", "tenant", "tenants", "approvals", "authorize", "policy",
+                "harness_binding", "witnesses")
+
+
+def hand_keys(old):
+    """The top-level keys of signer.yaml text `old`, read by yamlmini as the signer reads it, that init doesn't write,
+    and a `witnesses:` list other than init's own `["public"]`: (their signer.yaml lines, written as JSON, and their
+    names). ValueError names what can't be kept: a key the signer doesn't know, or a value that wouldn't load back as
+    it is."""
+    from .signer.config_keys import CONFIG_KEYS
+    cfg = yamlmini.loads(old) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError("it is not a mapping of keys")
+    kept = {k: v for k, v in cfg.items()
+            if k not in V2_INIT_KEYS or k == "witnesses" and v not in (None, ["public"])}
+    for k in V2_SHARED_KEYS:
+        if cfg.get(k) not in (None, "") and not isinstance(cfg[k], dict):
+            raise ValueError(f"{k} is not a mapping")
+    unknown = sorted(str(k) for k in kept if k not in CONFIG_KEYS)
+    if unknown:
+        raise ValueError(f"the signer doesn't know {', '.join(unknown)}")
+    lines = "".join(f"{json.dumps(k)}: {json.dumps(v)}\n" for k, v in kept.items())
+    back = yamlmini.loads(lines) or {}
+    for k, v in kept.items():
+        if json.dumps(back.get(k)) != json.dumps(v) or back.get(k) != v:
+            raise ValueError(f"{k} would not be written back as it is")
+    return lines, list(kept)
+
+
+V2_SHARED_KEYS = ("tenants", "approvals", "authorize")   # sections init writes some entries of; an operator adds others
+V2_APPROVALS_OWN = ("self_approval", "approvers")
+
+
+def _top_level_without(text, key):
+    out, skip = [], False
+    for line in text.splitlines(keepends=True):
+        if line[:1] not in (" ", "\t", "\n", "#"):
+            skip = line.startswith(f"{key}:")
+        if not skip:
+            out.append(line)
+    return "".join(out)
+
+
+def _covers(entries, identity):
+    """The entries (identities, or prefixes ending in `:*` or `/*`) that name `identity` exactly or as a prefix."""
+    return [e for e in entries if isinstance(e, str) and (e == identity or e.endswith((":*", "/*"))
+                                                           and identity.startswith(e[:-1]))]
+
+
+def merge_shared_keys(config, old, agent_uid, approver_uid):
+    """`config` (v2_signer_yaml's text) with what `old` has in tenants, approvals and authorize that init doesn't
+    write, and with init's own identities written exactly as init writes them: the agent's, the approver's, the
+    tailer's and the egress user's. Kept: tenants and approvals sub-keys (persons, break_glass, ...), authorize entries
+    for other identities, and a restricting authorize entry for the agent. Returns (text, names kept, notes: what init
+    dropped and what a replaced approver keeps, for the operator). ValueError when an entry would give the agent's
+    identity approval rights (break_glass or agents naming it, an authorize grant that is never a default), or when
+    what is kept wouldn't load back as it is."""
+    cur = yamlmini.loads(old) or {}
+    if not any(cur.get(k) for k in V2_SHARED_KEYS):
+        return config, [], []
+    new = yamlmini.loads(config)
+    me, now = f"uid:{agent_uid}", f"uid:{approver_uid}"
+    have = {k: cur.get(k) or {} for k in V2_SHARED_KEYS}
+    names, notes, want = [], [], {}
+    asked = have["approvals"].get("approvers") or []
+    replaced = [a for a in asked if isinstance(a, str) and a != now]
+    approvals = dict(new["approvals"])
+    for k, v in have["approvals"].items():
+        if k == "approvers":
+            if replaced:
+                notes.append(f"approvals.approvers: dropped {', '.join(replaced)}: init lists only {now}; add the "
+                             "others again after init, or run init with --approver")
+        elif k == "self_approval":
+            if v != approvals[k]:
+                notes.append(f"approvals.self_approval: {v!r} dropped: init writes {approvals[k]!r}")
+        else:
+            approvals[k] = v
+            names.append(f"approvals.{k}")
+    for k in ("break_glass", "agents"):
+        for e in _covers(approvals.get(k) or [], me):
+            raise ValueError(f"approvals.{k}: {e} names {me}, the agent's uid, which may not answer approvals: remove it")
+    if _covers(approvals.get("agents") or [], now):
+        raise ValueError(f"approvals.agents names {now}, the approver: an approver is a person; remove it")
+    tenants = dict(new["tenants"])
+    for k, v in have["tenants"].items():
+        if k in tenants:
+            if v != tenants[k]:
+                notes.append(f"tenants.{k}: {v!r} dropped: init writes {tenants[k]!r}")
+        elif k not in replaced:
+            tenants[k] = v
+            names.append(f"tenants.{k}")
+        else:
+            notes.append(f"tenants.{k}: dropped: {k} is no longer the approver")
+    authorize = dict(new["authorize"])
+    for k, v in have["authorize"].items():
+        grants = [m for m in v if isinstance(m, str)] if isinstance(v, list) else []
+        if k in authorize:
+            extra = [m for m in grants if m not in authorize[k]]
+            if extra:
+                notes.append(f"authorize.{k}: dropped {', '.join(extra)}: init grants {', '.join(authorize[k])}")
+            continue
+        if k == now:
+            notes.append(f"authorize.{k}: dropped: init writes none for the approver")
+            continue
+        if _covers([k], me):
+            extra = sorted(set(grants) - DEFAULT_GRANTS)
+            if extra:
+                raise ValueError(f"authorize.{k} covers {me}, the agent's uid, and grants {', '.join(extra)}, which "
+                                 "an agent's identity doesn't get by default: remove those methods")
+        authorize[k] = v
+        names.append(f"authorize.{k}")
+    for r in replaced:
+        keeps = [n for n, hit in (("break_glass", _covers(approvals.get("break_glass") or [], r)),
+                                  ("agents", _covers(approvals.get("agents") or [], r)),
+                                  ("persons", r in (approvals.get("persons") or {})),
+                                  ("authorize", r in authorize)) if hit]
+        if keeps:
+            notes.append(f"{r} is no longer the approver; it keeps {', '.join(keeps)}")
+    for key, merged in (("tenants", tenants), ("approvals", approvals), ("authorize", authorize)):
+        if merged != new[key]:
+            want[key] = merged
+            config = _top_level_without(config, key) + f"{json.dumps(key)}: {json.dumps(merged)}\n"
+    back = yamlmini.loads(config)
+    for key, merged in want.items():
+        if back.get(key) != merged:
+            raise ValueError(f"{key} would not be written back as it is")
+    return config, names, notes
+
+
+def replaced_approvers(old, merged, recorded, approver_uid):
+    """What client.json records as `replaced_approvers`: those an earlier init recorded (`recorded`) and the approvers
+    in signer.yaml text `old` that init replaced, less the approver now and any that keeps no break_glass or agents
+    entry in the merged text `merged`."""
+    was = ((yamlmini.loads(old) or {}).get("approvals") or {}).get("approvers") or [] if old else []
+    former = [r for r in dict.fromkeys([*recorded, *(a for a in was if isinstance(a, str))])
+              if r != f"uid:{approver_uid}"]
+    if not former:
+        return []
+    kept = (yamlmini.loads(merged) or {}).get("approvals") or {}
+    return [r for r in former if _covers(kept.get("break_glass") or [], r) or _covers(kept.get("agents") or [], r)]
+
+
+CHECK_CONFIG = (
+    "import os, sys, tempfile\n"
+    "from tracekit.signer import service\n"
+    "d = tempfile.mkdtemp()\n"
+    "p = os.path.join(d, 'signer.yaml')\n"
+    "open(p, 'w').write(sys.stdin.read())\n"
+    "cfg = service.load_config(p)\n"
+    "service.check_identities(cfg.get('approvals'), cfg.get('authorize'), cfg.get('multi_tenant_apps') or (),\n"
+    "                         (cfg.get('harness_binding') or {}).get('required') or (), cfg.get('tenants'))\n")
+
+
+def _signer_refuses(text):
+    """Why the signer would refuse signer.yaml `text`, read by its own loader from the venv init built; None if it
+    loads."""
+    try:
+        r = subprocess.run([OPT_PYTHON, "-I", "-c", CHECK_CONFIG], input=text, capture_output=True, text=True,
+                           timeout=60)
+    except subprocess.TimeoutExpired:
+        return f"{OPT_PYTHON} did not finish reading it in 60 s"
+    except OSError as e:
+        return f"{OPT_PYTHON} could not run: {e.strerror or e}"
+    if r.returncode:
+        return (r.stderr.strip().splitlines() or ["it does not load"])[-1]
+    return None
+
+
+def _old_hand_keys():
+    """hand_keys of the signer.yaml an earlier init wrote, and its text, read as a regular file in a root-owned
+    directory, without following a symlink; ("", [], "") when there is none. SystemExit when it can't be kept."""
+    d = None
+    try:
+        d = files.open_dir(os.path.dirname(V2_CONFIG), {0})
+        old = files.read(d, os.path.basename(V2_CONFIG))
+        return (*hand_keys(old.decode("utf-8")), old.decode("utf-8")) if old else ("", [], "")
+    except FileNotFoundError:
+        return "", [], ""
+    except (files.UnsafePath, NotADirectoryError, ValueError) as e:
+        raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
+    finally:
+        files.close(d)
 
 
 def _tailer_acl(owner, u, darwin, grant=True):
@@ -1704,6 +1988,12 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     # init takes the recorded managed file's hooks out after it writes the new ones: one it can't edit stops it now
     if recorded in MANAGED_SETTINGS.values() and os.path.exists(recorded):
         install_managed(None, True, recorded, uninstall=True, dry_run=True)
+    hand, kept, old_text = _old_hand_keys()   # before any change: a file it can't keep stops init here
+    try:   # the refusals of the merge need no venv or user: dry-run it with a placeholder tailer, before any change
+        merge_shared_keys(v2_signer_yaml(owner, approver.pw_uid, "policy.yaml", "signer.sock", 0), old_text,
+                          owner.pw_uid, approver.pw_uid)
+    except ValueError as e:
+        raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
     requirement = _install_source("init --v2 --user <agent-user>" + (" --experimental-macos" if darwin else ""))
     sig = _system_user(V2_USER_DARWIN if darwin else V2_USER, V2_DATA, darwin)
     run_dir = V2_RUN["darwin" if darwin else "linux"]   # on Linux systemd creates it (RuntimeDirectory=)
@@ -1727,8 +2017,25 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
               "records a tailer_lost gap instead of its transcript")
     sock = os.path.join(run_dir, "signer.sock")
     observer = _system_user(V2_EGRESS, "/var/empty", darwin) if egress else None
-    _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
-                                                system_witness(public_witness), observer and observer.pw_uid).encode())
+    config = v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
+                            system_witness(public_witness), observer and observer.pw_uid)
+    if "witnesses" in kept:   # a list of the operator's own replaces init's
+        config = "".join(line for line in config.splitlines(keepends=True) if not line.startswith("witnesses:"))
+    config += hand
+    try:
+        config, shared, notes = merge_shared_keys(config, old_text, owner.pw_uid, approver.pw_uid)
+    except ValueError as e:
+        raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
+    refused = _signer_refuses(config)
+    if refused:
+        raise SystemExit(f"{V2_CONFIG}: init wrote nothing, because the signer would refuse the result ({refused}); "
+                         "fix or move what you added to it, then run init again")
+    kept += shared
+    if kept:
+        print(f"{V2_CONFIG}: kept what you added: {', '.join(kept)}")
+    for note in notes:
+        print(f"{V2_CONFIG}: {note}")
+    _write_root_file(V2_CONFIG, config.encode())
     proxy = {"HTTPS_PROXY": f"http://{EGRESS_LISTEN}", "HTTP_PROXY": f"http://{EGRESS_LISTEN}"} if egress else {}
     if egress:   # attribution by the agent's uid, read from /proc: no token in the proxy URL
         _write_root_file(EGRESS_CONFIG, (f"# written by `tracekit init --v2 --egress`\nlisten: {json.dumps(EGRESS_LISTEN)}"
@@ -1805,7 +2112,10 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     _remove_v2_hooks(sc, was, settings, owner if managed else None)
     # after the hooks, so a failed init leaves the config recording the file that still has them;
     # no `tailer` key: the hook has the signer record a tailer_lost gap for each run instead of starting one
-    _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
+    former = replaced_approvers(old_text, config, sc.get("replaced_approvers") or [], approver.pw_uid)
+    _write_system_client_config(dict({k: v for k, v in sc.items() if k != "replaced_approvers"}, mode="system",
+                                     signer=sock, fail_mode=sc.get("fail_mode", "closed"),
+                                     **({"replaced_approvers": former} if former else {}),
                                      hooks={"user": target_user, "settings": settings, "agent": agent,
                                             **({"env": proxy} if proxy else {}),
                                             **({} if hooks else {"no_hooks": True}),   # doctor: the choice it is
@@ -1823,7 +2133,18 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
 def _v2_hooks_in(path):
     """Whether the Claude Code settings file `path` has Tracekit's v2 hooks (not when it's missing or unreadable)."""
     try:
-        return "v2" in _hook_summary(json.loads(agent_file(path)))["versions"]
+        return "v2" in _hook_summary(agent_json(path))["versions"]
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+
+
+def _v1_hooks_in(path, python=None):
+    """Whether the Claude Code settings file `path` has a Tracekit v1 hook (with python: one that runs that Python, as
+    system mode's run /opt/tracekit's); not when it's missing or unreadable."""
+    try:
+        cmds = [h.get("command") for gs in agent_json(path).get("hooks", {}).values() for g in gs
+                if isinstance(g, dict) for h in g.get("hooks") or () if isinstance(h, dict)]
+        return any(_cmd_version(c) == "v1" and (python is None or python in c) for c in cmds)
     except (OSError, ValueError, AttributeError, TypeError):
         return False
 
@@ -1916,13 +2237,135 @@ def uninstall_system_v2(purge=False):
     except OSError:
         pass   # not empty: v1 system mode or a policy lives there
     if purge:
-        for user in users:
-            cmds = ([["dscl", ".", "-delete", f"/Users/{user}"], ["dscl", ".", "-delete", f"/Groups/{user}"]] if darwin
-                    else [["userdel", user]])
-            for cmd in cmds:
-                subprocess.run(cmd, check=False)
+        _delete_users(users, darwin)
         return []
     return [V2_DATA, *users]
+
+
+def _delete_users(users, darwin):
+    """Delete the system users init made, and their groups. Returns the users a command failed for."""
+    failed = []
+    for user in users:
+        cmds = ([["dscl", ".", "-delete", f"/Users/{user}"], ["dscl", ".", "-delete", f"/Groups/{user}"]] if darwin
+                else [["userdel", user]])
+        if [cmd for cmd in cmds if subprocess.run(cmd, check=False).returncode]:   # every command runs
+            failed.append(user)
+    return failed
+
+
+def _drop_client_config(path):
+    """Delete the config.json v1 system init wrote in the agent's client dir `path` (it says "mode": "system"; a dev
+    init's stays), following no symlink. Run as the agent's user; the client's run state beside it stays. Whether it
+    did."""
+    try:
+        d = files.open_dir(path)
+    except OSError:   # missing, or a symlink
+        return False
+    try:
+        cfg = json.loads(files.read(d, "config.json") or b"null")
+        if isinstance(cfg, dict) and cfg.get("mode") == "system":
+            files.remove(d, "config.json")
+            return True
+    except (OSError, ValueError):
+        pass
+    finally:
+        files.close(d)
+    return False
+
+
+def uninstall_system(purge=False, user=None, project=None):
+    """`tracekit uninstall --system` as root: remove what `init` as root without `--v2` wrote, read from the system
+    client config's init_flags (an init before 1.7.0 recorded none): v1 hooks in the managed settings file, recorded
+    or not, and with `user` (the agent's user, which no init recorded) in that user's own settings and the recorded
+    project's or `project`'s, edited as that user; the units or plists it started; the config's v1 keys (the file and
+    /opt/tracekit too unless v2 system mode still uses them); with `user`, the agent's ~/.tracekit-client/config.json.
+    What an earlier or partial run left goes too. purge: also the signer's data dir (its keys and log) and its user.
+    Returns (what it removed, what it kept that --purge removes, notes to print after them)."""
+    darwin = _require_system(True, ". Removing a dev setup (init --dev) needs no root: tracekit uninstall takes its "
+                                    "hooks out and tracekit down stops its signer")
+    sc = client.system_config() or {}
+    flags = (sc.get("init_flags") or []) if "socket" in sc else None   # None: no v1 install recorded
+    try:
+        owner = pwd.getpwnam(user) if user else None
+    except KeyError:
+        raise SystemExit(f"no user {user!r} on this machine") from None
+    if owner is not None and owner.pw_uid == 0:   # files.as_user can't drop root: the agent's symlinks would reach anything
+        raise SystemExit("--user names the agent's user, which can't be root: its settings are edited as that user, so "
+                         "a symlink the agent made reaches only what the agent can")
+    admin = MANAGED_SETTINGS["darwin" if darwin else "linux"]
+    managed = flags is not None and ("--managed" in flags or "--managed-only" in flags or
+                                     "init_flags" not in sc and _v1_hooks_in(admin))
+    project = project or (flags[flags.index("--project") + 1] if flags and "--project" in flags else None)
+    mine = list(dict.fromkeys(os.path.join(d, ".claude", "settings.json") for d in (project, owner and owner.pw_dir) if d))
+    if owner is None and (project or flags is not None and "--no-hooks" not in flags and not managed):
+        raise SystemExit(f"v1 init wrote Tracekit's hooks into {(mine or ['~AGENT/.claude/settings.json'])[0]} as the "
+                         "agent's user and did not record that user: re-run with --user NAME, the user init set up")
+    if _v1_hooks_in(admin):   # any init's, recorded or not: with /opt/tracekit gone they block every user's calls
+        install_managed(None, False, admin, uninstall=True, signer=sc.get("signer"))
+    notes, found = [], False
+    for settings in mine:   # init wrote these as the agent (its own file: an earlier init's), so the agent edits them
+        if files.as_user(owner, _v1_hooks_in, settings, OPT_PYTHON):
+            install_hooks(settings, uninstall=True, owner=owner, signer=sc.get("signer"))
+            found = True
+        elif files.as_user(owner, _v1_hooks_in, settings):
+            notes.append(f"left the v1 hooks in {settings}: they don't run {OPT_PYTHON}, so system mode didn't write "
+                         "them (a dev init did, or a system init before 0.3.0)")
+        elif files.as_user(owner, _v2_hooks_in, settings):
+            found = True   # the agent's: a v2 init replaced v1's hooks here
+    if mine and not found and not managed and flags is not None and "--no-hooks" not in flags:
+        notes.append(f"found no system mode hooks in {' or '.join(mine)}: " + (
+            "if init set up another user, run this again with --user NAME" + (f" --project {project}" if project else "")
+            if "init_flags" in sc else "an init before 1.7.0 recorded neither its user nor --project: run this again "
+                                      "with --user NAME and --project DIR as that init had them"))
+    if darwin:   # v1 starts no harness helper on macOS: dev.tracekit.harness-helper is v2's
+        units = [os.path.join(LAUNCHD_DIR, label + ".plist") for label in ("dev.tracekit.tracekitd", "dev.tracekit.proxy")]
+    else:
+        units = [os.path.join(SYSTEMD_DIR, n) for n in ("tracekitd.service", "tracekit-proxy.service",
+                                                        V1_HELPER + ".socket", V1_HELPER + ".service")]
+    units = [p for p in units if os.path.exists(p)]   # --no-service, --proxy and a harness decide which init wrote
+    for p in units:
+        subprocess.run(["launchctl", "bootout", "system", p] if darwin else
+                       ["systemctl", "disable", "--now", os.path.basename(p)], check=False)
+    removed, paths = [], list(units)
+    if not any(k in sc for k in ("signer", "hooks", "tailer")):
+        paths += [OPT, client.SYSTEM_CONFIG]   # the record last: a run that stops part way can run again
+    elif flags is not None:   # v2 system mode uses the venv and the file: only v1's own keys go
+        _write_system_client_config({k: v for k, v in sc.items() if k not in (
+            "socket", "signer_home", "signer_isolation", "policy", "proxy", "proxy_url", "init_flags")})
+        removed.append(f"v1's keys in {client.SYSTEM_CONFIG}")
+        notes.append(f"kept {OPT} and {client.SYSTEM_CONFIG}: v2 system mode uses them")
+    for p in paths:
+        if os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p)
+        elif os.path.lexists(p):
+            os.remove(p)
+        else:
+            continue
+        removed.append(p)
+    if units and not darwin:
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+    try:
+        os.rmdir(os.path.dirname(client.SYSTEM_CONFIG))
+    except OSError:
+        pass   # not empty: v2 system mode or a policy lives there
+    if owner is not None:
+        client_dir = os.path.join(owner.pw_dir, ".tracekit-client")
+        if files.as_user(owner, _drop_client_config, client_dir):
+            removed.append(os.path.join(client_dir, "config.json"))
+    elif flags is not None:
+        notes.append("kept the agent user's ~/.tracekit-client/config.json: --user NAME removes it")
+    tk_user = SYS_USER_DARWIN if darwin else SYS_USER
+    try:
+        pwd.getpwnam(tk_user)
+    except KeyError:
+        tk_user = None
+    kept = ([SYS_HOME] if os.path.isdir(SYS_HOME) else []) + ([f"user {tk_user}"] if tk_user else [])
+    if not purge:
+        return removed, kept, notes
+    shutil.rmtree(SYS_HOME, ignore_errors=True)
+    left = ([SYS_HOME] if os.path.exists(SYS_HOME) else []) + [
+        f"user {u}" for u in _delete_users([tk_user] if tk_user else [], darwin)]
+    return removed + [k for k in kept if k not in left], left, notes
 
 
 def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_service=False, proxy=False, proxy_port=8787,

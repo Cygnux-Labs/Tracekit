@@ -1,0 +1,6 @@
+{"only": ["secretsmanager get-secret-value", "secretsmanager batch-get-secret-value"], "program": "aws", "source": {"commit": "7e6f97cb7b149863b5133857b2095bca3f3cab47", "ref": "2.41.0", "repo": "aws/aws-cli"}, "style": "argparse", "commands": {
+  "": {"a":[0,0],"p":{"--ca-bundle":1,"--cli-auto-prompt":0,"--cli-binary-format":1,"--cli-connect-timeout":1,"--cli-error-format":1,"--cli-read-timeout":1,"--color":1,"--debug":0,"--endpoint-url":1,"--help":0,"--no-cli-auto-prompt":0,"--no-cli-pager":0,"--no-paginate":0,"--no-sign-request":0,"--no-verify-ssl":0,"--output":1,"--profile":1,"--query":1,"--region":1,"--version":0}},
+  "secretsmanager": {"a":[0,0]},
+  "secretsmanager batch-get-secret-value": {"a":[0,0],"f":{"--cli-input-json":1,"--cli-input-yaml":1,"--filters":"+","--generate-cli-skeleton":"?","--max-results":1,"--next-token":1,"--secret-id-list":"+"}},
+  "secretsmanager get-secret-value": {"a":[0,0],"f":{"--cli-input-json":1,"--cli-input-yaml":1,"--generate-cli-skeleton":"?","--secret-id":1,"--version-id":1,"--version-stage":1}}
+}}

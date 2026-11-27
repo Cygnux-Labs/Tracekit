@@ -40,7 +40,8 @@ reports them, with that status, the gate compares the verdict only (`KNOWN_GAPS`
   failures), `signing key`, `policy unchanged during run`, `capture sources`, `harness attribution`, `approvals`,
   `coverage` and `opt-in content capture`.
 - v2: `coverage` (including `reconcile.*` records), `tiers` (including split capture paths), `fail-open classes`,
-  `break-glass approvals` and `log tail`.
+  `break-glass approvals`, `log tail` and `label policies` (Go reads no bundle with run labels: one needs a 1.8
+  verifier, and Go's reports it `UNVERIFIABLE`).
 
 Each is a warning in the Python verifier, except `counter has no gaps`, which fails only together with `chain intact`,
 so none of them decides a verdict alone. Evidence Go doesn't support fails closed, so its verdict differs from Python's

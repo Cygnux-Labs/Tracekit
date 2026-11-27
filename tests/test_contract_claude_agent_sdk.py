@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 import uuid
+import warnings
 from unittest import mock
 
 import adapter_contract as ac
@@ -106,6 +107,13 @@ async def _prompt(text):
     yield {"type": "user", "message": {"role": "user", "content": text}, "parent_tool_use_id": None, "session_id": ""}
 
 
+def lost(recorded):
+    """The error of a write the signer's reply to was lost: `recorded` None, False or True."""
+    e = SignerUnavailable("gone")
+    e.recorded = recorded
+    return e
+
+
 class Driver:
     SKIP = {"retry": "the CLI gives every tool use its own tool_use_id and never runs one twice",
             "saved_state": "the PreToolUse hook holds the call while it waits for the approval: there is no saved "
@@ -187,6 +195,15 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
         self.d.options.hooks = cas.tracekit_hooks(down, {**self.d.run(), "fail_modes": {"default": "open"}})
         self.assertEqual(self.d.call("echo", {"text": "hi"}, "call-2")["ran"], ["echo"])
 
+    def test_signer_unreachable_follows_the_fail_mode_of_the_tools_class(self):
+        down = Client(os.path.join(ac.tmpdir(self), "none.sock"))
+        self.addCleanup(down.close)
+        self.d.options.hooks = cas.tracekit_hooks(
+            down, {**self.d.run(), "fail_modes": {"default": "closed", "shell": "open"}})
+        with mock.patch.object(ac, "TOOLS", [*ac.TOOLS, ac.terminal]):   # the stub CLI runs the tools named here
+            self.assertEqual(self.d.call("terminal", {"commands": "ls"}, "call-2")["ran"], ["terminal"])   # class shell
+            self.refused(self.d.call("echo", {"text": "hi"}, "call-3"), "signer unavailable")
+
     def test_a_refusal_blocks_even_when_the_run_fails_open(self):
         self.client.close_run(dict(self.d.run()))
         self.d.options.hooks = cas.tracekit_hooks(self.d.signer, {**self.d.run(), "fail_modes": {"default": "open"}})
@@ -199,6 +216,38 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
         with self.assertWarns(UserWarning):
             out = self.d.call("echo", {"text": "hi"})
         self.assertEqual((out["ran"], out["seen"], out["is_error"]), (["echo"], "hi", False))
+
+    def test_a_lost_outcome_says_whether_it_may_have_been_recorded(self):
+        for n, (recorded, wording) in enumerate(((None, "may not have been recorded"), (False, "not recorded"))):
+            with self.subTest(recorded=recorded):
+                signer = mock.Mock(wraps=self.d.signer)
+                signer.complete.side_effect = lost(recorded)
+                self.d.options.hooks = cas.tracekit_hooks(signer, self.d.run())
+                with self.assertWarns(UserWarning) as cm:
+                    self.d.call("echo", {"text": "hi"}, f"call-{n}")
+                self.assertEqual(str(cm.warning), f"tracekit: outcome of tool call call-{n} {wording}: gone")
+
+    def test_an_outcome_the_signer_recorded_is_not_warned_about(self):
+        signer = mock.Mock(wraps=self.d.signer)
+        signer.complete.side_effect = lost(True)
+        self.d.options.hooks = cas.tracekit_hooks(signer, self.d.run())
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.d.call("echo", {"text": "hi"})
+        self.assertEqual([str(w.message) for w in caught], [])
+
+    def test_a_lost_transcript_commitment_says_whether_it_may_have_been_recorded(self):
+        key = {"project_key": "p", "session_id": "s4"}
+        wrapped = cas.TracekitSessionStore(InMemorySessionStore(), self.client, self.d.run())
+        asyncio.run(wrapped.append(key, [{"type": "user", "uuid": "u0", "message": "zero"}]))
+        for n, (recorded, wording) in enumerate(((None, "may not have been recorded"), (False, "not recorded"))):
+            with self.subTest(recorded=recorded):
+                async def send(method, req):
+                    raise lost(recorded)
+                with mock.patch.object(wrapped._rpc, "send", send), self.assertWarns(UserWarning) as cm:
+                    asyncio.run(wrapped.append(key, [{"type": "user", "uuid": f"u{n + 1}", "message": "more"}]))
+                self.assertEqual(str(cm.warning),
+                                 f"tracekit: transcript commitment for {wrapped._key(key)} {wording}: gone")
 
     def test_session_end_closes_the_run(self):
         self.d.call("echo", {"text": "hi"}, end_session=True)
@@ -336,6 +385,7 @@ class VersionCheck(VersionCheckCases, unittest.TestCase):
         run = {"run_id": "r", "run_token": "t"}
         return (lambda: integration.tracekit_hooks(mock.Mock(), run),
                 lambda: integration.TracekitSessionStore(mock.Mock(), mock.Mock(), run))
+
 
 
 if __name__ == "__main__":

@@ -24,9 +24,8 @@ import stat
 import sys
 import time
 
-from . import constraints
 from .format.canon import canonical, loads_strict
-from .policy2.classes import PATH_KEYS, SHELL_KEYS
+from .policy2.classes import PATH_KEYS, SHELL_KEYS, WORKDIR_KEYS
 
 WEIGHTS = (".safetensors", ".gguf", ".pt", ".pth", ".ckpt")
 # the tools the hook receipts, by the names every harness's hook gives them (agent_hooks.tool): only their results
@@ -83,13 +82,12 @@ def _named(tool, args, later=False):
     if tool in WRITERS:
         paths, s = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), "")], {}
     elif tool == "Bash":
+        from . import constraints   # the policy engine's parser: only a Bash call's result needs it
         s = constraints.shell(args)
         paths = s["paths"]
-        # a shell tool's own working directory, not the hook's cwd: Gemini CLI's and Qwen Code's dir_path (directory
-        # in older releases), Cursor's working_directory, Codex's workdir, agy's Cwd (agy reads names in any case),
-        # Crush's working_dir; any value, as the harness may read one that isn't a string
-        s["cd"] = s["cd"] or any(k.casefold() in ("dir_path", "directory", "working_directory", "workdir", "cwd",
-                                                  "working_dir") and v is not None for k, v in args.items())
+        # a shell tool's own working directory (WORKDIR_KEYS, in any case), not the hook's cwd; any value, as the
+        # harness may read one that isn't a string
+        s["cd"] = s["cd"] or any(k.casefold() in WORKDIR_KEYS and v is not None for k, v in args.items())
         later = later or any(BACKGROUND.search(v) for k in SHELL_KEYS for v in (
             args[k] if isinstance(args.get(k), list) else [args.get(k)]) if isinstance(v, str))
     else:

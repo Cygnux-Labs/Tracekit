@@ -8,7 +8,7 @@
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
           server-core.yaml]
-version: '2026.11-server-18'
+version: '2026.11-server-21'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -18,12 +18,13 @@ unknown_tools: ask
 untrusted: [http, browser, mcp]
 
 # Detection (signer/detect.py), all in shadow: incidents are recorded, nothing is held. The labels come from
-# coding.yaml: secrets_access (TK-F005), destructive (TK-F003), egress (TK-F012 a URL, TK-F013 a network command).
+# coding.yaml: secrets_access (TK-F005), destructive (TK-F003), egress (TK-F012 a URL, TK-F013 a network command,
+# TK-F028 an email send).
 # Thresholds: docs/policy-v2.md#choosing-thresholds.
 sequences:
   - id: TK-Q001
-    # a secret read, then egress (a URL or a network command), within ten minutes of the same session (subagents
-    # included, via parent_run); one command that does both counts as both.
+    # a secret read, then egress (a URL, a network command or an email send), within ten minutes of the same
+    # session (subagents included, via parent_run); one command that does both counts as both.
     # Notify only: data that leaves through a host untrusted content named is TK-P003's (provenance)
     steps: [secrets_access, egress]
     scope: session
@@ -58,7 +59,17 @@ respond:
 # The labels detection counts above keep their wider rules here, as the coding pack had them before it narrowed them
 # for the laptop (where no detection reads them): destructive (TK-F003, every such command word on a line: a delete
 # in the project counts for TK-L002 too), secrets_access (TK-F005, every secrets-file name) and egress (TK-F012, every
-# URL; TK-F013, every network command: a plain read or a request to this machine counts for TK-Q001 too)
+# URL; TK-F013, every network command: a plain read or a request to this machine counts for TK-Q001 too; TK-F028,
+# every email send with a recipient)
+# TK-F029: a server-hosted agent publishing its files to an artifact provider is the kind of call this pack exists to
+# hold, and it held these tools as unknown tools before any rule read them, so the hold stays and gains the egress label
+ask:
+  - id: TK-F029
+    tool: '^(?:artifact_create|artifact_update)$'
+    pattern: '^'
+    label: egress
+    reason: publishing an artifact sends its files off the machine
+    remedy: Have a person approve the held call, or keep the files in the workspace.
 flag:
   - id: TK-F003
     class: shell
@@ -84,4 +95,12 @@ flag:
     # HTTPie (http, https), xh, socat, sftp, aria2c and openssl s_client too
     class: shell
     pattern: '^(curl|wget|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|ftp|dig|nslookup|host|http|https|xh|xhs|aria2c)( |$)|^openssl s_client( |$)'
+    label: egress
+  - id: TK-F028
+    # an email send with a recipient: the email class reads `recipients` from to, cc, bcc and recipients, so a
+    # send names where the data goes; a deployment's own mail-reading tool mapped to email reads no recipients
+    # and stays out of it
+    class: email
+    field: recipients
+    pattern: '.'
     label: egress

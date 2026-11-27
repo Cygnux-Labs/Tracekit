@@ -14,16 +14,16 @@ through the mapping tables, arguments, pre or post) and handled by the v2 Claude
 a missing session or tool call id blocks the call. Only the reply differs: each harness's own stdout and exit code.
 
 What the model said (docs/reasoning.md) is recorded before each event is handled, as model_event responses on the
-session's stream (tracekit.integrations.said): Codex's reasoning items, messages and tool calls from its rollout and
-Gemini CLI's thoughts and text from its chat recording (the transcript the payload names; each hook reads the lines
-written since the session's last one, a resumed session's first from where it ended at SessionStart), the text of
-Cursor's afterAgentThought and afterAgentResponse events, and the last_assistant_message of Crush's TurnEnd event. Each
-Codex tool call in the rollout is a tool use under its call_id, named as its PreToolUse hook is decided (agent_hooks.tool)
-with its arguments `coerced` (Codex rewrites them for the hook), so the model's reasoning before it is linked to the
-decision and reconciliation pairs the two; Gemini CLI, Cursor and Crush name no call id in what they send here, so
-theirs is not linked, and their messages are sent `said_only`: the signer reads no call from them, so it never takes
-the calls their hooks decide for calls no model asked for. Recording
-never changes a hook's answer: a failure prints a line and the hook goes on.
+session's stream (tracekit.integrations.said): Codex's reasoning items, messages and tool calls from its rollout,
+Gemini CLI's thoughts and text from its chat recording and Qwen Code's from its chat file (the transcript the payload
+names; each hook reads the lines written since the session's last one, a resumed session's first from where it ended at
+SessionStart), the text of Cursor's afterAgentThought and afterAgentResponse events, and the last_assistant_message of
+Crush's TurnEnd event. Each Codex tool call in the rollout is a tool use under its call_id, named as its PreToolUse hook
+is decided (agent_hooks.tool) with its arguments `coerced` (Codex rewrites them for the hook), so the model's reasoning
+before it is linked to the decision and reconciliation pairs the two; Gemini CLI, Qwen Code, Cursor and Crush name no
+call id in what they send here, so theirs is not linked, and their messages are sent `said_only`: the signer reads no
+call from them, so it never takes the calls their hooks decide for calls no model asked for. Recording never changes a
+hook's answer: a failure prints a line and the hook goes on.
 """
 import contextlib
 import json
@@ -83,6 +83,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         typed = agent_hooks.typed_line(harness, p, q) if q is not None and is_pre else None
         if typed and typed[1] != typed[2]:   # also decided as the line a shell there would read it into
             q["tool_input"]["typed_line"] = typed[1]
+        if typed:   # (typed into a terminal: with no signer answering, a fragment doesn't run; claude_code._event)
+            q["typed_text"] = typed[2]
         reason = agent_hooks._blocked(harness, p, raw, typed and typed[1]) if q is not None and is_pre else None
         if q is None:   # an event Tracekit does not record
             code = 0
@@ -109,7 +111,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
 def said_since(harness, p, stderr, end=None):
     """Record what the model said since the session's last hook (see the module docstring), by the hook's deadline
     `end` (claude_code.deadline). Never raises."""
-    if harness in ("qwen", "droid", "antigravity", "devin", "cline", "gptme", "openhands", "copilot",
+    if harness in ("droid", "antigravity", "devin", "cline", "gptme", "openhands", "copilot",
                    "codebuddy", "jcode", "kiro", "interpreter"):   # lean: their transcript formats are not read; model
         # text goes unrecorded (Open Interpreter writes Codex's rollout, untried here with Code Mode's exec and claude-code)
         return
@@ -139,6 +141,8 @@ def said_since(harness, p, stderr, end=None):
                     st = {"path": path, "offset": claude_code._end(path) if resumed else 0, "seen": []}
                 lines = _read(path, st)
                 said_items = ([(items, model) for items in _responses(lines)] if harness == "codex" else
+                              [(items, m.get("model"), "unknown", "qwen chat") for m, items in _qwen(lines, st["seen"])]
+                              if harness == "qwen" else
                               [(items, m.get("model"), "google", "gemini chat") for m, items in _gemini(lines, st["seen"])])
             if said_items:
                 client = claude_code.HookClient(answer_by=end)   # the hook's deadline: the event's own wait follows
@@ -281,6 +285,23 @@ def _gemini(lines, seen):
         items += said.text(_parts_text(e.get("content")))
         if items:
             seen[:] = (seen + [e.get("id")])[-SEEN:]
+            yield e, items
+
+
+def _qwen(lines, seen):
+    """Qwen Code chat file lines (<project dir>/chats/<session id>.jsonl, as tracekit.audit reads it) -> (record, said
+    items) of each of its model's `assistant` records not seen before, by uuid: its thought parts, then its text parts.
+    Its functionCall parts are left out."""
+    for e in lines:
+        msg = e.get("message")
+        parts = msg.get("parts") if isinstance(msg, dict) else None
+        if e.get("type") != "assistant" or not isinstance(parts, list) or e.get("uuid") in seen:
+            continue
+        parts = [p for p in parts if isinstance(p, dict) and isinstance(p.get("text"), str)]
+        items = [said.thought(p["text"]) for p in parts if p.get("thought")]
+        items += said.text("".join(p["text"] for p in parts if not p.get("thought")))
+        if items:
+            seen[:] = (seen + [e.get("uuid")])[-SEEN:]
             yield e, items
 
 

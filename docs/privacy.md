@@ -24,7 +24,11 @@ reasoning_capture: true      # also record the model's own text from the Claude 
 
 Point Tracekit at it:
 
-- **dev mode:** set `TRACEKIT_POLICY=/path/to/policy.yaml` in the environment the agent (and so its hooks) runs in.
+- **dev mode (v1):** set `TRACEKIT_POLICY=/path/to/policy.yaml` in the environment the agent (and so its hooks) runs
+  in. Only the v1 engine reads it. The v2 dev signer (`tracekit init --dev --v2`, SDK agents) ignores it and runs the
+  dev pack: to run a v2 policy of your own, see [run your own policy on your
+  machine](policy-guide.md#run-your-own-policy-on-your-machine); `content_capture` is v1's too, and v2's equivalent is
+  [the content vault](#the-content-vault).
 - **system mode:** `TRACEKIT_POLICY` is ignored. Put a root-owned copy outside the agent's reach, set `"policy"` to its
   path in `/etc/tracekit/client.json`, then run `sudo /opt/tracekit/bin/python -I -m tracekit migrate --system` to pin it and restart `tracekitd`.
 
@@ -37,7 +41,7 @@ Both settings are off by default, recorded in each run's `run.start`, and the ve
 | `run.start` | agent, model, host, os_user, cwd, commit, policy, fail_mode, sandbox | clear | clear |
 | `run.start` | repo (git remote URL) | clear, credentials redacted | same |
 | `user.prompt` | content | hash | redacted text |
-| `tool.call` | `command`, `file_path`, `notebook_path`, `path`, `url`, `pattern`, `query`, `glob`, `description`, `subagent_type`, `child_agent_id`, `timeout`, `run_in_background`, `offset`, `limit` | clear, redacted | clear, redacted |
+| `tool.call` | `command`, `file_path`, `notebook_path`, `path`, `url`, `pattern`, `query`, `glob`, `description`, `subagent_type`, `child_agent_id`, `timeout`, `run_in_background`, `offset`, `limit`, `commands`, `paths`, `urls` | clear, redacted | clear, redacted |
 | `tool.call` | everything else (file contents for Write/Edit, `old_string`/`new_string`, MCP arguments) | hash | redacted text |
 | `policy.decision` | decision, rule_ids, reasons | clear | clear |
 | `tool.result` | output | hash | redacted text |
@@ -57,7 +61,7 @@ Both settings are off by default, recorded in each run's `run.start`, and the ve
 
 ## Redaction patterns
 
-Private key blocks, Anthropic / OpenAI / GitHub / AWS (access and secret keys) / Slack / Google / Stripe / npm tokens, `Authorization:` bearer values, JWTs, credentials in connection strings, `KEY=value` / `token: value` style assignments, and every value of a `KEY=value` line when the tool call read or printed a `.env` file. Dictionary keys are redacted too, and the same rules apply to hook, proxy and transcript content. Matches become `[REDACTED:<kind>]` and the field is marked `redacted: true`. Redaction runs **before** hashing, so a hash never commits to a secret.
+Private key blocks, Anthropic / OpenAI / GitHub / AWS (access and secret keys) / Slack / Google / Stripe / npm tokens, `Authorization:` bearer values, JWTs, credentials in connection strings, `KEY=value` / `token: value` style assignments (not where the name is about a secret: a count, size, limit, switch, kind or version of one, or a maximum or number of them, such as `max_tokens`, `token_count`, `password_min_length`, `secret_scanning_enabled` or `credential_type`), and every value of a `KEY=value` line when the tool call read or printed a `.env` file. Dictionary keys are redacted too, and the same rules apply to hook, proxy and transcript content. Matches become `[REDACTED:<kind>]` and the field is marked `redacted: true`. Redaction runs **before** hashing, so a hash never commits to a secret. In a command, any value (a pattern's match, an assignment's, a `.env` line's) is hidden only up to where the shell ends its word (a blank, a line end, an operator, a redirection or code outside quotes) and never past a quote it didn't open, so what the command runs after it stays in clear. The same holds in code a shell runs from the command: a `$(...)`, a heredoc or herestring a shell reads, an `sh -c` or `eval` script. Elsewhere a value is hidden as far as its rule reads, as in content: in a comment, a heredoc body a program reads as data (`cat > f`, `tee`) or as its program (`python3 <<EOF`), an interpreter's `-c` program and each word of an argument list; when the command names a `.env` file, a heredoc body's `KEY=value` lines are hidden to their ends, up to the body's end line. A variable's name (`$TOKEN`) is no value and stays in view. An assignment's value is hidden whole, in a command and in content: one in quotes to the quote that closes them, also where the quote opens before its name (`-H "X-Api-Token: a b"`, `echo "token: a b"`), with every part its word joins (`TOKEN="a"' b'`, `TOKEN=a\ b`; in a command, `TOKEN="a$(x)b"` with its `$(x)` in view). A private key is hidden whole. The spellings of a secret that are not `KEY=value` are hidden too: a JSON or Python key's value (`"password": "x"`), a string with a prefix or triple quotes (`r'x'`, `"""x"""`), the lines of a YAML block scalar (`password: |`), the value of a long option that ends in a secret word (`--token x`, `--api-key=x`; not `--secret-id` or `--password-file`, which name a secret or its place), `curl -u user:x` (the part after the colon), `sshpass -p`, `mysql -px` and `mariadb -px`, `redis-cli -a`, `docker login -p`, `gh secret set -b` and `npm config set <key> <value>` for a key that names a secret (sshpass's and redis-cli's only before the command they run or send), and, in a structured argument, the string at a key that ends in a secret word (`API_TOKEN`, `Authorization`, `X-Api-Key`) or a `{"name": "Authorization", "value": "…"}` pair's value. A value those programs only read as data stays clean in a held call's copy; another program's quoted option value does not. A held call's copy may hide only clean values: one word of plain text with no blank or shell character, not where a program runs, read exactly as bash reads it. A blank in such a credential is clean too where one pair of quotes holds the value alone and the line's own command gives it to that program, not through a wrapper, `sh -c`, `eval`, a heredoc or a substitution (`mysql -p'a b'`, `redis-cli -a 'a b'`): the program gets it as one word. A held call whose copy would hide more is denied, never asked (`TK-HIDDEN-CODE`, [policy](policy-v2.md)): no person can see what they would approve. Where the signer can't read the command as bash does, a value is hidden as content rules read it, and a held call is denied if one is.
 
 Redaction is pattern-based and will miss secrets it doesn't recognise. A command line kept in clear can still contain one. If that's a concern, deny the pattern in policy or keep bundles internal.
 
@@ -81,8 +85,22 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
 - **What is redacted where.** A tool result and error (`complete`) go through the same redaction patterns before the
   signer commits to them; when the call's `command`, `file_path`, `path` or `pattern` mentions a `.env` file, every
   `KEY=value` line is redacted too. The signer's copy of a pending call's arguments, which the approver sees, is
-  redacted the same way and shows `[REDACTED:<kind>]` markers. The policy decides on the unredacted arguments: the
-  signer saw them, the record never holds them.
+  redacted the same way and shows `[REDACTED:<kind>]` markers, but in a shell line (a `command`, `cmd` or `script`
+  argument and the like, a typed call's `typed_line`, `process_manage` text) a value is hidden only up to where the
+  shell ends its word, as above, in the code it runs too, which the policy's own shell parser finds where the line holds
+  it (a script `sh -c`, `eval`, `ssh`, `watch` or `trap` runs, a heredoc a shell reads). What runs after it stays in
+  view; a comment and a heredoc body a program reads as data are text, redacted as content. A variable's name
+  (`$TOKEN`) is no value where bash expands it; in `'...'`, `$'...'`, after a backslash or in a body kept as written it
+  is text, and hidden. A code runner's arguments TK-S012 holds (`code`, `source`, `input` …; `args`, `argv`) are read
+  as its program and as an argv. A held call whose copy would hide more than clean values is denied instead
+  (`TK-HIDDEN-CODE`, [limits](limits.md)). When
+  redaction may have hidden more than values in an argument (more than 256 characters, or text with a
+  blank, a line end, a quote or another character the shell reads), the copy's argument starts with a line saying how
+  many characters it hid, `# [N characters hidden by redaction]`, and which characters of shell code were among them
+  (`, among them ; and a line break, which a shell can read as code]`): a shell comment, so what reads the copy as a
+  command (`tracekit analyze --v2`, `tracekit why`) reads the rest as before. The copy the signer keeps of a call it
+  doesn't hold has no such line. The policy decides on the unredacted arguments:
+  the signer saw them, the record never holds them.
 - **The manifest.** A `tool.result` record carries `redaction: {rules, count, client_claimed}`: the rules that fired
   and how often, never the values. A client may send content it already redacted (`redacted: true` and its own
   `redaction: {rules, count}`); the signer records that claim under `client`, redacts again anyway, and adds
@@ -149,8 +167,9 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
 - **Erasure.** `tracekit signer content erase --run R [--reason TEXT]` (the `content_erase` grant, never a default), and
   retention: at the signer's start and every hour after, runs whose key was stored more than `retention_days` ago,
   except, on the dev signer, a run holding nothing but a person's answers to TIPS' lessons, at most 64 (each
-  `tracekit:lessons:person` observe is an action, a lesson's id and its text's sha256; the signer refuses any other
-  value under that source), which the Claude Code hook reads back before it gives a lesson
+  `tracekit:lessons:person` observe is an action, a lesson's id, its text's sha256 and, on a retire, the record that
+  disproved it (`RUN:SEQ`); the signer refuses any other value under that source), which the Claude Code hook reads
+  back before it gives a lesson
   ([coding agents](coding-agents.md#lessons-at-the-first-prompt)). Other signers keep no such exception.
   Both delete the run's wrapped key and its blobs, then write a signed `content.erased{run_id, reason, by}`: the record
   is written only once the key is gone (a storage error writes none, and the erasure can be retried). The signer keeps
@@ -205,9 +224,11 @@ a program, a flag or a setting, an error's name, or your own sentence quoted as 
 when you approved it, the `run:run_seq` of up to 8 signed records it rests on, and that of the signed record of your
 answer (an observe whose kept value is the action, the id and the sha256 of the lesson's text, never the text). A
 lesson whose text matches a secret's shape, a bank
-number or a value the signer redacted is refused, never cut. The folder is a git repository: every approve, retire,
-restore and add is a commit, so its history keeps what a retired lesson said. A session's run keeps, in the vault, the
-ids of the lessons it was given and the block's sha256, never their text.
+number or a value the signer redacted is refused, never cut. A retire may name the record that disproved the lesson
+(`--because RUN:SEQ`, kept in the note as `retired_because` and in the signed answer): its run id and seq, never the
+record's content. The folder is a git repository: every approve, retire, restore and add is a commit, so its history
+keeps what a retired lesson said. A session's run keeps, in the vault, the ids of the lessons it was given and the
+block's sha256, never their text.
 
 The dev data dir is `~/Library/Application Support/tracekit/data` on macOS, `$XDG_DATA_HOME/tracekit` (else
 `~/.local/share/tracekit`) on Linux and `%LOCALAPPDATA%\tracekit` on Windows. To erase the lessons and their history,
@@ -235,6 +256,15 @@ being given but keeps it, and its text stays in the git history until the folder
   model provider, through your LLM gateway, the `approval_review` view of each approval it answers: the tool, the rules'
   reason and rationale, the bounds and budget left, and the signer's **redacted** copy of the tenant's arguments. It
   serves only the tenants its config lists; leave a tenant out when its arguments must not reach a model provider.
+  As [the AI approver](approvals.md#the-ai-approver) on a laptop it sends the endpoint you name (`url`, with your own
+  key) the same view plus the run's last calls (tool, decision, rules), people's reasons on earlier answers and the
+  playbook. It reads no file of the project.
+- With the AI approver on, an `approval.request` of a rule `approval_agent` lists records its precedent key in the
+  clear: the rules, the tool, what each rule read of the call, and the project folder's name. For `TK-A025` that is
+  how each package source was selected and the source's scheme, host and port, never its path (a path can hold a
+  token); for `TK-A062` and `TK-SHELL-PARSE` the command, redacted as the approver's copy is (`.env` values too) and
+  cut to 256 characters. In a run that isn't clean (a secret read, lost events) the key shows no target at all. Its
+  digest over the full key is a commitment, so what redaction or the cut left out can't be confirmed by a guess.
 - `tracekit analyze --v2 --review` (off unless you pass it) sends the model at `--review-url` (default: the reviewer
   it picks of those configured, `TRACEKIT_REVIEW_URL`'s, else the Anthropic or OpenAI API whose key is set, preferring
   another model family than the agent's; [findings](findings.md#the-reviewer-model-tk-x210)) one JSON copy of the run it analyses, cut to about 48,000 characters: what the person asked, what the model

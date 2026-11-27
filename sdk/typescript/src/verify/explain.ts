@@ -223,6 +223,14 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
   },
   "incident policies": { warn: "Policies an incident cites that aren't in the bundle: those incidents are the "
     + "signer's word." },
+  "run labels": {
+    pass: "What each run had done that its run conditions read (a secret read, untrusted content), replayed from its "
+      + "records under its policy, and what it inherited from another run of the same requester.",
+    fail: "A run label was added without a record that sets it, left out after one, or cleared by the run's own owner, "
+      + "or a call was held under a label the run didn't carry.",
+  },
+  "label policies": { warn: "Policies runs were decided under that neither the bundle nor the trust config carries: "
+    + "their labels are the signer's word, and one it left out wouldn't show." },
   "content vault": { pass: "Who read or erased retained content, as the signer recorded it." },
   "tiers": {
     pass: "Tool calls by how they were captured: T2 gateway or executor, T1 adapter, T3 import (receipt only).",
@@ -247,6 +255,20 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
       + "lacks the policy they were held under.",
     fail: "An agent approved a call the rules for agent approvals don't let it approve.",
   },
+  "AI approvals": {
+    pass: "Held calls an AI approver answered, each yes with two model answers that agree and a person's earlier yes "
+      + "to a call like it, checked where the bundle holds that yes.",
+    fail: "An AI approver's yes decided a call without two answers that agree, without a person's earlier yes to a "
+      + "call like it, with a person's rejection of a call like it, or on an earlier yes that doesn't hold: another "
+      + "kind of call, a self-approval or break-glass answer, a run that wasn't clean, given after it or over 30 days "
+      + "before it, or revoked before it.",
+  },
+  "AI run bound": {
+    pass: "AI approvals in runs that carried a label (a secret read, say), each checked against the run bound of the "
+      + "policy it was decided under: none of those labels closed the run to the AI approver.",
+    fail: "An AI approver's yes in a run whose label the policy's run bound names, or one whose policy snapshot the "
+      + "bundle doesn't hold, so nothing shows the run bound allowed it. Export with the policy snapshots.",
+  },
   "break-glass approvals": { warn: "Approvals given under the break-glass role, with who and why." },
   "not interpreted": { warn: "Records carry an extension this verifier doesn't read. They verified like every other "
     + "record." },
@@ -257,6 +279,11 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
       + "as sent.",
     warn: "A record carries a gateway amendment where or how the signer never writes one. The record verified like "
       + "every other.",
+  },
+  "approval decision": {
+    pass: "Each used approval names the decision it ran under: one of the same call and attempt, signed before the use.",
+    warn: "A used approval names a decision the bundle doesn't hold before it, of another call or attempt, or no "
+      + "decision at all: the signer never writes that. The record verified like every other.",
   },
   "openshell policy": {
     pass: "Changes of the sandbox's policy or configuration that NVIDIA OpenShell reported, signed into the run as "

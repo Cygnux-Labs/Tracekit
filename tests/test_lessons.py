@@ -919,5 +919,125 @@ class Page(unittest.TestCase):
         self.assertFalse(lessons.page([], {}, None)["ok"])
 
 
+class RetireBecause(unittest.TestCase):
+    def _make_store(self, data_dir):
+        """Build a real v2 signer store in `data_dir` with one verified run containing an observe record."""
+        import time
+
+        from tracekit.identity.base import CallerIdentity
+        from tracekit.signer import service as svc
+        me = CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
+        s = svc.SignerService(data_dir, grace_s=0, fsck_every_s=0)
+        try:
+            reg = s.call(me, "register_run", {"request_id": "r0", "agent": {"name": "claude-code"}})
+            obs = s.call(me, "observe", {
+                "request_id": "r1", "run_id": reg["run_id"], "run_token": reg["run_token"],
+                "stream": "main", "client_seq": 1,
+                "source": "tool.result", "trust": "trusted", "value": {"ok": False},
+            })
+            s.call(me, "close_run", {"request_id": "r2", "run_id": reg["run_id"], "run_token": reg["run_token"]})
+            s.sweep(time.monotonic() + 1)
+            s.checkpoint()
+            return reg["run_id"], obs["run_seq"]
+        finally:
+            s.close()
+
+    def test_the_page_links_a_because_only_when_the_signed_retire_carries_it(self):
+        """#928 review: a `retired_because` was read back from the note file, so a hand-written one linked any record
+        as what disproved the lesson."""
+        s, signed = Scene().session("tips", T0), {}
+        for name, v in (("same", {"because": "r-1:4"}), ("other", {"because": "r-1:5"}), ("none", {})):
+            s.prompt({"action": "retire", "id": "L-0badf00d", "sha256": "0" * 64, **v}, source=lessons.PERSON)
+            signed[name] = f"run-tips:{s.seq - 1}"
+        note, rows = {"id": "L-0badf00d", "retired_because": "r-1:4", "signed": signed["same"]}, s.rows()
+        self.assertEqual(lessons.disproved(note, rows), {
+            "run": "r-1", "seq": 4, "state": "signed",
+            "why": f"Disproved by run r-1 at seq 4, a person's word: signed (run run-tips, record {s.seq - 3})."})
+        for why, n in (("another record", dict(note, signed=signed["other"])),
+                       ("no because", dict(note, signed=signed["none"])), ("another lesson", dict(note, id="L-0000beef")),
+                       ("no signed retire", dict(note, signed=None))):
+            with self.subTest(why):
+                self.assertEqual(lessons.disproved(n, rows)["state"], "changed")
+        self.assertEqual(lessons.disproved(dict(note, signed="run-elsewhere:7"), rows)["state"], "not read")
+        for bad in (None, "", {}, {"run": "r-1", "seq": 4}, "r-1:04", "r-1"):   # a hand edit: never read as one
+            self.assertIsNone(lessons.disproved(dict(note, retired_because=bad), rows), bad)
+
+    def test_one_grammar_for_the_record_of_an_answer(self):
+        from tracekit.signer import service as svc
+        self.assertIs(svc.LESSON_ANSWER[3], lessons.SIGNED)
+        for ok in ("run-1:0", "a.b_c:12", f"r:{10**15}"):
+            self.assertTrue(lessons.SIGNED.fullmatch(ok), ok)
+        for bad in ("r:01", "r:", ":1", "r:-1", f"r:{10**16}", "r\u0663:1", "r:\u0663", "r:1\n"):
+            self.assertFalse(lessons.SIGNED.fullmatch(bad), bad)
+        folder = lessons.Folder(os.path.join(tmp(self), "lessons"))
+        lid, _ = folder.add(PROJECT, "Run pytest with -q.")
+        head = folder.head()
+        with self.assertRaises(lessons.Refused):
+            folder.retire(lid, because="r:01")
+        self.assertEqual((folder.head(), folder.notes()[0]["status"]), (head, "active"))
+
+    def test_retire_with_missing_or_unverified_because_refuses_and_changes_nothing(self):
+        from tracekit import tips
+        d = tmp(self)
+        data_dir = os.path.join(d, "data")
+        run_id, seq = self._make_store(data_dir)
+        observed = []
+
+        class _FakeRun:
+            run_id = "run-person"
+
+            def observe(self, payload, source, trust):
+                observed.append(payload)
+                return {"run_seq": 1}
+
+            def close(self):
+                pass
+
+        class _FakeClient:
+            def run(self, agent):
+                return _FakeRun()
+
+        folder = lessons.Folder(os.path.join(data_dir, "lessons"))
+        waiting = lookups(Scene()).found()[0][0]
+        folder.approve(waiting)
+        lid = waiting["id"]
+        head_before = folder.head()
+
+        # Bad format, unknown run, and unknown seq are each refused with nothing written.
+        for bad in ("not-a-ref", "run-does-not-exist:1", f"{run_id}:9999"):
+            with self.subTest(bad=bad):
+                stderr = []
+                with mock.patch.object(tips, "_running", return_value=_FakeClient()), \
+                     mock.patch("tracekit.signer.service.dev_data_dir", return_value=data_dir), \
+                     mock.patch("sys.stderr") as err:
+                    err.write.side_effect = stderr.append
+                    code = tips.act(["retire", lid, "--because", bad], lambda _m: None)
+                self.assertEqual(code, 1)
+                self.assertIn("tracekit tips:", "".join(stderr))
+                self.assertEqual(folder.head(), head_before)
+                self.assertEqual(folder.notes()[0]["status"], "active")
+                self.assertEqual(observed, [])
+
+        # A run whose verification fails is also refused with nothing written.
+        with mock.patch.object(tips, "_running", return_value=_FakeClient()), \
+             mock.patch("tracekit.signer.service.dev_data_dir", return_value=data_dir), \
+             mock.patch("tracekit.view.check", return_value=(None, 1, "", [])), \
+             mock.patch("sys.stderr"):
+            code = tips.act(["retire", lid, "--because", f"{run_id}:{seq}"], lambda _m: None)
+        self.assertEqual(code, 1)
+        self.assertEqual(folder.head(), head_before)
+        self.assertEqual(folder.notes()[0]["status"], "active")
+        self.assertEqual(observed, [])
+
+    def test_retired_because_is_host_key_and_retire_without_because_unchanged(self):
+        self.assertIn("retired_because", lessons.HOST)
+        folder = lessons.Folder(os.path.join(tmp(self), "lessons"))
+        lid, _ = folder.add(PROJECT, "Run pytest with -q.")
+        folder.retire(lid)
+        [note] = folder.notes()
+        self.assertEqual(note["status"], "retired")
+        self.assertIsNone(note.get("retired_because"))
+
+
 if __name__ == "__main__":
     unittest.main()

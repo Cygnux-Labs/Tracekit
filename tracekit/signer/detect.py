@@ -24,7 +24,7 @@ import zipfile
 
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.policy2.compile import DETECT, SECTIONS, policy_hash
-from tracekit.policy2.engine import Engine
+from tracekit.policy2.engine import Engine, spelled
 
 RUN_CAP = 100      # incidents a run opens per trigger; the next one is an incident.capped summary instead
 TENANT_CAP = 60    # incidents a tenant opens per minute
@@ -43,11 +43,12 @@ class Plain:
 
 
 class Rules:
-    """What a Detector reads of a compiled policy, without compiling its patterns: for verifiers."""
-    tool_class = Engine.tool_class
+    """What a Detector and run labels (labels.Sources) read of a compiled policy, without compiling its patterns: for
+    verifiers."""
+    tool_class, listed, untrusted_results = Engine.tool_class, Engine.listed, Engine.untrusted_results
 
     def __init__(self, policy):
-        self.policy, self.policy_hash = policy, policy_hash(policy)
+        self.policy, self.policy_hash, self._spelled = policy, policy_hash(policy), spelled(policy)
 
 
 def new(policy_hash=None, until=None):
@@ -95,6 +96,7 @@ class Detector:
             self.every["denied_calls"] = self.respond["denied_calls"]["window"]
         self.window = max([0, *self.every.values()])
         self.idle = max(self.window, IDLE_S)
+        self.peaks = None   # a backtest's dict: (limit id, currency or None) -> the highest window counted so far
 
     @classmethod
     def of(cls, engine):
@@ -275,6 +277,11 @@ class Detector:
                 before, val = val, val + 1
                 after = val
             tx.set(st["lim"], lim["id"], [start, val])
+            if self.peaks is not None:
+                k = lim["id"], sums[lim["id"]][1] if "sum" in lim else None
+                if k not in self.peaks or after > self.peaks[k]["value"]:
+                    self.peaks[k] = {"value": after, "start": start, "scope": scope, "tenant": e["tenant"],
+                                     "run_id": e["run_id"]}
             if view is not None:
                 view["limits"].append({"id": lim["id"], "count": after, "window_start": start})
             if before <= lim["max"] < after:
@@ -374,13 +381,16 @@ def _bundle_events(path):
     return sorted(events, key=lambda e: e["seq"])
 
 
-def backtest(engine, store=None, bundles=()):
+def backtest(engine, store=None, bundles=(), peaks=None):
     """([(event type, tenant, run_id, data)] of the incident records `engine`'s policy would write over the records
     of a file store (its directory) or of bundles, each bundle on its own; the number of decisions made under another
-    policy, whose recorded rule ids are that policy's)."""
+    policy, whose recorded rule ids are that policy's). `peaks`, if given, is filled with the highest window each
+    limit reached, by (limit id, currency of a sum limit or None): {value, start, scope, tenant, run_id}; the incidents
+    are the same with or without it."""
     det = Detector.of(engine)
     if det is None:
         return [], 0
+    det.peaks = peaks
     sources = []
     if store:
         from tracekit.storage.file import FileReader

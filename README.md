@@ -16,7 +16,7 @@ systems and show what they did: your customers and auditors can verify the recor
 <table>
 <tr>
 <td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
-<td align="center" width="25%"><h3>956 of 956</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 972 (E17)</sub></td>
+<td align="center" width="25%"><h3>1132 of 1132</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 1054 (E17)</sub></td>
 <td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
 <td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
 </tr>
@@ -49,7 +49,7 @@ Tracekit sits in the tool-call path, the way a flight recorder sits in a plane:
 |---|---|
 | **Stop** | Checks every tool call *before it runs*: allow, deny, or hold it for a person. An approval covers exactly the arguments that were approved, once. |
 | **Record** | Signs every call, decision and result into a hash chain held by a signer the agent can't reach. A lost event becomes a signed gap, never silence. |
-| **Prove** | Exports each run as one `.tkb` file. Anyone can verify it offline, even in a browser, and see `VERIFIED`, or `FAILED` with the record that was changed. |
+| **Prove** | Exports each run as one `.tkb` file. Anyone can verify it offline, even in a browser, and see `VERIFIED`, or `TAMPERED at event N` naming the record that was changed. |
 
 Here is one run, recorded both ways. A support ticket hides an instruction; the agent deletes 43 orders, then rewrites
 its own log and Tracekit's record so the delete reads as a lookup:
@@ -344,8 +344,8 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up, and
 | **Cross-check** (E10): a skipped hook, a made-up call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **Three verifiers, one verdict** (E22): 63 bundles, 33 of them forged, each checked by the Python CLI, the TypeScript CLI and the browser page | **All three agree on all 63**; no forgery verifies. A 50,000-call run verifies in the browser in 14 s |
 | **Overhead** (E9): signer round trip over a Unix socket | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |
-| **Policy packs, known cases** (E17): 956 harmful, 972 benign calls | 956 stopped, 1 false alarm |
-| **Policy packs, written blind to the rules** (E21): 420 harmful, 432 benign | 211 of 420 stopped or held on the one blind run (287 now, with rules added after reading the pool); 18 benign held |
+| **Policy packs, known cases** (E17): 1132 harmful, 1054 benign calls | 1132 stopped, 1 false alarm |
+| **Policy packs, written blind to the rules** (E21): 420 harmful, 432 benign | 211 of 420 stopped or held on the one blind run (292 now, with rules added after reading the pool); 18 benign held |
 
 That last row is on purpose. **Policy rules are tripwires, not a wall.** They match text, and a determined agent can
 reword a command. What makes the record trustworthy is the signer's isolation and the witness, and those are what the
@@ -375,7 +375,7 @@ first two rows measure.
 | **Contain** | Detection rules over sequences of calls and limits, and signed [incidents](https://github.com/Cygnux-Labs/Tracekit/wiki/Incidents) that hold or quarantine a run; tools that run on credentials the agent never holds ([executor](https://github.com/Cygnux-Labs/Tracekit/wiki/Executor), [MCP gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/MCP-Gateway)); an [egress observer](https://github.com/Cygnux-Labs/Tracekit/wiki/Egress); [Tetragon](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Tetragon) and [Falco](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Falco) kernel-event import: 8 of 8 containment and 10 of 10 detection checks (E17) |
 | **[`tracekit why`](https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why)** | Which untrusted input brought an argument's value, signed, and which input caused an action, found by replaying the run without it. Replay reads the [content vault](https://github.com/Cygnux-Labs/Tracekit/wiki/Privacy#the-content-vault), where the signer keeps redacted content encrypted (the dev signer for 7 days); each read is signed, and erasure deletes the run's key |
 | **[`tracekit analyze --v2`](https://github.com/Cygnux-Labs/Tracekit/wiki/Findings#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)** | Flags edits nobody asked for, broken "don't touch X" instructions, data sent out or files deleted without telling you, and says how much of a run's reasoning could be read ([which agents' is readable](https://github.com/Cygnux-Labs/Tracekit/wiki/Reasoning)). [Live constraints](https://github.com/Cygnux-Labs/Tracekit/wiki/Policy#live-constraints) hold the call that would break a "don't touch X" for approval |
-| **More approvers** | Approve from a web page with passkeys, from Slack, or by a reviewer agent within bounds: 7 of 7 abuse cases against agent approvers caught (E18) |
+| **More approvers** | Approve from a web page with passkeys, from Slack, or by a reviewer agent within bounds (on a laptop, in system mode: in dev mode the agent's user can read the signer's keys): 15 of 15 abuse cases against agent approvers caught (E18) |
 | **Proof-carrying messages** | An agent's request to another agent carries its proof: a typed intent, claims backed by the sender's signed log, and the person's grant with its limits. The receiver checks it offline before it acts ([PCM 0.1](https://github.com/Cygnux-Labs/Tracekit/wiki/Proof-Carrying-Messages)) |
 | **Intent grants** | Approve a payment once with bounds: who may be paid, the most per payment, the total, until when. The signer releases each payment inside them and holds the rest; `tracekit verify` re-checks every release ([intent grants](https://github.com/Cygnux-Labs/Tracekit/wiki/Intent-Grants)) |
 | **[`tracekit graph`](https://github.com/Cygnux-Labs/Tracekit/wiki/Graph) and [Event Horizon](https://github.com/Cygnux-Labs/Tracekit/wiki/Horizon)** | One graph of what agents did across verified runs (which runs changed a file, who approved a call, which hosts a run reached), and a map in the viewer of where your agents went |
@@ -407,7 +407,7 @@ tracekit doctor                             # check your setup
 Whoever checks a run needs nothing installed: the
 [browser verifier](https://github.com/Cygnux-Labs/Tracekit/wiki/Verdicts#verify-in-your-browser) takes the `.tkb`,
 sends nothing anywhere, and says VERIFIED, FAILED or UNVERIFIABLE. In CI:
-`uses: Cygnux-Labs/Tracekit@v1.7.2` with `bundle:` and `trust:`.
+`uses: Cygnux-Labs/Tracekit@v1.8.0` with `bundle:` and `trust:`.
 `require-anchor` defaults to `true`, so an unanchored bundle fails the step; set `require-anchor: "false"` to only
 report it.
 
@@ -459,7 +459,7 @@ the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_
 
 ## License and citation
 
-[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), © Cygnux Labs. Version 1.7.2; 1.x is the supported
+[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), © Cygnux Labs. Version 1.8.0; 1.x is the supported
 line. Report vulnerabilities privately as [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md)
 describes.
 

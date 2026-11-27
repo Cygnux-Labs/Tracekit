@@ -10,10 +10,12 @@ A policy deny always blocks, whether or not the signer is reachable.
     python -I -m tracekit.hook   (wired by `tracekit init`)
 """
 import functools
+import gc
 import getpass
 import hashlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -22,13 +24,18 @@ import time
 from .core import read_text
 from . import client, privacy
 from . import policy as policy_mod
-from .core import now_ts
+from .core import now_ts, subagent_id
 from .locking import lock_file, unlock_file
 
 AGENT_NAME = "claude-code"
 # seconds a held call may wait for its answer, under a harness that runs the call once its hook takes longer (None: the
 # policy's approval_timeout_s)
 APPROVAL_CAP_S = None
+STATE_KEEP_S = 30 * 86400   # a run's client state no hook has written for this long goes when another run starts
+# a run's client files (<state_name>.*), and a harness's call-id queue or a terminal's typed input (agent_hooks)
+STATE_FILE = re.compile(r"([0-9a-f]{64})\..+|([a-z]+-[0-9a-f]{16}\.json)(?:\.lock|\.tmp)?")
+# runs tracekitd never forgets, with the analyzer's findings: runs: a counter of theirs that starts over is signed as a gap
+KEPT_RUNS = ("_unattributed", "_proxy")
 TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 
 
@@ -48,7 +55,7 @@ def _as_dict(v):
 
 
 def _base(p):
-    aid = p.get("agent_id")
+    aid = subagent_id(p.get("agent_id"))
     return {"run_id": p["session_id"], "agent_id": aid or "main",
             "parent_id": "main" if aid else None, "source": "hook", "ts": now_ts()}
 
@@ -82,10 +89,15 @@ def transcript_entries(f, final=False):
     for line in f:
         if not line.endswith(b"\n") and not final:
             return
+        collecting = gc.isenabled()
+        gc.disable()   # a line nested to the recursion limit must not run other objects' finalisers on that full stack
         try:
             e = json.loads(line)
         except (ValueError, RecursionError):   # RecursionError: nested past what json.loads takes
             e = None
+        finally:
+            if collecting:
+                gc.enable()
         yield len(line), e if isinstance(e, dict) else None
 
 
@@ -138,7 +150,7 @@ def transcript_path_for(p):
     path = p.get("transcript_path")
     if not path:
         return None
-    aid, sid = p.get("agent_id"), p.get("session_id")
+    aid, sid = subagent_id(p.get("agent_id")), p.get("session_id")
     if aid and _path_part(sid) and _path_part(f"agent-{aid}.jsonl"):
         sub = os.path.join(os.path.dirname(path), sid, "subagents", f"agent-{aid}.jsonl")
         if os.path.exists(sub):
@@ -161,13 +173,16 @@ def _load_acks():
 def save_ack(path, length):
     if length is None:
         return
+    _change_acks(lambda acks: {**acks, path: length})
+
+
+def _change_acks(change):
     lk = open(_acks_path() + ".lock", "a")
     locked = False
     try:
         lock_file(lk)
         locked = True
-        acks = _load_acks()   # the signer is the authority on what it has seen (it also keeps a history for races)
-        acks[path] = length
+        acks = change(_load_acks())   # the signer is the authority on what it has seen (it keeps a history for races)
         tmp = _acks_path() + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(acks, f)
@@ -178,6 +193,44 @@ def save_ack(path, length):
                 unlock_file(lk)
         finally:
             lk.close()
+
+
+def _held(lock):
+    with open(lock, "a") as f:
+        try:
+            lock_file(f, blocking=False)
+        except BlockingIOError:
+            return True
+        unlock_file(f)
+    return False
+
+
+def _prune(run_id):
+    """Removes the client files in runs/ of each run that no hook has written for STATE_KEEP_S, all of a run's files
+    together and none while one of its locks is held, never run_id's or KEPT_RUNS', and drops the acks of transcripts
+    that are gone."""
+    runs = os.path.join(client.client_dir(), "runs")
+    keep = {client.state_name(r) for r in (run_id,) + KEPT_RUNS}
+    groups = {}
+    for name in os.listdir(runs):
+        m = STATE_FILE.fullmatch(name)
+        if m:
+            groups.setdefault(m.group(1) or m.group(2), []).append(name)
+    old = time.time() - STATE_KEEP_S
+    for key, names in groups.items():
+        if key in keep or any(".analyzer." in n for n in names):
+            continue
+        paths = [os.path.join(runs, n) for n in names]
+        try:
+            # lean: a hook that takes a lock just as it is removed holds a file no later hook opens; rare after a month
+            # idle, upgrade if counter gaps show up on resumed runs
+            if max(map(os.path.getmtime, paths)) >= old or any(_held(p) for p in paths if p.endswith(".lock")):
+                continue
+            for p in paths:
+                os.remove(p)
+        except OSError:   # removed by a parallel hook, or not ours to remove
+            pass
+    _change_acks(lambda a: {p: n for p, n in a.items() if os.path.exists(p)} if isinstance(a, dict) else {})
 
 
 def transcript_mark(path):
@@ -220,26 +273,23 @@ def wait_for_approval(ev_call, decision, pol):
     """Hold a tool call until a human approves it from outside the agent's session.
     Returns (approved: bool, message)."""
     d = ev_call["data"]
-    shown = ""
-    for one, many in (("command", "commands"), ("file_path", "paths"), ("url", "urls")):
-        each = (d["input"].get(many) or {}).get("value")   # a call on several, each decided: the approver sees all
-        v = each if isinstance(each, list) and len(each) > 1 else (d["input"].get(one) or {}).get("value")
-        if v:
-            shown = f"{len(v)} {many}={json.dumps(v)}" if isinstance(v, list) else f"{one}={v}"
-            break
     timeout = float(pol.get("approval_timeout_s", 120))
     if APPROVAL_CAP_S is not None:
         timeout = min(timeout, APPROVAL_CAP_S)
     try:
         r = client.rpc({"op": "approval_request", "run_id": ev_call["run_id"], "agent_id": ev_call["agent_id"],
-                        "tool_use_id": d["tool_use_id"], "summary": f"{d['name']} {shown}"[:400],
+                        "tool_use_id": d["tool_use_id"],
+                        # every argument, the note first; whole: privacy.screened denies a hold whose summary is
+                        # longer
+                        "summary": decision.get("summary") or privacy.approval_summary(d["name"], d["input"],
+                                                                                     decision.get("note", "")),
                         "rule_ids": decision["rule_ids"], "timeout_s": timeout})
     except client.SignerUnavailable as e:
         return False, f"approval needed but the signer is unavailable ({e}); rejected"
     if not r.get("ok"):
         return False, f"approval request failed: {r.get('error')}"
     aid = r["approval_id"]
-    print(f"[tracekit] waiting for approval {aid}: {d['name']} {shown[:200]} "
+    print(f"[tracekit] waiting for approval {aid}: {privacy.approval_summary(d['name'], d['input'])[:200]} "
           f"({'; '.join(decision['reasons'])}). From another terminal: tracekit approve {aid}  |  tracekit reject {aid}",
           file=sys.stderr, flush=True)
     end = time.time() + timeout + (5 if APPROVAL_CAP_S is None else 0)
@@ -269,6 +319,10 @@ def build_events(p, pol, reasoning=True):
     flag = _started_flag(b["run_id"])
     phash = policy_mod.policy_hash(pol)
     if name == "SessionStart" or not os.path.exists(flag):
+        try:
+            _prune(b["run_id"])
+        except OSError:
+            pass  # what it couldn't remove waits for the next run's start
         evs.append(run_start_event(p, pol, cwd, reasoning))
         try:
             os.makedirs(os.path.dirname(flag), exist_ok=True)
@@ -287,7 +341,10 @@ def build_events(p, pol, reasoning=True):
     elif name == "PreToolUse":
         tool, ti, tid = p.get("tool_name") or "?", _as_dict(p.get("tool_input")), p["tool_use_id"]
         d = policy_mod.evaluate(pol, tool, ti, cwd)
-        evs.append({**b, "type": "tool.call", "data": {"tool_use_id": tid, "name": tool, "input": privacy.tool_input(tool, ti, cc)}})
+        unclean = []   # the record, which an approver sees, would hide more than clean values in the command
+        rec = privacy.tool_input(tool, ti, cc, unclean)
+        d = privacy.screened(d, tool, ti, rec, unclean)
+        evs.append({**b, "type": "tool.call", "data": {"tool_use_id": tid, "name": tool, "input": rec}})
         dec = {**b, "type": "policy.decision", "data": {"tool_use_id": tid, "decision": d["decision"],
                                                         "rule_ids": d["rule_ids"], "reasons": d["reasons"] + d["flags"],
                                                         "policy_hash": phash, "policy_version": str(pol.get("version", "unversioned"))}}
@@ -379,6 +436,9 @@ def main(harness_reasoning=True, raw=None):
             return 2
         print(f"[tracekit] {msg}", file=sys.stderr)
         return 0
+    if deny and privacy.HIDDEN_CODE in deny["rule_ids"]:   # one reason the agent can act on
+        print(privacy.hidden_message(deny), file=sys.stderr)
+        return 2
     if deny:
         print("Blocked by tracekit policy: " + "; ".join(f"{i} {r}" for i, r in zip(deny["rule_ids"], deny["reasons"])),
               file=sys.stderr)

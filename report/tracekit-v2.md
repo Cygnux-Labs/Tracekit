@@ -404,7 +404,7 @@ cases a and b through the TypeScript client. Every store must pass `tracekit sig
 | Scenario | Passed | Measured |
 |---|---|---|
 | a fail closed | yes | blocked 20; calls while down 20 |
-| b fail open | yes | calls while down 20; ran 20; fsck problems 0 |
+| b fail open | yes | calls while down 20; ran 20; reported after recovery 20; fsck problems 0 |
 | c restart | yes | approval after restart approved; asked ask; decide after allow; decide before allow; completed; consumed; fsck problems 0 |
 | d partition | yes | client timeout ms 1000.0; fs ran unrecorded 20; shell blocked 20; fsck problems 0 |
 | e witness unreachable | yes | answered 40; calls while down 40; degraded unanchored gaps 1; witness failed gaps 2; cosigned after recovery; fsck problems 0 |
@@ -419,9 +419,9 @@ Latency of a tool call under the partition (scenario d):
 <!-- table e14-partition -->
 | Phase | Calls | p50 ms | p95 ms | added p50 ms | added p99 ms |
 |---|---|---|---|---|---|
-| baseline | 200 | 1.97 | 2.18 | - | - |
-| during | 40 | 1004.47 | 1006.13 | 1002.5 | 1005.35 |
-| after | 200 | 1.97 | 3.03 | 0.01 | 4.5 |
+| baseline | 200 | 2.11 | 2.87 | - | - |
+| during | 40 | 1003.75 | 1005.51 | 1001.64 | 1005.96 |
+| after | 200 | 2.12 | 3.39 | 0.01 | 5.55 |
 
 Client timeout: 1000.0 ms.
 <!-- /table -->
@@ -456,7 +456,7 @@ expects the named check to fail or warn; the clean layout must pass. Without roo
 <!-- table e16 -->
 | Suite | Broken layouts | Flagged | Skipped | Clean layout passes | Checks exercised |
 |---|---|---|---|---|---|
-| system mode layout | 34 | 33 | 1 | yes | D-AGENT-PRIV, D-AGENT-PROBE, D-ANALYZER-AGENT, D-CLOCK-SKEW, D-CODE-TRUST, D-CONFIG, D-CONTENT-VAULT, D-DATA-FS, D-DURABILITY, D-FAIL-MODES, D-HOOKS-EVENT, D-HOOKS-PRESENT, D-HOOKS-TIMEOUT, D-HOOKS-VENV, D-KEY-HYGIENE, D-KEYS-DISTINCT, D-KEYS-MODE, D-POLICY-ENGINE, D-POLICY-TRUST, D-PROCESS-BOUNDARY, D-SIGNER-ENV, D-THINKING-SUMMARIES, D-UNIT-HARDENING, D-WITNESS-CONFIGURED, D-WITNESS-FRESH, D-WITNESS-OWNERSHIP |
+| system mode layout | 40 | 39 | 1 | yes | D-AGENT-APPROVERS, D-AGENT-PRIV, D-AGENT-PROBE, D-ANALYZER-AGENT, D-APPROVER-AGENT, D-BREAK-GLASS-STALE, D-CLOCK-SKEW, D-CODE-TRUST, D-CONFIG, D-CONTENT-VAULT, D-DATA-FS, D-DURABILITY, D-FAIL-MODES, D-HOOKS-EVENT, D-HOOKS-PRESENT, D-HOOKS-TIMEOUT, D-HOOKS-VENV, D-KEY-HYGIENE, D-KEYS-DISTINCT, D-KEYS-MODE, D-POLICY-ENGINE, D-POLICY-TRUST, D-PROCESS-BOUNDARY, D-REVIEWER-USER, D-SIGNER-ANSWERS, D-SIGNER-ENV, D-THINKING-SUMMARIES, D-UNIT-HARDENING, D-WITNESS-CONFIGURED, D-WITNESS-FRESH, D-WITNESS-OWNERSHIP |
 | Kubernetes manifests | 19 | 19 | 0 | yes | D-K8S-HOST-ACCESS, D-K8S-RUN-AS-USER, D-K8S-SA-TOKEN, D-K8S-SECURITY-CONTEXT, D-K8S-SHARED-VOLUME, D-K8S-SIGNER-DATA, D-K8S-WORKLOAD-IDENTITY, D-K8S-WORKLOADS |
 | Postgres roles | 5 | 5 | 0 | yes | D-PG-READER-ROLES, D-PG-SIGNER-ROLE |
 <!-- /table -->

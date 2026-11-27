@@ -7,11 +7,13 @@ the signer and put in bundles, as canonical JSON.
 import json
 import os
 import re
+import shlex
 import signal
 import threading
 
 from . import yamlmini
 from .core import canon, sha256_hex
+from .policy2.classes import UNREAD, workdir
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 POLICY_DIR = os.path.join(HERE, "policy")
@@ -226,14 +228,17 @@ def _windows(text):
             break
 
 
-def _matches(r, tool, ti):
-    """True when the rule applies. A match that cannot finish in time, or a subject too large to scan, counts
-    as a match: a rule that cannot be evaluated must not silently let the call through. Anchors (^ $) in a
-    rule see window edges when the subject is longer than WINDOW."""
+def _matches(r, tool, ti, unread=False):
+    """True when the rule applies. A match that cannot finish in time, a subject too large to scan, or a call
+    `unread` (one whose working directory classes.workdir can't place) counts as a match: a rule that cannot be
+    evaluated must not silently let the call through. Anchors (^ $) in a rule see window edges when the subject is
+    longer than WINDOW."""
     try:
         with _Budget():
             if not re.fullmatch(str(r.get("tool", ".*")), (tool or "")[:4096]):
                 return False
+            if unread:
+                return True
             text = subject(tool, ti, r.get("field"))
             if len(text) > MAX_SUBJECT:
                 return True
@@ -256,6 +261,13 @@ def evaluate(pol, tool, ti, cwd=None):
     # typed input is also decided as the line a shell would read it into (agent_hooks.typed_line)
     if field == "command" and isinstance(ti.get("typed_line"), str):
         calls.append(dict(ti, command=ti["typed_line"]))
+    # a shell tool's own working directory (Codex's workdir, Gemini CLI's dir_path …: classes.workdir) is where each
+    # command runs: each is also decided as `cd <dir> && <command>`; a call that names more than one, or one that
+    # isn't text, is unread (_matches)
+    d = workdir(ti) if field == "command" else None
+    unread = d is UNREAD
+    calls += [dict(c, command=f"cd {shlex.quote(d)} && {c['command']}") for c in list(calls)
+              if isinstance(d, str) and isinstance(c.get("command"), str)]
     # a Windows path's separator is a backslash: the file rules, written with `/`, read it with `/` too
     ruled = calls + [dict(c, **{k: c[k].replace("\\", "/")}) for c in calls for k in ("file_path", "notebook_path")
                      if isinstance(c.get(k), str) and "\\" in c[k]]
@@ -265,15 +277,15 @@ def evaluate(pol, tool, ti, cwd=None):
     rule_ids, reasons, flags = [], [], []
     deny = ask = False
     for r in pol.get("deny", []):
-        if any(_matches(r, t, c) for c in ruled for t in names):
+        if any(_matches(r, t, c, unread) for c in ruled for t in names):
             deny = True
             rule_ids.append(r["id"]); reasons.append(r.get("reason", r["pattern"]))
     for r in pol.get("ask", []):
-        if any(ASKABLE.match(t or "") and _matches(r, t, c) for c in ruled for t in names):
+        if any(ASKABLE.match(t or "") and _matches(r, t, c, unread) for c in ruled for t in names):
             ask = True
             rule_ids.append(r["id"]); reasons.append(r.get("reason", r["pattern"]))
     for r in pol.get("flag", []):
-        if any(_matches(r, t, c) for c in ruled for t in names):
+        if any(_matches(r, t, c, unread) for c in ruled for t in names):
             if r["id"] not in rule_ids:
                 rule_ids.append(r["id"])
             flags.append(r.get("label", "flag"))

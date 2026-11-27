@@ -26,6 +26,8 @@ from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RESPONSES, RPCError, validate
 from tracekit.verify import v2
 
+from factories import rewrite_bundle   # noqa: E402  (tests/ is on the path, as for test_ts_verifier)
+
 AGENT = CallerIdentity("token", "reviewer", True)
 ALICE = CallerIdentity("uid", "990001", True)
 OPS = CallerIdentity("token", "ops", True)
@@ -590,7 +592,9 @@ class TestVetoAndRevoke(Case):
         self.assertEqual(head, f"[tracekit] HELD, nothing ran: {aid} ({', '.join(d['rule_ids'])}) is approved by an "
                                "agent approver; people may still revoke it, so wait 60 s, then make the identical call "
                                "again.")
-        self.assertEqual((why, person), (f"Why: {d['reason']}", f"Person: look with `! tracekit approvals show {aid}`."))
+        self.assertEqual((why, person), (f"Why: {d['reason']}", f"Person: look with `! tracekit approvals show {aid}`; "
+                                                                f"take it back before it runs with `! tracekit approvals "
+                                                                f"revoke {aid}`."))
         self.assertTrue(agent.startswith("Agent: wait as the first line says, then make the identical call again"),
                         agent)
 
@@ -680,6 +684,22 @@ class TestReview(Case):
         self.assertTrue(shown.startswith("echo Thanks\\U000e0143\\U000e0135"), shown)   # S E, shown
         self.assertTrue(shown.endswith("\\u3164"), shown)
 
+    def test_the_reviewer_sees_the_command_and_how_much_redaction_hid(self):
+        """The shell line after a value stays in view; what redaction hides past a few values' worth is counted in the
+        copy itself, which view_digest covers."""
+        many = "\n".join(f"K{i}=v{i:04}" for i in range(60))   # each value plain, 300 characters in all
+        aid, agent = self.ask({"command": f"A=1 && make deploy\ncat > ship.conf <<EOF\n{many}\nEOF\n# .env"},
+                              "tc-1", tool="ship")
+        self.assertTrue(agent["eligible"])
+        view = self.s.call(AGENT, "approval_review", {"approval_id": aid})
+        self.assertEqual(validate(RESPONSES["approval_review"], view), [], view)
+        self.assertEqual(view["args"]["command"], svc._escaped(
+            f"# [{len('1') + 300} characters hidden by redaction]\nA=[REDACTED:dotenv] && make deploy\ncat > ship.conf "
+            "<<EOF\n" + "\n".join(f"K{i}=[REDACTED:dotenv]" for i in range(60)) + "\nEOF\n# .env"))
+        self.assertEqual(view["redacted"], ["command"])
+        rest = {k: v for k, v in view.items() if k != "view_digest"}
+        self.assertEqual(view["view_digest"], "sha256:" + hashlib.sha256(canonical(rest)).hexdigest())
+
     def test_control_and_bidi_characters_are_escaped(self):
         self.assertEqual(svc._escaped({"a\u202e": ["x\x07", "\u2066y"]}), {"a\\u202e": ["x\\u0007", "\\u2066y"]})
 
@@ -733,6 +753,9 @@ class TestDetection(Case):
 
         def lines(path, policy_dir):
             export(self.s.log.storage, "default", self.run["run_id"], note, path, policy_dir=policy_dir)
+            return verified(path)
+
+        def verified(path):
             rep, code = v2.verify(path, trust)
             if not tv.SKIP:
                 ts = tv.ts_verify(path, trust)
@@ -747,13 +770,13 @@ class TestDetection(Case):
         self.assertEqual((code, got["approvals by agents"]["status"], got["incidents"]["status"]), (0, "pass", "pass"))
         self.assertTrue(got["incidents"]["detail"].startswith("1 incident(s): 1 checked against the bundle"))
         self.assertNotIn("incident policies", got)
-        code, got = lines(os.path.join(self.dir, "none.tkb"), None)
+        code, got = lines(os.path.join(self.dir, "none.tkb"), os.path.join(self.dir, "none"))
         self.assertEqual((code, got["approvals by agents"]["status"], got["incident policies"]["status"]),
                          (0, "warn", "warn"))
-        for name in os.listdir(pol):
-            with open(os.path.join(pol, name), "ab") as f:
-                f.write(b" ")
-        code, got = lines(os.path.join(self.dir, "edited.tkb"), pol)
+        edited = os.path.join(self.dir, "edited.tkb")   # a snapshot whose bytes no longer hash to its name
+        rewrite_bundle(path, edited, lambda files, manifest: files.update(
+            {n: b + b" " for n, b in files.items() if n.startswith("policies/")}))
+        code, got = verified(edited)
         self.assertEqual((code, got["policy snapshot"]["status"], got["approvals by agents"]["status"],
                           got["incident policies"]["status"]), (1, "fail", "warn", "warn"))
 

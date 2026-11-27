@@ -20,6 +20,9 @@ import types
 import unittest
 from unittest import mock
 
+import pytest
+
+from factories import TOO_DEEP_JSON, no_tomllib
 from tracekit import __version__, agent_hooks, cli, client, crypto, doctor, install, public_witness
 from tracekit.format import checkpoint
 from tracekit.locking import lock_file
@@ -35,7 +38,11 @@ spec.loader.exec_module(e16)
 class E16(unittest.TestCase):
     def test_clean_layout_passes_every_check(self):
         results = e16.run_case(None)
-        self.assertEqual([r for r in results if r["status"] != "ok"], [])
+        # Where google-re2 has no wheel, the regex engine is expected: an info row, not a fault.
+        expected = {} if doctor._google_re2_wheel_expected() else {"D-POLICY-ENGINE": "info"}
+        # a subset: google-re2 installed by hand where no wheel is expected makes the row ok
+        self.assertLessEqual({r["id"]: r["status"] for r in results if r["status"] != "ok"}.items(),
+                             expected.items())
         self.assertEqual({r["id"] for r in results}, {want for _, want, _ in e16.CASES})
 
     def test_every_misconfiguration_is_flagged(self):
@@ -46,6 +53,44 @@ class E16(unittest.TestCase):
             with self.subTest(name), contextlib.redirect_stdout(io.StringIO()):
                 got = {r["id"]: r["status"] for r in e16.run_case(mutate)}
                 self.assertIn(got.get(want), ("warn", "fail"), name)
+
+    def test_whether_the_system_signer_answers(self):
+        """The acceptance test: after a re-init left the policy's AI approver without approvals.agents, the signer
+        refused to start and doctor said every row was ok. D-SIGNER-ANSWERS asks the signer itself (E16 stands in for it)."""
+        from tracekit.signer import service as svc
+        d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # a socket path short enough for macOS
+        self.addCleanup(shutil.rmtree, d, True)
+        sock = os.path.join(d, "s.sock")
+        (row,) = doctor._signer_answers(sock)
+        self.assertEqual(row["status"], "fail")
+        self.assertTrue(row["detail"].startswith(f"the signer does not answer on {sock}: "), row["detail"])
+        self.assertRegex(row["fix"], r"systemctl status|launchctl print")
+        cfg = {"data_dir": os.path.join(d, "data"), "socket": sock}
+        signer = svc.open_service(cfg)
+        servers = svc.serve(cfg, signer)
+        self.addCleanup(signer.close)
+        for srv in servers:
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        (row,) = doctor._signer_answers(sock)
+        self.assertEqual((row["status"], row["detail"]), ("ok", f"the signer at {sock} answers (Tracekit {__version__})"))
+
+    def test_a_signer_that_answers_otherwise_is_said_as_it_is(self):
+        """Review: a signer that answered another protocol, or refused doctor's identity, was said not to answer, with
+        a fix to start it."""
+        from tracekit.sdk import client as sdk
+        from tracekit.signer.rpc_schema import RPCError
+        for raised, said, fix in (
+                (sdk.Incompatible("speaks 28", older=True), "an older signer still runs at /s.sock, from before the "
+                 "upgrade (speaks 28)", "restart it (Linux: sudo systemctl restart tracekit-signer"),
+                (sdk.Incompatible("speaks 30"), "the signer at /s.sock runs a newer Tracekit than this doctor (speaks 30)",
+                 f"upgrade {install.OPT} to the signer's release"),
+                (RPCError("forbidden", "uid:7 may not call status"), "the signer at /s.sock answers, but refused this "
+                 "identity's status call (forbidden: uid:7 may not call status)", "run doctor as root")):
+            with self.subTest(said), mock.patch.object(sdk.Client, "status", side_effect=raised):
+                (row,) = doctor._signer_answers("/s.sock")
+                self.assertEqual((row["status"], row["detail"]), ("fail", said))
+                self.assertTrue(row["fix"].startswith(fix), row["fix"])
 
     def test_malformed_agent_settings_are_results_not_crashes(self):
         def bad(shape):
@@ -65,6 +110,14 @@ class E16(unittest.TestCase):
                 got = {r["id"]: r["status"] for r in e16.run_case(bad(shape))}
                 self.assertIn(want, got)
 
+    def test_a_settings_file_too_deep_to_parse_is_a_result_not_a_crash(self):
+        def deep(L):
+            with open(L.settings, "w") as f:
+                f.write(TOO_DEEP_JSON)
+        with contextlib.redirect_stdout(io.StringIO()):
+            got = {r["id"]: r["status"] for r in e16.run_case(deep)}
+        self.assertIn("D-HOOKS-PRESENT", got)
+
     def test_hooks_installed_before_1_2_only_need_init_again(self):
         got = {r["id"]: r["status"] for r in e16.run_case(e16._unnamed)}
         self.assertEqual((got["D-HOOKS-EVENT"], got["D-HOOKS-VENV"]), ("warn", "ok"))
@@ -74,6 +127,70 @@ class E16(unittest.TestCase):
             L.kw["agent"] = types.SimpleNamespace(**dict(vars(e16.AGENT), pw_uid=os.getuid()))
         got = {r["id"]: r for r in e16.run_case(agent_is_me)}
         self.assertEqual(got["D-PROCESS-BOUNDARY"]["status"], "fail")
+
+    def test_the_reviewer_is_probed_as_its_own_uid(self):
+        """Where doctor can act as the reviewer (root), it tries the keys as that uid: what the modes and ACLs it reads
+        don't show (here, a probe that can read one key) fails D-REVIEWER-USER."""
+        import pwd
+        real, uid = pwd.getpwuid, e16.REVIEWER_UID
+        reviewer = types.SimpleNamespace(pw_uid=uid, pw_name="e16-reviewer", pw_gid=uid, pw_dir="/nonexistent")
+
+        def as_the_reviewer(L):
+            reads = lambda pw, targets: [t for t in targets if pw.pw_uid == uid and t[0].endswith("log.key")]
+            L.patches = [p for p in L.patches if getattr(p, "attribute", None) != "agent_access"] + [
+                mock.patch.object(doctor, "agent_access", reads),
+                mock.patch("pwd.getpwuid", lambda n: reviewer if n == uid else real(n))]
+        got = {r["id"]: r for r in e16.run_case(as_the_reviewer)}["D-REVIEWER-USER"]
+        self.assertEqual((got["status"], got["detail"]), ("fail", f"approvals.agents: uid:{uid} can read "
+                                                                    "<run>/data/keys/log.key"))
+        got = {r["id"]: r for r in e16.run_case(None)}["D-REVIEWER-USER"]   # no such user here: nothing to probe
+        self.assertEqual(got["status"], "ok")
+
+
+class BreakGlassStale(unittest.TestCase):
+    ON_CALL = {"approvers": ["uid:502"], "break_glass": ["uid:0", "group:corp/oncall"]}
+
+    def row(self, approvals, replaced=(), profile="system"):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        client_json = os.path.join(d, "client.json")
+        with open(client_json, "w") as f:
+            json.dump({"mode": "system", "replaced_approvers": list(replaced)}, f)
+        got = doctor.v2_checks({"data_dir": d, "approvals": approvals}, profile, settings="none", client_json=client_json)
+        return {r["id"]: r for r in got}.get("D-BREAK-GLASS-STALE")
+
+    def test_a_replaced_approver_that_keeps_break_glass_or_agents_is_named(self):
+        for approvals in ({**self.ON_CALL, "break_glass": ["uid:0", "uid:501"]},
+                          {**self.ON_CALL, "agents": ["uid:501"]}):
+            with self.subTest(approvals=approvals):
+                row = self.row(approvals, ["uid:501"])
+                self.assertEqual(row["status"], "warn")
+                self.assertIn("uid:501", row["detail"])
+                self.assertIn("remove it from approvals.break_glass in signer.yaml, or add it as an approver", row["fix"])
+
+    def test_the_documented_on_call_group_with_no_replaced_approver_is_ok(self):
+        self.assertEqual(self.row(self.ON_CALL)["status"], "ok")
+
+    def test_a_replaced_approver_removed_from_break_glass_or_made_an_approver_again_is_ok(self):
+        self.assertEqual(self.row(self.ON_CALL, ["uid:501"])["status"], "ok")
+        self.assertEqual(self.row({"approvers": ["uid:501"], "break_glass": ["uid:0", "uid:501"]}, ["uid:501"])["status"],
+                         "ok")
+
+    def test_dev_mode_has_no_such_row(self):
+        self.assertIsNone(self.row({"approvers": ["uid:502"], "break_glass": ["uid:501"]}, ["uid:501"], "dev"))
+
+    def test_replaced_approvers_that_arent_a_list_of_names_read_as_none(self):
+        """A number raised TypeError out of doctor, and a string was read a character at a time."""
+        for bad in (5, "uid:501", [["uid:501"]], [None, 7]):
+            with self.subTest(bad=bad):
+                d = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, d, True)
+                client_json = os.path.join(d, "client.json")
+                with open(client_json, "w") as f:
+                    json.dump({"mode": "system", "replaced_approvers": bad}, f)
+                got = doctor.v2_checks({"data_dir": d, "approvals": {**self.ON_CALL, "break_glass": ["uid:0", "uid:501"]}},
+                                       "system", settings="none", client_json=client_json)
+                self.assertEqual({r["id"]: r for r in got}["D-BREAK-GLASS-STALE"]["status"], "ok")
 
 
 class CodingAgentHooks(unittest.TestCase):
@@ -88,6 +205,26 @@ class CodingAgentHooks(unittest.TestCase):
             agent_hooks.install(harness, path=path, v2=True)
         with open(path) as f:
             return path, json.load(f)
+
+    def test_a_hook_file_line_too_deep_to_parse_is_unreadable_not_a_crash(self):
+        from tracekit import agent_hooks
+        opencode = os.path.join(self.d, "opencode", "tracekit.js")
+        gptme = os.path.join(self.d, "gptme", "config.toml")
+        bridge = agent_hooks._gptme_hook_path(gptme)
+        for path, text in ((opencode, f"const commands = {TOO_DEEP_JSON};\n"),
+                           (bridge, agent_hooks.GPTME_MARKER + f"\nCOMMAND = {TOO_DEEP_JSON}\n")):
+            os.makedirs(os.path.dirname(path))
+            with open(path, "w") as f:
+                f.write(text)
+        with self.assertRaises(ValueError):
+            doctor._hook_commands("opencode", opencode)
+        with self.assertRaises(ValueError):
+            doctor._gptme_argv(gptme)
+        self.assertEqual(doctor._gptme_load_check(gptme)[0], False)
+        for harness, path in (("opencode", opencode), ("gptme", gptme)):
+            with self.subTest(harness):
+                self.assertIn("D-VERSIONS", {r["id"] for r in doctor.v2_checks(
+                    {"data_dir": self.d}, "dev", harnesses={harness: path})})
 
     def check(self, harness, path, settings):
         with open(path, "w") as f:
@@ -255,6 +392,86 @@ class CodingAgentHooks(unittest.TestCase):
                         rid, doctor.OK if ok else bad), {harness: path}, False, self.d)
                     self.assertEqual(got["D-HOOKS-TIMEOUT"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
 
+    def test_a_codebuddy_settings_file_that_turns_every_hook_off_is_named(self):
+        """CodeBuddy Code runs no hook while `disableAllHooks` is set. Its bundle (2.183.0, dist/codebuddy.js,
+        `settingsDisableAllHooks`) reads <home>/settings.json, the project's .codebuddy/settings.json and
+        settings.local.json beside it, keeps the last one that sets the key, and returns `true === value`, so a later
+        file's false lifts an earlier true. Doctor read none of them."""
+        home, proj = os.path.join(self.d, "home"), os.path.join(self.d, "proj")
+        user, project = agent_hooks.config_path("codebuddy", home=home), agent_hooks.config_path("codebuddy", proj)
+        local = os.path.join(os.path.dirname(project), "settings.local.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codebuddy", path=user, v2=True)
+
+        def row():
+            # several checks report under D-HOOKS-EVENT, so take the strictest rather than the first
+            rank, worst = {doctor.OK: 0, doctor.INFO: 1, doctor.WARN: 2, doctor.FAIL: 3}, {}
+            with mock.patch("os.getcwd", return_value=proj):
+                doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=doctor.FAIL: worst.__setitem__(
+                    rid, max(worst.get(rid, (doctor.OK, "")), (doctor.OK if ok else bad, detail),
+                             key=lambda r: rank[r[0]])), {"codebuddy": user}, False, home)
+            return worst["D-HOOKS-EVENT"]
+
+        self.assertEqual(row()[0], doctor.OK, "nothing turns them off yet")
+        os.makedirs(os.path.dirname(project), exist_ok=True)
+        for f, value, want in ((project, True, doctor.WARN), (local, True, doctor.WARN), (local, False, doctor.OK)):
+            with open(f, "w") as out:
+                json.dump({"disableAllHooks": value}, out)
+            with self.subTest(file=os.path.basename(f), value=value):
+                status, detail = row()
+                self.assertEqual(status, want, detail)
+                if want == doctor.WARN:
+                    self.assertIn(f, detail)
+        # system mode fails rather than warns, as Claude Code's row does
+        with open(local, "w") as out:
+            json.dump({"disableAllHooks": True}, out)
+        with mock.patch("os.getcwd", return_value=proj):
+            prod = {}
+            rank = {doctor.OK: 0, doctor.INFO: 1, doctor.WARN: 2, doctor.FAIL: 3}
+            doctor._harness_hook_checks(
+                lambda rid, ok, detail, fix, bad=doctor.FAIL: prod.__setitem__(
+                    rid, max(prod.get(rid, doctor.OK), doctor.OK if ok else bad, key=lambda s: rank[s])),
+                {"codebuddy": user}, True, home)
+        self.assertEqual(prod["D-HOOKS-EVENT"], doctor.FAIL, "system mode: FAIL, not WARN")
+        # the reader returns true only for a literal true, and a later null does not lift an earlier true
+        for value, want in (("false", doctor.OK), (1, doctor.OK), ([], doctor.OK), ({}, doctor.OK),
+                            (None, doctor.WARN)):
+            with open(local, "w") as out:
+                json.dump({"disableAllHooks": value if value is not None else True}, out)
+            if value is None:   # a later null: the earlier file's true stands
+                with open(project, "w") as out:
+                    json.dump({"disableAllHooks": True}, out)
+                with open(local, "w") as out:
+                    json.dump({"disableAllHooks": None}, out)
+            with self.subTest(value=value):
+                self.assertEqual(row()[0], want, f"disableAllHooks: {value!r}")
+
+    def test_a_codebuddy_config_dir_naming_another_folder_is_named(self):
+        """Init writes the file `$CODEBUDDY_CONFIG_DIR` names when it runs; a CodeBuddy Code that starts with another
+        value reads another file, so Tracekit's hooks don't run and nothing says so. Doctor reads the variable in its
+        own environment, so it compares the folder holding the hooks with the one the variable names."""
+        home, proj = os.path.join(self.d, "home"), os.path.join(self.d, "proj")
+        user = agent_hooks.config_path("codebuddy", home=home)
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codebuddy", path=user, v2=True)
+
+        def said():
+            rows = []
+            with mock.patch("os.getcwd", return_value=proj):
+                doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append(detail),
+                                            {"codebuddy": user}, False, home)
+            return [d for d in rows if "CODEBUDDY_CONFIG_DIR" in d]
+
+        self.assertEqual(said(), [], "unset: nothing to compare")
+        elsewhere = os.path.join(self.d, "elsewhere")
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": elsewhere}):
+            got = said()
+        self.assertEqual(len(got), 1, got)
+        self.assertIn(elsewhere, got[0])
+        self.assertIn(user, got[0])
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": os.path.dirname(user)}):
+            self.assertEqual(said(), [], "the folder holding the hooks is not a mismatch")
+
     def test_a_codebuddy_pre_tool_hook_that_runs_after_tracekits_is_named(self):
         """#761's review: CodeBuddy Code runs the user's settings' PreToolUse hooks, then the project's
         .codebuddy/settings.json and settings.local.json, each in its order, and the last permissionDecision stands, so
@@ -295,6 +512,119 @@ class CodingAgentHooks(unittest.TestCase):
         with open(user, "w") as f:
             json.dump(settings, f)
         self.assertIn(user, later()[2])
+
+    # each form install_hooks writes into Claude Code's settings: dev v2, dev v1, system mode (under /bin/sh)
+    CLAUDE_FORMS = ((install.V2_HOOK, None), ("tracekit.hook", None), (install.V2_HOOK, install.OPT_PYTHON))
+
+    def oi_rows(self, path, home):
+        """The failing D-HOOKS-EVENT rows of the Open Interpreter hooks doctor reads at `path`."""
+        got = []
+        doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: got.append((rid, ok, detail, fix)),
+                                    {"interpreter": path}, False, home)
+        return [r for r in got if r[0] == "D-HOOKS-EVENT" and not r[1]]
+
+    def claude_copy(self, module, python, name="claude"):
+        """The hooks Tracekit writes into a Claude Code settings file, as Open Interpreter's /import would copy them."""
+        claude = os.path.join(self.d, name, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(claude, module=module, python=python)
+        with open(claude) as c:
+            return json.load(c)["hooks"]
+
+    def test_a_claude_code_hook_copied_into_open_interpreters_hooks_is_named(self):
+        """#940: Open Interpreter's /import copies Claude Code's hooks into its hooks.json, so Tracekit's Claude Code
+        hook there decides each call a second time, recorded as claude-code: doctor names the file and the hook."""
+        path = os.path.join(self.d, "oi", "hooks.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("interpreter", path=path, v2=True)
+        self.assertEqual(self.oi_rows(path, self.d), [])
+        with open(path) as f:
+            ours = json.load(f)
+        for module, python in self.CLAUDE_FORMS:
+            copied = self.claude_copy(module, python, f"claude-{module}-{bool(python)}")
+            for events in (set(copied), {"Stop"}):   # every copied event, or one that decides no call
+                config = copy.deepcopy(ours)
+                for ev in events:
+                    config["hooks"].setdefault(ev, []).extend(copied[ev])
+                with open(path, "w") as f:
+                    json.dump(config, f)
+                with self.subTest(module=module, python=python, events=sorted(events)):
+                    ((rid, ok, detail, fix),) = self.oi_rows(path, self.d)
+                    self.assertEqual((rid, ok), ("D-HOOKS-EVENT", False))
+                    self.assertIn(path, detail)
+                    self.assertIn("Claude Code hook", detail)
+                    self.assertIn(", ".join(sorted(events)), detail)
+                    self.assertTrue(detail.endswith(": Open Interpreter runs it as well as its own, so each call is "
+                                                    "decided a second time, recorded as claude-code"), detail)
+                    self.assertIn(f"remove Tracekit's Claude Code hook from {path}", fix)
+
+    def test_a_claude_code_hook_in_the_file_open_interpreter_imports_into_is_named(self):
+        """#940: Tracekit's Open Interpreter hooks are in the project's file, /import's copy of its Claude Code hook in
+        the user's: doctor names the user's file, $INTERPRETER_HOME's when that is set, and no other."""
+        project = os.path.join(self.d, "project", ".openinterpreter", "hooks.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("interpreter", path=project, v2=True)
+        with open(project) as f:
+            ours = json.load(f)
+        oi_home = os.path.join(self.d, "oi-home")
+        os.makedirs(oi_home)
+        # where the user's file is: under ~ (home: another user's), or in $INTERPRETER_HOME
+        places = (("~", self.d, {}, os.path.join(self.d, ".openinterpreter", "hooks.json")),
+                  ("$INTERPRETER_HOME", None, {"INTERPRETER_HOME": oi_home},
+                   os.path.join(os.path.realpath(oi_home), "hooks.json")))
+        for module, python in self.CLAUDE_FORMS:
+            copied = self.claude_copy(module, python, f"claude-{module}-{bool(python)}")
+            for where, home, env, user in places:
+                os.makedirs(os.path.dirname(user), exist_ok=True)
+                with self.subTest(module=module, python=python, home=where), mock.patch.dict(
+                        os.environ, {"HOME": self.d, "USERPROFILE": self.d, **env}):
+                    with open(user, "w") as f:
+                        json.dump({"hooks": copied}, f)
+                    ((rid, ok, detail, fix),) = self.oi_rows(project, home)
+                    self.assertIn(user, detail)
+                    self.assertNotIn(project, detail)
+                    self.assertIn(f"remove Tracekit's Claude Code hook from {user}", fix)
+                    self.assertNotIn(project, fix)
+                    self.assertTrue(detail.endswith("recorded as claude-code"), detail)
+                    with open(user, "w") as f:
+                        json.dump({"hooks": {}}, f)   # no copy in either file
+                    self.assertEqual(self.oi_rows(project, home), [])
+                    with open(user, "w") as f:
+                        f.write("{ not json")   # a user file doctor can't read is not a copy, and not an error
+                    self.assertEqual(self.oi_rows(project, home), [])
+                    os.remove(user)
+            user = places[0][3]   # both files hold a copy: both are named
+            config = copy.deepcopy(ours)
+            for ev, groups in copied.items():
+                config["hooks"].setdefault(ev, []).extend(groups)
+            with open(project, "w") as f:
+                json.dump(config, f)
+            with open(user, "w") as f:
+                json.dump({"hooks": copied}, f)
+            with self.subTest(module=module, python=python, home="both files"):
+                ((rid, ok, detail, fix),) = self.oi_rows(project, self.d)
+                self.assertIn(project, detail)
+                self.assertIn(user, detail)
+                self.assertEqual(detail.count("recorded as claude-code"), 1)
+            os.remove(user)
+            with open(project, "w") as f:
+                json.dump(ours, f)
+
+    def test_a_claude_code_hook_alone_in_open_interpreters_hooks_is_no_row(self):
+        """#940: with no Tracekit Open Interpreter hook at all, doctor reads no Open Interpreter file: there is no row,
+        however the user's hooks.json came by a Claude Code hook."""
+        user = os.path.join(self.d, ".openinterpreter", "hooks.json")
+        os.makedirs(os.path.dirname(user))
+        work = os.path.join(self.d, "work")
+        os.makedirs(work)
+        with open(user, "w") as f:
+            json.dump({"hooks": self.claude_copy(install.V2_HOOK, None)}, f)
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(work)
+        env = {k: v for k, v in os.environ.items() if k != "INTERPRETER_HOME"}
+        with mock.patch.dict(os.environ, {**env, "HOME": self.d, "USERPROFILE": self.d}, clear=True):
+            self.assertNotIn("interpreter", doctor._dev_harnesses())
 
     def test_jcode_hooks_are_read_from_its_toml_and_a_gate_after_tracekits_is_named(self):
         """#720: jcode's hooks are a [hooks] table in config.toml, one gate timeout for every pre_tool command; its
@@ -484,6 +814,21 @@ class ClaudeHooksDecideEveryCall(unittest.TestCase):
                    if r["id"] == "D-HOOKS-EVENT")
         self.assertEqual(got["status"], "warn")
 
+    def test_dev_mode_names_a_settings_env_that_moves_the_hook(self):
+        """The 1.8 parsing review: Claude Code gives the hooks its settings' env, and in dev mode doctor read none of
+        it, so a settings file that set HOME, XDG_DATA_HOME, TRACEKIT_PYTHON or TRACEKIT_SIGNER (sending the hook's
+        calls to another signer or Python) passed."""
+        def env_row(local):
+            self.row(local=local)
+            return next(r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=self.settings,
+                                                    sandbox_settings=[self.settings, self.local]) if r["id"] == "D-HOOK-ENV")
+        self.assertEqual(env_row(None)["status"], "ok")
+        self.assertEqual(env_row({"env": {"NODE_OPTIONS": "x"}})["status"], "ok")
+        for name in ("HOME", "XDG_DATA_HOME", "TRACEKIT_PYTHON", "TRACEKIT_SIGNER"):
+            got = env_row({"env": {name: "/tmp/elsewhere"}})
+            self.assertEqual(got["status"], "warn", name)
+            self.assertIn(f"{self.local} sets {name}", got["detail"])
+
     def test_dev_mode_reads_disable_all_hooks_in_the_file_init_recorded(self):
         """The dev layers left out the hooks' own file (init's record of another CLAUDE_CONFIG_DIR), so a
         disableAllHooks there passed."""
@@ -522,9 +867,12 @@ class ManagedHooks(unittest.TestCase):
             install.install_managed(None, False, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
                                     signer="/run/s.sock")
 
-    def rows(self, trusted=None, readable=True, user=None, managed=None, plugin=None):
-        """Doctor's rows; `trusted`: what trusted_file says of the managed file, `readable`: whether the agent's user
-        can read it (None: not probed), `user`/`managed`: settings to add, `plugin`: install.plugin_enabled's."""
+    def rows(self, trusted=None, readable=True, user=None, managed=None, plugin=None, untrusted=None,
+             unreadable_dropins=False, settings_file=None, retain=False):
+        """Doctor's rows; `trusted`: what trusted_file says of every path, `untrusted`: a path -> the problem it reports
+        for that one instead, `readable`: whether the agent's user can read them (None: not probed),
+        `unreadable_dropins`: only the managed file is readable, `user`/`managed`: settings to add, `plugin`:
+        install.plugin_enabled's, `settings_file`: the file doctor is told about — the agent's own for a dev install."""
         for path, extra in ((self.user, user or {}), (self.managed, managed or {})):
             s = {}
             if os.path.exists(path):
@@ -532,12 +880,21 @@ class ManagedHooks(unittest.TestCase):
                     s = json.load(f)
             with open(path, "w") as f:
                 json.dump({**s, **extra}, f)
-        with mock.patch.object(doctor, "trusted_file", return_value=trusted), \
-                mock.patch.object(doctor, "agent_access",
-                                  return_value={True: [[self.managed, "read"]], False: []}.get(readable)):
+
+        def report(path):
+            return (untrusted or {}).get(str(path), trusted)
+
+        def access(pw, targets):   # the (path, "read") targets the agent's user can read
+            if readable is None:
+                return None
+            return [t for t in targets if t[0] == self.managed] if unreadable_dropins else (targets if readable else [])
+        with mock.patch.object(doctor, "trusted_file", report), \
+                mock.patch.object(doctor, "agent_access", access):
             return {r["id"]: r for r in doctor.v2_checks(
-                {"data_dir": self.d}, "production", agent=self.agent, settings=self.managed, opt=install.OPT,
-                signer="/run/s.sock", sandbox_settings=[self.user, self.managed, self.managed], plugin=plugin)}
+                {"data_dir": self.d, "content": {"retain": retain}}, "production", agent=self.agent,
+                settings=settings_file or self.managed,
+                opt=install.OPT, signer="/run/s.sock", sandbox_settings=[self.user, self.managed, self.managed],
+                plugin=plugin)}
 
     def test_managed_hooks_are_inits_and_only_root_can_change_them(self):
         got = self.rows()
@@ -573,6 +930,90 @@ class ManagedHooks(unittest.TestCase):
         got = self.rows(managed={"disableAllHooks": True})["D-HOOKS-EVENT"]
         self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {self.managed}'))
 
+    def dropin(self, name="50-team.json", **settings):
+        """A `managed-settings.d/` drop-in beside the managed file, as an admin of the machine writes one."""
+        folder = os.path.join(self.d, "managed-settings.d")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "w") as f:
+            json.dump(settings, f)
+        return path
+
+    def test_a_dropin_that_turns_every_hook_off_fails_and_names_it(self):
+        """Claude Code merges the `managed-settings.d/` drop-ins with the managed file, so a `disableAllHooks` an admin
+        puts in a drop-in turns the managed hooks off. Doctor read `managed-settings.json` alone and passed."""
+        self.assertEqual(self.rows()["D-HOOKS-EVENT"]["status"], "ok")
+        path = self.dropin(disableAllHooks=True)
+        got = self.rows()["D-HOOKS-EVENT"]
+        self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {path}'))
+
+    def test_a_dropin_with_other_keys_leaves_the_hooks_on(self):
+        """Setting other keys is what the folder is for: doctor passes and says it read the drop-in."""
+        self.dropin(model="claude-sonnet-5", permissions={"deny": ["Bash(rm -rf *)"]})
+        got = self.rows()
+        self.assertEqual(got["D-HOOKS-EVENT"]["status"], "ok", got["D-HOOKS-EVENT"])
+        self.assertEqual(got["D-HOOKS-MANAGED"]["status"], "ok", got["D-HOOKS-MANAGED"])
+        self.assertIn("drop-in(s) in", got["D-HOOKS-MANAGED"]["detail"])
+
+    def test_the_later_dropin_wins_because_claude_code_replaces_a_single_value(self):
+        """Claude Code's docs: "the later file's value replaces the earlier one". So `10-a.json` true then `20-b.json`
+        false is on, and the other way round is off and names `20-b.json` — doctor failed on either order, and on a
+        hidden file too, which Claude Code ignores."""
+        early, late = self.dropin("10-a.json", disableAllHooks=True), self.dropin("20-b.json", disableAllHooks=False)
+        self.assertEqual(self.rows()["D-HOOKS-EVENT"]["status"], "ok")   # false in the later file wins
+        with open(late, "w") as f:
+            json.dump({"disableAllHooks": True}, f)
+        with open(early, "w") as f:
+            json.dump({"disableAllHooks": False}, f)
+        got = self.rows()["D-HOOKS-EVENT"]
+        self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {late}'))
+
+    def test_hidden_and_non_json_files_are_not_sources(self):
+        """Its docs: Claude Code "ignores hidden files and files that don't end in `.json`", so a `.old.json` or a
+        `notes.txt` that sets disableAllHooks turns nothing off. Doctor read them and failed."""
+        folder = os.path.join(self.d, "managed-settings.d")
+        os.makedirs(folder, exist_ok=True)
+        for name in (".old.json", "notes.txt"):
+            with open(os.path.join(folder, name), "w") as f:
+                json.dump({"disableAllHooks": True}, f)
+        self.assertEqual(self.rows()["D-HOOKS-EVENT"]["status"], "ok")
+
+    def test_an_empty_dropin_folder_the_agent_can_write_fails(self):
+        """An empty folder is where the agent puts its own `99-off.json`: an admin's folder with no files still has to be
+        root-owned, and doctor returned before checking it."""
+        folder = os.path.join(self.d, "managed-settings.d")
+        os.makedirs(folder)
+        got = self.rows(untrusted={folder: f"{folder} is group- or world-writable"})["D-HOOKS-MANAGED"]
+        self.assertEqual(got["status"], "fail")
+        self.assertIn(f"{folder} is group- or world-writable", got["detail"])
+
+    def test_a_dropin_or_folder_not_owned_by_root_fails(self):
+        """The folder and each drop-in are checked the way the managed file is, so a drop-in the agent's user owns is a
+        fault however the folder looks."""
+        path = self.dropin(model="claude-sonnet-5")
+        got = self.rows(untrusted={path: f"{path} is not owned by root"})["D-HOOKS-MANAGED"]
+        self.assertEqual(got["status"], "fail")
+        self.assertIn(f"{path} is not owned by root", got["detail"])
+
+    def test_a_source_the_agent_cannot_read_fails(self):
+        """Its docs: when the OS denies the read, "every session starts without that source's policies" — and the
+        file-based source is the managed file and the drop-ins together, so a root-owned 0700 folder is a fault."""
+        self.dropin(model="claude-sonnet-5")
+        got = self.rows(unreadable_dropins=True)["D-HOOKS-MANAGED"]
+        self.assertEqual(got["status"], "fail")
+        self.assertIn("isn't readable by the agent's user", got["detail"])
+
+    def test_without_managed_a_dropin_still_counts(self):
+        """`init --dev --v2` leaves the hooks in the agent's own file, and Claude Code still merges the machine's
+        drop-ins: a `disableAllHooks` there turns them off in dev mode too. Doctor passed, because its drop-ins were an
+        empty list unless the hooks were in the managed file."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(self.user, python=install.OPT_PYTHON, module=install.V2_HOOK, signer="/run/s.sock")
+        self.assertEqual(self.rows(settings_file=self.user)["D-HOOKS-EVENT"]["status"], "ok")
+        path = self.dropin(disableAllHooks=True)
+        got = self.rows(settings_file=self.user)["D-HOOKS-EVENT"]
+        self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {path}'))
+
     def test_inits_hooks_also_in_the_agents_own_settings_are_decided_twice(self):
         """With the managed file in use, init's v2 hooks left in the agent's own settings ran too, deciding every call
         twice, and doctor said nothing."""
@@ -601,6 +1042,74 @@ class ManagedHooks(unittest.TestCase):
             with self.subTest(allowManagedHooksOnly=only):
                 got = self.rows(managed={"allowManagedHooksOnly": only})["D-HOOKS-PRESENT"]
                 self.assertEqual((got["status"], got["detail"]), want)
+
+    def test_a_dropin_counts_as_a_settings_layer_for_the_thinking_summaries(self):
+        """A drop-in is one of Claude Code's settings layers, so a value only it sets counts. With the content vault on,
+        `showThinkingSummaries` in a drop-in is the difference between a pass and a warning: take the drop-ins out of
+        `layers` and this test fails, which is what the review asked for. (Every other verdict is unaffected by the
+        list, because `D-HOOKS-EVENT` appends the drop-ins to its own order.)"""
+        self.dropin(**{install.THINKING: True})
+        got = self.rows(retain=True)["D-THINKING-SUMMARIES"]
+        self.assertEqual(got["status"], "ok", got)
+        self.assertIn("managed-settings.d", got["detail"], "the detail names the drop-in the value came from")
+
+    def test_a_folder_the_agent_can_read_but_not_enter_is_unreadable(self):
+        """A root-owned folder at 0744 is readable by others and cannot be entered, so Claude Code can't open the
+        drop-ins in it and starts without that source's policies. `_access` asked for R_OK alone and called it fine.
+        The modes are asserted through the probe rather than by chmod, which this host's file system doesn't honour."""
+        folder = os.path.join(self.d, "managed-settings.d")
+        os.makedirs(folder, exist_ok=True)
+        real = os.access
+
+        def access(p, mode, **kw):   # what 0744 gives "other": readable, not enterable
+            if str(p) == folder:
+                return bool(mode & os.R_OK) and not bool(mode & os.X_OK)
+            return real(p, mode, **kw)
+        with mock.patch.object(doctor.os, "access", access):
+            self.assertEqual(doctor._access([(folder, "open")]), [], "a folder that can't be entered is unreachable")
+            self.assertEqual(doctor._access([(folder, "read")]), [[folder, "read"]],
+                             "which a read probe alone cannot tell")
+
+    def test_the_folder_is_probed_for_entering_and_each_dropin_for_reading(self):
+        """The folder has to be enterable and a drop-in only readable: asking for the wrong mode on either is what let
+        a 0744 folder pass. This asserts the modes the check asks for, so a change back to "read" fails here."""
+        path = self.dropin(model="claude-sonnet-5")
+        folder = os.path.dirname(path)
+        seen = []
+
+        def access(pw, targets):
+            seen.extend(targets)
+            return list(targets)
+        with mock.patch.object(doctor, "trusted_file", return_value=None), \
+                mock.patch.object(doctor, "agent_access", access):
+            doctor.v2_checks({"data_dir": self.d}, "production", agent=self.agent, settings=self.managed,
+                             opt=install.OPT, signer="/run/s.sock", sandbox_settings=[self.user, self.managed])
+        self.assertIn((folder, "open"), seen, f"the folder is asked for as enterable: {seen}")
+        self.assertIn((path, "read"), seen)
+        self.assertIn((self.managed, "read"), seen)
+
+    def test_a_dropin_that_sets_allow_managed_hooks_only_is_read_in_merge_order(self):
+        """A review item I fixed without a test: `allowManagedHooksOnly` was read from `managed-settings.json` alone, so
+        a drop-in that set it differently was not seen. It is a single value, so the later file wins — a drop-in's true
+        stops the agent's own hooks running, and a later false lifts the managed file's true."""
+        self.agent = types.SimpleNamespace(**dict(vars(self.agent), pw_dir=self.d))
+        own = os.path.join(self.d, ".claude", "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(own, python=install.OPT_PYTHON, module=install.V2_HOOK, signer="/run/s.sock")
+        both, unused = (("warn", f"v2 hooks in {self.managed}, and in {own} too: Claude Code runs both, so every call "
+                                 "is decided twice"),
+                        ("ok", f"v2 hooks in {self.managed}; those in {own} don't run (allowManagedHooksOnly)"))
+        got = self.rows(managed={"allowManagedHooksOnly": False})["D-HOOKS-PRESENT"]
+        self.assertEqual((got["status"], got["detail"]), both, "the control: off in the managed file, nothing else set")
+        later = self.dropin("20-security.json", allowManagedHooksOnly=True)   # after managed-settings.json
+        got = self.rows(managed={"allowManagedHooksOnly": False})["D-HOOKS-PRESENT"]
+        self.assertEqual((got["status"], got["detail"]), unused, "a drop-in's true is read")
+        self.assertTrue(os.path.exists(later))
+        os.unlink(later)
+        early = self.dropin("10-telemetry.json", allowManagedHooksOnly=False)   # the managed file's true, then a false
+        got = self.rows(managed={"allowManagedHooksOnly": True})["D-HOOKS-PRESENT"]
+        self.assertEqual((got["status"], got["detail"]), both, "a later false lifts the managed file's true")
+        self.assertTrue(os.path.exists(early))
 
     def test_the_plugin_beside_managed_hooks_counts_only_where_claude_code_runs_it(self):
         """D-HOOKS-PRESENT failed "every call is decided twice" on an init --managed host when only the agent's own
@@ -693,6 +1202,7 @@ class OpenCodePlugin(unittest.TestCase):
                                                                  settings=os.path.join(d, "none.json"),
                                                                  harnesses={"opencode": path})}["D-OPENCODE-PLUGIN"]
             self.assertEqual(row("opencode v2.3.0")["status"], "ok")
+            self.assertEqual(row("1.19.5")["status"], "ok")   # #989: its 2.x prompt and event hooks leave 1.x's as it was
             with open(path) as f:
                 plugin = f.read()
             with open(path, "w") as f:   # the plugin init wrote before: no default export
@@ -1230,6 +1740,44 @@ class FirstDay(unittest.TestCase):
     def rows(self, **kw):
         return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev", **kw)}
 
+    def test_policy_engine_warns_when_using_regex_fallback(self):
+        from tracekit.signer import service
+
+        cases = (
+            ("re2@1.0", True, "ok", "", ""),
+            (
+                "regex@2.0",
+                True,
+                "warn",
+                f"{doctor.sys.executable} -m pip install google-re2, then restart the signer "
+                "(tracekit down in dev)",
+                " (regex fallback: large inputs can exhaust the 1 s budget "
+                "and the call will be denied)",
+            ),
+            (
+                "regex@2.0",
+                False,
+                "info",
+                "",
+                " (no google-re2 wheel is expected for this Python or platform)",
+            ),
+        )
+
+        for engine_name, wheel_expected, expected_status, expected_fix, detail_suffix in cases:
+            with self.subTest(engine=engine_name, wheel_expected=wheel_expected), \
+                    mock.patch.object(
+                        service, "load_policy",
+                        return_value=types.SimpleNamespace(engine=engine_name, policy={}, rules=[])
+                    ), \
+                    mock.patch.object(
+                        doctor, "_google_re2_wheel_expected", return_value=wheel_expected
+                    ):
+                row = self.rows()["D-POLICY-ENGINE"]
+                self.assertEqual(row["status"], expected_status)
+                self.assertIn(engine_name, row["detail"])
+                self.assertTrue(row["detail"].endswith(detail_suffix))
+                self.assertEqual(row["fix"], expected_fix)
+
     def test_no_claude_code_and_no_witness_are_info_in_dev(self):
         nowhere = os.path.join(self.d, "no-claude", "settings.json")
         with mock.patch.object(doctor.shutil, "which", return_value=None), \
@@ -1574,13 +2122,17 @@ class Kms(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "the E16 layout is a POSIX system mode install")
     def test_signer_yaml_with_kms_and_postgres_runs_both(self):
-        def mutate(L):
-            L.signer_yaml(log_key={"aws_kms": {"key_id": "alias/log", "region": "eu-west-1"}},
-                          storage={"postgres": {"dsn_file": "pg.dsn"}})
-        with mock.patch.object(doctor, "pg_checks", return_value=[doctor.result("D-PG-SIGNER-ROLE", "ok", "")]) as pg:
-            got = {r["id"] for r in e16.run_case(mutate)}
-        self.assertTrue({"D-KMS-LOG-KEY", "D-PG-SIGNER-ROLE"} <= got)
-        self.assertTrue(pg.call_args.args[0]["dsn_file"].endswith("pg.dsn"))
+        for retain in (True, False):   # the vault's grants are checked only with the vault on
+            with self.subTest(retain=retain):
+                def mutate(L):
+                    L.signer_yaml(log_key={"aws_kms": {"key_id": "alias/log", "region": "eu-west-1"}},
+                                  storage={"postgres": {"dsn_file": "pg.dsn"}}, content={"retain": retain})
+                with mock.patch.object(doctor, "pg_checks",
+                                       return_value=[doctor.result("D-PG-SIGNER-ROLE", "ok", "")]) as pg:
+                    got = {r["id"] for r in e16.run_case(mutate)}
+                self.assertTrue({"D-KMS-LOG-KEY", "D-PG-SIGNER-ROLE"} <= got)
+                self.assertTrue(pg.call_args.args[0]["dsn_file"].endswith("pg.dsn"))
+                self.assertIs(pg.call_args.args[1], retain)
 
 
 class Probe(unittest.TestCase):
@@ -1637,16 +2189,70 @@ class Report(unittest.TestCase):
         with mock.patch.object(doctor, "main", return_value=2) as main:
             self.assertEqual(cli.main(["doctor", "--json", "--config", "/etc/x.yaml"]), 2)
             cli.main(["doctor", "--k8s", "--manifests", "/m", "--issuer-key", "alias/ca"])
-        self.assertEqual(main.call_args_list, [mock.call("/etc/x.yaml", True, False, None, None),
-                                               mock.call(None, False, True, "/m", "alias/ca")])
+            cli.main(["doctor", "--reviewer", "/r/reviewer.yaml"])
+        self.assertEqual(main.call_args_list, [mock.call("/etc/x.yaml", True, False, None, None, None),
+                                               mock.call(None, False, True, "/m", "alias/ca", None),
+                                               mock.call(None, False, False, None, None, "/r/reviewer.yaml")])
 
 
 class Detect(unittest.TestCase):
     def collect(self, sc, config=None):
         with mock.patch.object(doctor.client, "system_config", return_value=sc), \
                 mock.patch.object(install, "v1_results", return_value=[doctor.result("D-V1-X", "ok", "v1")]), \
+                mock.patch.object(doctor, "_signer_answers", return_value=[]), \
                 mock.patch.object(doctor, "v2_checks", return_value=[doctor.result("D-V2", "ok", "v2")]) as v2:
             return [r["id"] for r in doctor.collect(config)], v2
+
+    def test_collect_adds_the_signer_answers_row_in_system_mode(self):
+        """The wiring: collect() runs _signer_answers with the socket client.json names."""
+        row = doctor.result("D-SIGNER-ANSWERS", "fail", "no answer", "look")
+        with mock.patch.object(doctor.client, "system_config", return_value={
+                "signer": "/run/tracekit-signer/signer.sock", "hooks": {"user": "nobody-e16"}}), \
+                mock.patch.object(install, "v1_results", return_value=[]), \
+                mock.patch.object(doctor, "v2_checks", return_value=[]), \
+                mock.patch.object(doctor, "_signer_answers", return_value=[row]) as asked:
+            self.assertEqual([r["id"] for r in doctor.collect()], ["D-SIGNER-ANSWERS"])
+        asked.assert_called_once_with("/run/tracekit-signer/signer.sock")
+
+    def test_the_signer_check_closes_its_client_reads_a_refusal_as_one_and_gives_up_on_a_stall(self):
+        from tracekit.signer.rpc_schema import RPCError
+        with mock.patch("tracekit.sdk.client.Client") as c:
+            doctor._signer_answers("/s")
+        c.return_value.close.assert_called_once_with()
+        with mock.patch("tracekit.sdk.client.Client") as c:
+            c.return_value.status.side_effect = RPCError("forbidden", "not yours")
+            (row,) = doctor._signer_answers("/s")
+        self.assertIn("refused this identity's status call", row["detail"])
+        self.assertNotIn("does not answer", row["detail"])
+        with mock.patch.object(doctor.sys, "platform", "darwin"), mock.patch("tracekit.sdk.client.Client") as c:
+            c.return_value.status.side_effect = OSError("gone")
+            (row,) = doctor._signer_answers("/s")
+        self.assertIn("sudo launchctl print", row["fix"])
+        self.assertIn("sudo tail", row["fix"])
+        d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "s.sock")
+        import socket as socketlib
+        srv = socketlib.socket(socketlib.AF_UNIX)
+        srv.bind(path)
+        srv.listen(4)   # accepts into its backlog and never answers
+        self.addCleanup(srv.close)
+        (row,) = doctor._signer_answers(path, wait=0.5)
+        self.assertEqual(row["status"], "fail")
+        self.assertIn("did not answer within 0.5 s", row["detail"])
+
+    def test_a_signer_that_does_not_answer_fails_with_where_to_look(self):
+        """System mode had no check that the signer runs: a crashed one (the re-init crash) left doctor green."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        (row,) = doctor._signer_answers(os.path.join(d, "signer.sock"))
+        self.assertEqual((row["id"], row["status"]), ("D-SIGNER-ANSWERS", "fail"))
+        self.assertIn("does not answer", row["detail"])
+        self.assertRegex(row["fix"], r"systemctl status|launchctl print")
+        self.assertEqual(doctor._signer_answers(None), [])
+        with mock.patch("tracekit.sdk.client.Client") as c:
+            self.assertEqual(doctor._signer_answers("/s")[0]["status"], "ok")
+        c.return_value.status.assert_called_once_with({})
 
     def test_v1_system_mode(self):
         self.assertEqual(self.collect({"socket": "/var/lib/tracekit/tracekitd.sock"})[0], ["D-V1-X"])
@@ -1844,6 +2450,217 @@ class GeminiSandbox(unittest.TestCase):
         self.assertEqual(got["status"], "ok")
 
 
+class CodexSandbox(unittest.TestCase):
+    """#949: D-CODEX-SANDBOX. Codex's hook sends a shell call's command alone, so whether a person answers Codex's
+    requests to run outside its sandbox, and whether every call runs a hook at all, rests on settings nothing checked."""
+
+    def check(self, toml=None):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        if toml is not None:
+            with open(os.path.join(d, "config.toml"), "w") as f:
+                f.write(toml)
+        rows = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev",
+                                                     harnesses={"codex": os.path.join(d, "hooks.json")})}
+        return rows["D-CODEX-SANDBOX"]
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_exec_permission_approvals_on_warns_and_names_the_key(self):
+        got = self.check("[features]\nexec_permission_approvals = true\n")
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("features.exec_permission_approvals is true", got["detail"])
+        self.assertIn("turn features.exec_permission_approvals off", got["fix"])
+        self.assertEqual(self.check("[features]\nexec_permission_approvals = false\n")["status"], "ok")
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_config_too_deep_to_parse_is_unreadable_not_a_crash(self):
+        got = self.check("a = " + TOO_DEEP_JSON)
+        self.assertEqual(got["status"], "info")
+        self.assertIn("can't check Codex's approval settings", got["detail"])
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_model_reviewer_warns_and_a_person_is_ok(self):
+        for reviewer in ("auto_review", "guardian_subagent"):
+            got = self.check(f'approval_policy = "on-request"\napprovals_reviewer = "{reviewer}"\n')
+            self.assertEqual(got["status"], "warn", reviewer)
+            self.assertIn("a model, not a person", got["detail"])
+            self.assertIn('set approvals_reviewer = "user"', got["fix"])
+        got = self.check('approval_policy = "on-request"\napprovals_reviewer = "user"\n')
+        self.assertEqual((got["status"], got["fix"]), ("ok", ""))
+        self.assertIn("asks a person", got["detail"])
+        self.assertEqual(self.check("")["status"], "ok")   # Codex's defaults
+        self.assertEqual(self.check()["status"], "ok")   # no config.toml
+        self.assertIn('approval_policy = "never"', self.check('approval_policy = "never"\n')["detail"])
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_every_policy_that_asks_warns_with_a_model_reviewer_and_never_does_not(self):
+        for policy in ("on-failure", "untrusted"):   # an alias of on-request, and approval for every unruled command
+            got = self.check(f'approval_policy = "{policy}"\napprovals_reviewer = "auto_review"\n')
+            self.assertEqual(got["status"], "warn", policy)
+            self.assertIn(f'with approval_policy "{policy}"', got["detail"])
+            self.assertEqual(self.check(f'approval_policy = "{policy}"\napprovals_reviewer = "user"\n')["status"], "ok")
+        got = self.check('approval_policy = "never"\napprovals_reviewer = "auto_review"\n')
+        self.assertEqual((got["status"], got["fix"]), ("ok", ""))   # Codex asks nobody, so no model answers
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_the_selected_profile_wins_each_key(self):
+        got = self.check('profile = "fast"\n[profiles.fast]\napprovals_reviewer = "auto_review"\n'
+                         "[profiles.fast.features]\nexec_permission_approvals = true\n")
+        self.assertEqual(got["status"], "warn")
+        self.assertIn('[profiles.fast] approvals_reviewer = "auto_review"', got["detail"])
+        self.assertIn("[profiles.fast] features.exec_permission_approvals", got["detail"])
+        got = self.check('profile = "safe"\napprovals_reviewer = "auto_review"\n'
+                         '[profiles.safe]\napprovals_reviewer = "user"\n')
+        self.assertEqual(got["status"], "ok")
+        unselected = self.check('[profiles.fast]\napprovals_reviewer = "auto_review"\n')
+        self.assertEqual(unselected["status"], "ok")
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_value_it_doesnt_know_gives_no_warn(self):
+        got = self.check("[approval_policy.granular]\nsandbox_approval = true\n")
+        self.assertEqual(got["status"], "ok")
+        self.assertIn("doesn't know", got["detail"])
+
+    def test_without_tomllib_or_with_bad_toml_it_says_it_couldnt_check(self):
+        with no_tomllib():
+            got = self.check('approvals_reviewer = "auto_review"\n')
+        self.assertEqual(got["status"], "info")
+        self.assertIn("Python 3.11 or newer reads Codex's config.toml", got["detail"])
+        if sys.version_info >= (3, 11):
+            self.assertEqual(self.check("not = [toml")["status"], "info")
+
+
+class FolderTrust(unittest.TestCase):
+    """#973: Gemini CLI and Qwen Code (a fork) load no project settings when folder trust is on and the folder isn't
+    trusted (trustedFolders.json): D-GEMINI-SANDBOX read a project's tools.sandbox that Gemini ignores, and nothing
+    said that a Qwen Code project's hooks, or every hook under disableAllHooks, don't run."""
+    def setUp(self):
+        self.d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.home, self.repo = os.path.join(self.d, "home"), os.path.join(self.d, "repo")
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,
+                                           "GEMINI_CLI_SYSTEM_SETTINGS_PATH": os.path.join(self.d, "gs.json"),
+                                           "QWEN_CODE_SYSTEM_SETTINGS_PATH": os.path.join(self.d, "qs.json")})
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("QWEN_HOME", "GEMINI_CLI_TRUSTED_FOLDERS_PATH", "QWEN_CODE_TRUSTED_FOLDERS_PATH"):
+            os.environ.pop(k, None)
+
+    def write(self, path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(data if isinstance(data, str) else json.dumps(data))
+        return path
+
+    def sandbox(self, trust=None, user=None):
+        """D-GEMINI-SANDBOX with Tracekit's hooks in the user's settings and tools.sandbox in the project's."""
+        if trust is not None:
+            self.write(os.path.join(self.home, ".gemini", "trustedFolders.json"), trust)
+        settings = [self.write(os.path.join(self.home, ".gemini", "settings.json"), {**GeminiSandbox.HOOKS, **(user or {})}),
+                    self.write(os.path.join(self.repo, ".gemini", "settings.json"), {"tools": {"sandbox": "docker"}})]
+        return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev", gemini_settings=settings,
+                                                     gemini_project=settings[1])}.get("D-GEMINI-SANDBOX")
+
+    def test_an_untrusted_projects_sandbox_is_left_out(self):
+        project = os.path.join(self.repo, ".gemini", "settings.json")
+        off = {"security": {"folderTrust": {"enabled": False}}}
+        # Gemini CLI's folder trust is on by default, and a folder no rule names is untrusted; its environment decides
+        # first, folder trust off or not; the longest rule path wins
+        for trust, user, env in ((None, None, {}), ({self.repo: "DO_NOT_TRUST"}, None, {}),
+                                 ({self.d: "TRUST_FOLDER", self.repo: "DO_NOT_TRUST"}, None, {}),
+                                 ({os.path.join(self.d, "other"): "TRUST_FOLDER"}, None, {}),
+                                 ({self.repo: "TRUST_FOLDER"}, off, {"GEMINI_CLI_TRUST_WORKSPACE": "false"}),
+                                 ({self.repo: "TRUST_FOLDER"}, off, {"GEMINI_RESTRICTED_MODE": "true"})):
+            with mock.patch.dict(os.environ, env):
+                got = self.sandbox(trust, user)
+            # only the left-out project turns the sandbox on: said so, as info
+            self.assertEqual(got["status"], "info", (trust, env))
+            # worded from what made it untrusted: an environment variable, which no trust rule overrides, or the file
+            why, cure = ((f"{''.join(f'{k}={v}' for k, v in env.items())} in the environment makes Gemini skip the "
+                          "project's settings", f"unset {''.join(env)}") if env else
+                         ("folder trust is on and ", "trust the folder (/permissions)"))
+            self.assertTrue(got["detail"].startswith(f"{project} turns Gemini's sandbox on, but Gemini doesn't load "
+                                                     f"it: {why}"), got["detail"])
+            self.assertTrue(got["fix"].startswith(f"to sandbox Gemini there, {cure} or"), got["fix"])
+        got = self.sandbox({}, {"security": {"folderTrust": {"enabled": True}, "toolSandboxing": True}})
+        self.assertEqual(got["status"], "ok")
+        self.assertIn(f"({project} left out: folder trust is on", got["detail"])
+        with mock.patch.dict(os.environ, {"GEMINI_CLI_TRUST_WORKSPACE": "false"}):
+            got = self.sandbox({}, {"security": {"folderTrust": {"enabled": False}, "toolSandboxing": True}})
+        self.assertIn(f"({project} left out: GEMINI_CLI_TRUST_WORKSPACE=false in the environment makes Gemini skip "
+                      "the project's settings)", got["detail"])
+
+    def test_a_trusted_project_or_trust_off_reads_the_project_as_before(self):
+        moved = os.path.join(self.d, "trust.json")
+        for trust, user, env in (({self.repo: "TRUST_FOLDER"}, None, {}), ({self.d: "TRUST_FOLDER"}, None, {}),
+                                 ({os.path.join(self.repo, "sub"): "TRUST_PARENT"}, None, {}),
+                                 ({self.d: "DO_NOT_TRUST", self.repo: "TRUST_FOLDER"}, None, {}),
+                                 # Gemini CLI: the longest rule path, TRUST_PARENT's own (Qwen Code: a tie, untrusted)
+                                 ({self.repo: "DO_NOT_TRUST", os.path.join(self.repo, "x"): "TRUST_PARENT"}, None, {}),
+                                 (None, {"security": {"folderTrust": {"enabled": False}}}, {}),
+                                 ({}, None, {"GEMINI_CLI_TRUST_WORKSPACE": "true"}),
+                                 ({}, None, {"GEMINI_CLI_TRUSTED_FOLDERS_PATH": self.write(moved, {self.repo: "TRUST_FOLDER"})})):
+            with mock.patch.dict(os.environ, env):
+                got = self.sandbox(trust, user)
+            self.assertEqual((got["status"], got["detail"].endswith("every call")), ("warn", True), (trust, user, env))
+        # a trust file doctor can't read: it says so and reads the project
+        got = self.sandbox("{not json")
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("can't be read, so doctor can't tell whether Gemini trusts", got["detail"])
+
+    def qwen_rows(self, path, trust=None, system=None):
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("qwen", None if path == agent_hooks.config_path("qwen") else self.repo, v2=True)
+        if trust is not None:
+            self.write(os.path.join(self.home, ".qwen", "trustedFolders.json"), trust)
+        if system is not None:
+            self.write(os.path.join(self.d, "qs.json"), system)
+        rows = []
+        with mock.patch("os.getcwd", return_value=self.repo):
+            doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append((rid, ok, detail, fix)),
+                                        {"qwen": path}, False)
+        return [r for r in rows if not r[1]]
+
+    def test_qwen_disable_all_hooks_warns_naming_the_file(self):
+        user = agent_hooks.config_path("qwen")
+        self.assertEqual(self.qwen_rows(user), [])
+        system = os.path.join(self.d, "qs.json")
+        got = self.qwen_rows(user, system={"disableAllHooks": True})
+        self.assertEqual(got, [("D-HOOKS-EVENT", False, f"disableAllHooks is set in {system}: Qwen Code runs none of "
+                                "its hooks, so every call runs undecided and unrecorded",
+                                f'remove "disableAllHooks" from {system}')])
+        # a project's file only when Qwen Code loads it: not in a folder it doesn't trust
+        project = self.write(agent_hooks.config_path("qwen", self.repo), {"disableAllHooks": True})
+        on = {"security": {"folderTrust": {"enabled": True}}}
+        self.assertEqual(self.qwen_rows(user, {}, on), [])
+        got = self.qwen_rows(user, {self.repo: "TRUST_FOLDER"}, on)
+        self.assertEqual([r[2].split(": Qwen")[0] for r in got], [f"disableAllHooks is set in {project}"])
+
+    def test_qwen_project_hooks_in_an_untrusted_folder_warn(self):
+        project = agent_hooks.config_path("qwen", self.repo)
+        self.assertEqual(self.qwen_rows(project), [])   # Qwen Code's folder trust is off by default
+        on = {"security": {"folderTrust": {"enabled": True}}}
+        self.assertEqual(self.qwen_rows(project, {self.repo: "TRUST_FOLDER"}, on), [])
+        # the deepest rule wins, DO_NOT_TRUST on a tie, whichever comes first (Gemini CLI trusts the last one)
+        for trust in ({}, {self.d: "TRUST_FOLDER", self.repo: "DO_NOT_TRUST"},
+                      {os.path.join(self.repo, "x"): "TRUST_PARENT", self.repo: "DO_NOT_TRUST"},
+                      {self.repo: "DO_NOT_TRUST", os.path.join(self.repo, "x"): "TRUST_PARENT"}):
+            got = self.qwen_rows(project, trust, on)
+            self.assertEqual(len(got), 1, trust)
+            self.assertIn(f"doesn't trust {self.repo}: Qwen Code loads none of its settings there, so the hooks in "
+                          f"{project} don't run", got[0][2])
+        # QWEN_CODE_TRUSTED_FOLDERS_PATH moves the trust file
+        with mock.patch.dict(os.environ, {"QWEN_CODE_TRUSTED_FOLDERS_PATH": self.write(
+                os.path.join(self.d, "trust.json"), {self.repo: "TRUST_FOLDER"})}):
+            self.assertEqual(self.qwen_rows(project, {}, on), [])
+
+    def test_qwen_user_settings_need_no_trust(self):
+        """The user's own settings ($QWEN_HOME's here) load in any folder: only a project's are trust-gated."""
+        on = {"security": {"folderTrust": {"enabled": True}}}
+        with mock.patch.dict(os.environ, {"QWEN_HOME": os.path.join(self.d, "qh")}):
+            self.assertEqual(self.qwen_rows(agent_hooks.config_path("qwen"), {}, on), [])
+
+
 class PluginHooks(unittest.TestCase):
     """The Claude Code plugin's hooks are init's: doctor told plugin users `fix: tracekit init --dev --v2`, after which
     every call was decided twice and every approved call blocked."""
@@ -1956,6 +2773,7 @@ class ThinkingSummaries(unittest.TestCase):
 
 @unittest.skipIf(not hasattr(os, "mkfifo"), "FIFOs")
 class HostileSettings(unittest.TestCase):
+    @pytest.mark.serial
     def test_a_fifo_or_a_device_as_the_agents_settings_doesnt_hang_doctor(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
@@ -1973,7 +2791,7 @@ class HostileSettings(unittest.TestCase):
                 gemini_settings=[fifo, dev], harnesses={"codex": os.path.join(d, "hooks.json"),
                                                         "gemini": fifo})), daemon=True)
             t.start()
-            t.join(5)
+            t.join(30)   # a read of the FIFO never returns; doctor's first run takes 2 s on a laptop, over 5 on CI's runners
         self.assertFalse(t.is_alive(), "doctor blocked on the FIFO")
         got = {r["id"]: r for r in out}
         self.assertEqual(got["D-HOOKS-PRESENT"]["status"], "warn")
@@ -2003,6 +2821,15 @@ class CodingAgentReasoning(unittest.TestCase):
             self.assertIn("tracekit init --dev --v2 --agent codex", got["fix"])
         self.assertEqual(self.check("codex", {"config.toml": 'model_reasoning_summary = "auto"\n'})["status"], "ok")
         self.assertEqual(self.check("codex", {}, vault=False)["status"], "ok")
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_codex_config_that_wont_parse_is_not_called_unset(self):
+        for text in ("a = [\n", "a = " + TOO_DEEP_JSON):
+            with self.subTest(text=text[:8]):
+                got = self.check("codex", {"config.toml": text})
+                self.assertEqual(got["status"], "info")
+                self.assertIn("can't check Codex's reasoning summaries", got["detail"])
+                self.assertNotIn("unset", got["detail"])
 
     def test_gemini_thoughts_turned_off_in_model_configs_warn(self):
         off = {"modelConfigs": {"overrides": [{"match": {"model": "gemini-3-pro"}, "modelConfig": {
@@ -2250,6 +3077,26 @@ class Versions(unittest.TestCase):
                           "path, places", r["detail"])
             self.assertTrue(r["fix"].startswith("set CLAUDE_CONFIG_DIR, CODEX_HOME, XDG_CONFIG_HOME to an absolute path"))
 
+    def test_a_relative_qwen_or_interpreter_home_does_not_make_a_project_file_yours(self):
+        """#973 review: Qwen Code's QWEN_HOME and Open Interpreter's INTERPRETER_HOME, relative, placed the user's hook
+        file in doctor's working directory, so running doctor in a cloned repository ran the interpreter it named."""
+        project = os.path.join(os.path.realpath(self.d), "repo")
+        ran = self.planted(project)
+        evil = os.path.join(project, "evil")
+        for folder, name, harness in (("relq", "settings.json", "qwen"), ("reli", "hooks.json", "interpreter")):
+            os.makedirs(os.path.join(project, folder))
+            with open(os.path.join(project, folder, name), "w") as f:
+                json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": self.command(
+                    evil, "tracekit.integrations.harness_hooks", f"entry('{harness}', 'PreToolUse')",
+                    python=os.path.join(evil, "python"))}]}]}}, f)
+        self.chdir(project)
+        with mock.patch.dict(os.environ, {"QWEN_HOME": "relq", "INTERPRETER_HOME": "reli"}), \
+                mock.patch.object(doctor.client, "system_config", return_value=None):
+            rows = [r for r in doctor.collect() if r["id"] == "D-VERSIONS"]
+        self.assertFalse(os.path.exists(ran), "doctor ran a hook file a relative variable placed")
+        self.assertEqual(sorted(r["detail"].split(" hooks in ")[0] for r in rows if "not probed" in r["detail"]),
+                         ["the interpreter", "the qwen"], rows)
+
     def test_a_relative_home_makes_no_record_yours(self):
         """Final review of #512: with HOME (USERPROFILE on Windows) relative and TRACEKIT_CLIENT_HOME unset, init's record
         was read from the working directory, and the absolute settings path a planted one names counted as the user's."""
@@ -2346,6 +3193,34 @@ class DevProfile(unittest.TestCase):
         self.assertEqual(got["D-HOOKS-PRESENT"], "warn")
         self.assertEqual(got["D-DURABILITY"], "ok")
         self.assertNotIn("D-AGENT-PRIV", got)
+
+    def test_an_sdk_only_dev_setup_is_not_warned_about_missing_hooks(self):
+        """tracekit.instrument() needs no hooks; D-HOOKS-PRESENT warned with `tracekit init --dev --v2` anyway when
+        init never ran. Once init ran (and left no hooks), it is the warning again."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.chmod(d, 0o700)
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/local/bin/claude"):
+            for init_run, status in ((False, "info"), (True, "warn")):
+                got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev", settings=os.path.join(d, "none"),
+                                                            init_run=init_run)}
+                self.assertEqual(got["D-HOOKS-PRESENT"]["status"], status)
+                if not init_run:
+                    self.assertIn("only SDK agents", got["D-HOOKS-PRESENT"]["detail"])
+                    self.assertIn("tracekit init --dev --v2", got["D-HOOKS-PRESENT"]["fix"])
+
+    def test_laptop_system_mode_without_a_deployed_public_witness_is_a_warning_with_the_reason(self):
+        """A fresh system install failed D-WITNESS-CONFIGURED (exit 1) though init says the public witness isn't
+        deployed, and the dev doctor said info. A server's doctor (no system client config) still fails."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.chmod(d, 0o700)
+        with mock.patch.object(public_witness, "configured", return_value=False):
+            system = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, client_json=client.SYSTEM_CONFIG)}
+            server = {r["id"]: r for r in doctor.v2_checks({"data_dir": d})}
+        self.assertEqual(system["D-WITNESS-CONFIGURED"]["status"], "warn")
+        self.assertIn("isn't deployed yet", system["D-WITNESS-CONFIGURED"]["fix"])
+        self.assertEqual(server["D-WITNESS-CONFIGURED"]["status"], "fail")
 
     def test_a_data_dir_not_made_yet_is_checked_where_it_will_be(self):
         """#515: doctor no longer makes the dev data dir, so its file system is the nearest existing parent's."""

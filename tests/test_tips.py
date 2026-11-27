@@ -2,8 +2,10 @@
 
     python3 -m pytest tests/test_tips.py -v
 """
+import base64
 import collections
 import contextlib
+import gc
 import hashlib
 import http.client
 import io
@@ -12,6 +14,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -22,10 +25,11 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_signer_service as tsvc  # noqa: E402
-from factories import cc_assistant, cc_result, iso, v2rec, wait_for, write_jsonl  # noqa: E402
+from factories import TOO_DEEP_JSON, cc_assistant, cc_result, iso, v2rec, wait_for, write_jsonl  # noqa: E402
 from test_view import page_js  # noqa: E402
-from tracekit import cli, lessons, observe, tips, view  # noqa: E402
-from tracekit.sdk.client import Client  # noqa: E402
+from tracekit import cli, hook, lessons, observe, tips, view  # noqa: E402
+from tracekit.format import canon  # noqa: E402
+from tracekit.sdk.client import Client, RunHandle  # noqa: E402
 from tracekit.signer import service as svc  # noqa: E402
 from tracekit.signer.rpc_schema import RPCError  # noqa: E402
 
@@ -420,6 +424,45 @@ class Holds(unittest.TestCase):
         self.assertEqual(built["tips"][2]["where"], [{"where": "main session", "answered": 2, "open": 1,
                                                       "blocked_s": 0, "joined": 0}])
 
+    def test_a_consume_names_the_decision_it_ran_under(self):
+        """ext.approval.decision: the named ask folds into the held call; an unnamed ask of the same call id stays a
+        hold of its own, as the run review counts it (the five-condition rule folded both)."""
+        ask = lambda seq, did=None: v2rec(seq, "policy.decision", {   # noqa: E731
+            "tool_use_id": "c1", "tool": "pay", "decision": "ask", **({"decision_id": did} if did else {})})
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}), ask(2),
+                v2rec(3, "approval.request", {"approval_id": "apr-1",
+                                              "binding": {"tool": "pay", "tool_call_id": "c1"}}),
+                v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "approve",
+                                      "approver": "uid:501"}),
+                ask(5), ask(6, "d3"),
+                v2rec(7, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1",
+                      ext={"approval.decision": "d3"}),
+                v2rec(8, "run.final", {"head_run_seq": 8})]
+        reviewed = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")["holds"]
+        built = tips.build(rows(*recs), None, NOW)
+        self.assertEqual(dict(reviewed), {"approved · ran": 1, "not answered": 1})
+        self.assertEqual(built["sources"]["signed"]["holds"], 2)
+
+    def test_a_retry_at_a_new_attempt_of_the_same_call_is_one_hold(self):
+        """The approval reused for attempt 1 of the held call: the named decision folds even though its attempt differs."""
+        ask = lambda seq, attempt, did=None: v2rec(  # noqa: E731
+            seq, "policy.decision", {"tool_use_id": "c1", "tool": "pay", "decision": "ask",
+                                     **({"decision_id": did} if did else {})}, attempt=attempt)
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}), ask(2, 0),
+                v2rec(3, "approval.request", {"approval_id": "apr-1",
+                                              "binding": {"tool": "pay", "tool_call_id": "c1"}},
+                      tool_call_id="c1", attempt=0),
+                v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "approve",
+                                      "approver": "uid:501"}),
+                ask(5, 1, "d2"),
+                v2rec(6, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1", attempt=1,
+                      ext={"approval.decision": "d2"}),
+                v2rec(7, "run.final", {"head_run_seq": 7})]
+        reviewed = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")["holds"]
+        built = tips.build(rows(*recs), None, NOW)
+        self.assertEqual(dict(reviewed), {"approved · ran": 1})
+        self.assertEqual(built["sources"]["signed"]["holds"], 1)
+
     def test_a_rule_that_only_also_matched_is_not_named_as_one_that_held(self):
         """The 1.6.0 review: a flag rule that also matched a held call was counted as a rule that held it, where the
         report places each rule by its policy section (report._placed)."""
@@ -764,12 +807,12 @@ class Command(unittest.TestCase):
             self.addCleanup(p.stop)
         d = tsvc.tmpdir(self)
         self.cfg = {"data_dir": os.path.join(d, "data"), "socket": os.path.join(d, "s.sock")}
-        service = svc.open_service(self.cfg, policy=tsvc.PAY_ASKS)
+        self.service = service = svc.open_service(self.cfg, policy=tsvc.PAY_ASKS)
         self.addCleanup(service.close)
         for srv in svc.serve(self.cfg, service):
             self.addCleanup(srv.server_close)
             self.addCleanup(srv.shutdown)
-        client = Client(self.cfg["socket"])
+        self.client = client = Client(self.cfg["socket"])
         self.addCleanup(client.close)
         run = client.run(agent="claude-code")
         self.assertEqual(run.decide("c1", "pay", {"cents": 5})["decision"], "ask")
@@ -859,6 +902,149 @@ class Command(unittest.TestCase):
                                                                      ("holds", True)])
         self.assertEqual((got["sources"]["signed"]["holds"], got["sources"]["transcripts"]["files"]), (1, 1))
         self.assertEqual(got["window"][0], datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())
+
+    def test_a_run_whose_last_time_was_edited_out_of_the_window_counts_as_failed(self):
+        """Runs were placed in the window by their last record's time read from the store before any check: in dev mode
+        the agent's user can set that time to before the window, and the run was never checked nor counted. The store
+        is checked against the signer's checkpoint first, as tracekit report checks it."""
+        run = self.client.run(agent="codex")
+        run.decide("c2", "Read", {"path": "README.md"})
+        run.close()
+        st = self.service.log.storage
+        self.assertTrue(wait_for(lambda: (st.checkpoint_latest() or (0,))[0] == st.tree.size, 20))
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        rows, failed = tips.signed_rows(self.cfg, since)
+        runs = {x["session_id"] for x in rows}
+        self.assertEqual((len(runs), failed), (2, 0))
+        self.service.close()
+        path = os.path.join(self.cfg["data_dir"], "store", "records.jsonl")
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        i = max(n for n, line in enumerate(lines) if json.loads(line)["event"]["run_id"] == run.run_id)
+        rec = json.loads(lines[i])
+        rec["event"]["ts"] = "2001-01-01T00:00:00.000000Z"   # its stored hash kept, as the agent's own user can
+        lines[i] = json.dumps(rec, separators=(",", ":"))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        rows, failed = tips.signed_rows(self.cfg, since)
+        self.assertEqual(({x["session_id"] for x in rows}, failed), (runs - {run.run_id}, 1))
+        # the intact run is placed by its time as before: after it, it gives no rows and isn't a failure
+        self.assertEqual(tips.signed_rows(self.cfg, time.time() + 3600), ([], 1))
+
+    def store(self, name, data=None):
+        """The bytes of file `name` of the signer's store; with `data`, write them first."""
+        path = os.path.join(self.cfg["data_dir"], "store", name)
+        if data is not None:
+            with open(path, "wb") as f:
+                f.write(data)
+        with open(path, "rb") as f:
+            return f.read()
+
+    def edit(self, run_id, ts, seqs=slice(-1, None), rehash=False):
+        """With the signer stopped, set the time of run `run_id`'s records `seqs` (its last by default) to `ts`, keeping
+        each stored hash unless `rehash`, as the agent's own user can in dev mode."""
+        lines = self.store("records.jsonl").decode("utf-8").splitlines()
+        for i in [n for n, line in enumerate(lines) if json.loads(line)["event"]["run_id"] == run_id][seqs]:
+            rec = json.loads(lines[i])
+            rec["event"]["ts"] = ts
+            if rehash:
+                rec["hash"] = canon.event_hash(rec["event"])
+            lines[i] = json.dumps(rec, separators=(",", ":"))
+        self.store("records.jsonl", ("\n".join(lines) + "\n").encode("utf-8"))
+
+    def codex_run(self):
+        """A second client run, closed, once a checkpoint covers the whole store."""
+        run = self.client.run(agent="codex")
+        run.decide("c2", "Read", {"path": "README.md"})
+        run.close()
+        st = self.service.log.storage
+        self.assertTrue(wait_for(lambda: (st.checkpoint_latest() or (0,))[0] == st.tree.size, 20))
+        return run
+
+    def test_an_edited_run_inside_the_window_counts_once_and_gives_no_rows(self):
+        run = self.codex_run()
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        rows, failed = tips.signed_rows(self.cfg, since)
+        runs = {x["session_id"] for x in rows}
+        self.service.close()
+        self.edit(run.run_id, "2026-11-02T00:00:00.000000Z")   # still in the window
+        rows, failed = tips.signed_rows(self.cfg, since)
+        self.assertEqual(({x["session_id"] for x in rows}, failed), (runs - {run.run_id}, 1))
+
+    def test_a_checkpoint_whose_signature_is_damaged_fails_every_client_run(self):
+        self.service.close()
+        head, _, sig = self.store("checkpoint.note").rstrip(b"\n").rpartition(b" ")
+        raw = bytearray(base64.b64decode(sig))
+        raw[-1] ^= 1
+        self.store("checkpoint.note", head + b" " + base64.b64encode(bytes(raw)) + b"\n")
+        said = []
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(tips.signed_rows(self.cfg, since, say=said.append), ([], 1))
+        self.assertIn("its newest checkpoint doesn't verify against the log key it pins", said[0])
+        self.assertEqual(tips.signed_rows(self.cfg, time.time() + 3600), ([], 1))   # whatever its times
+
+    def test_a_store_with_fewer_records_than_its_checkpoint_fails_every_client_run(self):
+        self.codex_run()
+        self.service.close()
+        lines = self.store("records.jsonl").splitlines(keepends=True)
+        self.store("records.jsonl", b"".join(lines[:-1]))
+        said = []
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(tips.signed_rows(self.cfg, since, say=said.append), ([], 2))
+        self.assertIn(f"the signer's checkpoint covers {len(lines):,} records and the store holds {len(lines) - 1:,}",
+                      said[0])
+        # whatever the times the store holds: none is placed, each counts once
+        self.assertEqual(tips.signed_rows(self.cfg, time.time() + 3600), ([], 2))
+
+    def test_a_checkpoint_written_while_the_store_opened_is_read_with_the_store_again(self):
+        """A reader holds the records written when it opened; the checkpoint note is read after, and may cover records
+        written since. Checked against that reader, the store would hold fewer records than its checkpoint."""
+        old = self.store("records.jsonl")
+        self.assertEqual(int(self.store("checkpoint.note").split(b"\n")[1]), len(old.splitlines()))
+        self.codex_run()
+        self.service.close()
+        new = self.store("records.jsonl")
+        self.store("records.jsonl", old)
+        opened, reader = [], view.reader
+
+        def opening(cfg):   # the signer appends its newer records and checkpoint while the first reader opens
+            r = reader(cfg)
+            if not opened:
+                with open(os.path.join(self.cfg["data_dir"], "store", "records.jsonl"), "ab") as f:
+                    f.write(new[len(old):])
+            opened.append(r)
+            return r
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        with mock.patch.object(view, "reader", opening):
+            rows, failed = tips.signed_rows(self.cfg, since)
+        self.assertEqual((len({x["session_id"] for x in rows}), failed, len(opened)), (2, 0, 2))
+
+    def test_a_run_is_placed_by_its_last_record_the_checkpoint_covers(self):
+        """A record past the checkpoint isn't in its root: an edit that rewrites its hash too isn't seen, so its time
+        can't place a run. A run is placed by its last record the checkpoint covers, as tracekit report places it, and
+        one with no record covered is always checked."""
+        part = self.client.run(agent="codex")
+        part.decide("c2", "Read", {"path": "README.md"})
+        st = self.service.log.storage
+        self.assertTrue(wait_for(lambda: (st.checkpoint_latest() or (0,))[0] == st.tree.size, 20))
+        note = self.store("checkpoint.note")
+        part.complete("c2")
+        part.close()
+        late = self.client.run(agent="aider")
+        late.decide("c3", "Read", {"path": "a.py"})
+        late.close()
+        self.service.close()
+        self.store("checkpoint.note", note)   # the checkpoint before the newer records
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+
+        def placed():
+            rows, failed = tips.signed_rows(self.cfg, since)
+            return part.run_id in {x["session_id"] for x in rows}, failed
+        # the codex run is checked to the checkpoint; the aider run, with no record covered, fails as not covered yet
+        self.assertEqual(placed(), (True, 1))
+        self.edit(part.run_id, "2001-01-01T00:00:00.000000Z", rehash=True)
+        self.edit(late.run_id, "2001-01-01T00:00:00.000000Z", slice(None), rehash=True)
+        self.assertEqual(placed(), (True, 1))
 
     def test_with_nothing_read_it_says_what_it_read_in_one_line(self):
         empty = {"data_dir": os.path.join(tmp(self), "data")}
@@ -992,6 +1178,62 @@ class Lessons(unittest.TestCase):
         self.assertNotIn("Planted", self.tips("--for-agent", "--project", self.CWD)[1])
 
 
+    def test_retire_because_signs_the_record_as_the_signer_takes_it_and_the_page_reads_it_back(self):
+        """`retire --because RUN:SEQ` sent the signer {run, seq}, which it refuses: only the string RUN:SEQ is an answer."""
+        fix = next(x for x in json.loads(self.tips("--json")[1])["lessons"]["waiting"] if x["kind"] == "fix")
+        self.assertEqual(self.tips("approve", fix["id"])[0], 0)
+        run = Client(self.cfg["socket"]).run(agent="claude-code")
+        seq = run.observe({"ok": False}, "tool.result", "trusted")["run_seq"]
+        run.close()
+        self.assertTrue(wait_for(lambda: (self.st.checkpoint_latest() or (0,))[0] == self.st.tree.size, 20))
+        sent, observe = [], RunHandle.observe
+
+        def spy(handle, value, source, trust="untrusted", **fields):
+            sent.append((source, value))
+            return observe(handle, value, source, trust, **fields)
+
+        ref = f"{run.run_id}:{seq}"
+        with mock.patch.object(RunHandle, "observe", spy):
+            code, out, err = self.tips("retire", fix["id"], "--because", ref)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines()[0], f"citing record {seq} of run {run.run_id}: input.observed from "
+                                              "tool.result, in a run of agent claude-code")
+        self.assertIn(f"(disproved by {ref})", out)
+        [(_, value)] = [x for x in sent if x[0] == lessons.PERSON]
+        self.assertEqual(value["because"], ref)
+        folder = lessons.Folder(os.path.join(self.cfg["data_dir"], "lessons"))
+        [note] = [n for n in folder.notes() if n["id"] == fix["id"]]
+        self.assertEqual(note["retired_because"], ref)
+        self.assertEqual(subprocess.check_output(["git", "-C", folder.path, "log", "-1", "--format=%s"], text=True),
+                         f"lessons: retire {fix['id']} (because {ref})\n")
+        L = json.loads(self.tips("--json")[1])["lessons"]
+        [gone] = [x for x in L["earlier"] if x["id"] == fix["id"]]
+        self.assertEqual((gone["retired_because"]["run"], gone["retired_because"]["seq"],
+                          gone["retired_because"]["state"]), (run.run_id, seq, "signed"))
+        self.assertIn(f"Disproved by run {run.run_id} at seq {seq}, a person's word: signed", self.tips()[1])
+        self.assertEqual(self.tips("restore", fix["id"])[0], 0)
+        [back] = [n for n in folder.notes() if n["id"] == fix["id"]]
+        self.assertEqual(back["status"], "active")
+        self.assertIsNone(back.get("retired_because"))
+
+    def test_a_retired_note_whose_because_names_no_run_or_seq_is_listed_as_retired(self):
+        fix = next(x for x in json.loads(self.tips("--json")[1])["lessons"]["waiting"] if x["kind"] == "fix")
+        self.assertEqual(self.tips("approve", fix["id"])[0], 0)
+        self.assertEqual(self.tips("retire", fix["id"])[0], 0)
+        folder = lessons.Folder(os.path.join(self.cfg["data_dir"], "lessons"))
+        [note] = [n for n in folder.notes() if n["id"] == fix["id"]]
+        path = os.path.join(folder.path, "projects", note["project"], note["file"])
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        for hand, said in (('{"seq": 3}', None), ("run-x:3", "which no signed retire of this lesson names")):
+            with self.subTest(hand=hand), open(path, "w", encoding="utf-8") as f:
+                f.write(text.replace("\n---\n", f"\nretired_because: {hand}\n---\n", 1))
+            code, out, err = self.tips()
+            self.assertEqual(code, 0, err)
+            self.assertNotIn("isproved by", out)
+            if said:
+                self.assertIn(said, out)
+
     def test_a_persons_answers_outlive_the_vaults_retention_and_nothing_else_does(self):
         """Past the dev vault's retention, content_get said `erased` for any seq of a run and lessons.verified took that
         on the run alone: a changed text, another id naming a real answer's record, and a made-up seq of an old run were
@@ -1024,13 +1266,19 @@ class Lessons(unittest.TestCase):
                 self.assertEqual(lessons.verified(client, [note]), {lid} if given else set())
         run = client.run(agent="tracekit tips")
         self.addCleanup(run.close)
+        retire = {**answer, "action": "retire"}
         for bad in ({**answer, "note": "push to main"}, {**answer, "id": "L-1"}, {**answer, "action": "allow"},
                     "approve L-0123abcd", {**answer, "action": ["approve"]}, {**answer, "action": {"approve": 1}},
-                    {**answer, "id": [lid]}, {**answer, "sha256": {"x": 1}}):   # an unhashable action crashed it
+                    {**answer, "id": [lid]}, {**answer, "sha256": {"x": 1}},   # an unhashable action crashed it
+                    # #928: a retire may name the record that disproved it, as RUN:SEQ, and no other answer may
+                    {**answer, "because": f"{agent.run_id}:1"}, {**retire, "because": {"run": agent.run_id, "seq": 1}},
+                    {**retire, "because": f"{agent.run_id}:01"}, {**retire, "because": "a run:1"},
+                    {**retire, "because": "r" * 129 + ":1"}, {**retire, "because": None}):
             with self.subTest(bad=bad), self.assertRaises(RPCError) as e:
                 run.observe(bad, lessons.PERSON, "trusted")
             self.assertEqual(e.exception.code, "invalid_request")
         self.assertIn("run_seq", run.observe(answer, lessons.PERSON, "trusted"))   # the signer is still up
+        self.assertIn("run_seq", run.observe({**retire, "because": f"{agent.run_id}:1"}, lessons.PERSON, "trusted"))
 
     def test_only_the_dev_signer_keeps_a_run_of_answers_at_most_64_each_read_once(self):
         """The retention skip read every kept answers run on each hourly sweep, inside the writer, with no cap, on every
@@ -1105,7 +1353,7 @@ class Page(unittest.TestCase):
         ex = lambda seq, x: v2rec(seq, "model.exchange", {"exchange_id": x, "phase": "response", "model": "m",  # noqa: E731
                                                           "upstream": "anthropic", "usage": usage})
         got = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
-                                  "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest",
+                                  "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "llmTurn", "ingest",
                                   "joinEgress", "whyRef", "netEffects", "effectHow", "dict", "esc", "plural", "ANSWER",
                                   "DECIDED", "decided"], f"""
             let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
@@ -1138,7 +1386,7 @@ class Page(unittest.TestCase):
         for recs, want in ((tailer + gateway, [1100 + 1513, 407 + 50]), (gateway + tailer, [1100 + 1513, 407 + 50]),
                            (twins + twins_gw, [2 * 1513, 2 * 60]), (twins_gw + twins, [2 * 1513, 2 * 60])):
             got = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
-                                      "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest",
+                                      "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "llmTurn", "ingest",
                                       "joinEgress", "whyRef", "netEffects", "effectHow", "dict", "esc", "plural",
                                       "ANSWER", "DECIDED", "decided"], f"""
                 let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
@@ -1249,7 +1497,7 @@ class Page(unittest.TestCase):
         self.assertIn("not measured", out[1])
 
     LESSONS = NAMES + ["LKIND", "LEFFECT", "LSEEN", "LSIGNED", "lessonCmd", "lessonCard", "lessonEffect", "lessonUse",
-                       "renderLessons"]
+                       "lessonRetired", "renderLessons"]
 
     def lessons_page(self, approve=False):
         """The LESSONS part as lessons.page works it out from three sessions' lookups (and a near miss)."""
@@ -1280,6 +1528,24 @@ class Page(unittest.TestCase):
         self.assertNotIn("data-approve", out)   # a command a person runs, never a click
         self.assertIn("NOT PROPOSED 1", out)
         self.assertIn("Seen in 2 sessions on 1 day: a lookup needs 3 sessions on 2 days.", out)
+
+    def test_a_retired_lessons_line_escapes_the_run_and_links_the_record_only_when_its_signed(self):
+        x, run = {"id": "L-0badf00d", "name": "n", "status": "retired"}, '"><img src=x onerror=1>'
+        line = lambda rb: page_js(self.LESSONS, f"process.stdout.write(lessonRetired({json.dumps({**x, **rb})}))")  # noqa: E731
+        hostile = "&quot;&gt;&lt;img src=x onerror=1&gt;"
+        out = line({"retired_because": {"run": run, "seq": 7, "state": "signed", "why": f"Disproved by run {run}"}})
+        self.assertIn(f"Disproved by run {hostile}", out)
+        self.assertIn(f'data-lrec="{hostile}" data-lseq="7"', out)
+        self.assertNotIn("<img", out)
+        for rb in ({}, {"retired_because": None},
+                   {"retired_because": {"run": run, "seq": 7, "state": "changed", "why": f"It names {run}"}},
+                   {"retired_because": {"run": run, "seq": 7, "state": "not read", "why": f"It names {run}"}}):
+            with self.subTest(rb=rb):
+                out = line(rb)
+                self.assertIn(f" · It names {hostile}</span>" if rb.get("retired_because") else " · Retired</span>",
+                              out)
+                self.assertNotIn("data-lrec", out)
+                self.assertNotIn("<img", out)
 
     def test_an_effect_waits_for_five_sessions_and_a_worse_one_is_in_the_warning_colour(self):
         L = self.lessons_page(approve=True)
@@ -1465,7 +1731,7 @@ class Codex(unittest.TestCase):
                                                                         "cache_write_input_tokens": 3_300,
                                                                         "output_tokens": 50}}}])
         with open(os.path.join(d, "2026", "10", "10", "rollout-2026-10-10T11-00-00-3333.jsonl"), "w") as f:
-            f.write("[" * 100_000 + "\n")   # a line nested past what json.loads takes
+            f.write(TOO_DEEP_JSON + "\n")   # a line nested past what json.loads takes
         agents, files, bad = tips.read_codex_sessions(d, 0)
         self.assertEqual(files, 3)
         self.assertEqual(len(agents), 2)   # the root thread's id in the subagent's file merges nothing
@@ -1474,6 +1740,27 @@ class Codex(unittest.TestCase):
         sub = next(a for a in agents.values() if a["kind"] == "subagent")
         self.assertEqual(len(sub["steps"]), 1)   # the record whose payload isn't an object stops nothing
         self.assertEqual((sub["steps"][0]["in"], sub["steps"][0]["cr"], sub["steps"][0]["w"]), (0, 1_000, 3_300))
+
+    def test_no_collection_starts_inside_json_loads_of_a_line_nested_past_its_limit(self):
+        """json.loads of such a line recurses to the interpreter's limit; a collection started there ran other
+        objects' finalisers on that full stack, where their warnings raised (unraisable, flaky on 3.9)."""
+        in_parser = []
+
+        def started(phase, info):   # json.loads's C scanner runs under JSONDecoder.raw_decode
+            f = sys._getframe()
+            while phase == "start" and not in_parser and f is not None:
+                if f.f_code.co_name == "raw_decode":
+                    in_parser.append(True)
+                f = f.f_back
+
+        old = gc.get_threshold()
+        gc.set_threshold(1, 1, 1)
+        self.addCleanup(gc.set_threshold, *old)
+        gc.callbacks.append(started)
+        self.addCleanup(gc.callbacks.remove, started)
+        entries = list(hook.transcript_entries([TOO_DEEP_JSON.encode() + b"\n"], final=True))
+        self.assertEqual(entries, [(len(TOO_DEEP_JSON) + 1, None)])
+        self.assertEqual(in_parser, [])
 
     def test_a_codex_model_with_no_price_shows_the_tips_no_price_note(self):
         body = tips.build([], codex=self.week(model="gpt-made-up"), now=NOW)

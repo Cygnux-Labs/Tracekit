@@ -25,6 +25,8 @@ import {
   parseVkey, registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
 import { Detector } from "./detect.js";
+import { Sources, byCodePoint, runLabels } from "./labels.js";
+import { Budget, Spent } from "./rx.js";
 import { same, validateEvent } from "./schema.js";
 import { BadZipFile, MAX_ENTRY, Unusable, readZip } from "./zip.js";
 import VERSIONS_JSON from "./versions.json" with { type: "json" };
@@ -33,10 +35,10 @@ export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
 
 /** This verifier's release (the package's). */
-export const VERSION = "1.7.2";
+export const VERSION = "1.8.0";
 /** The newest bundle format version this verifier reads: the reference's VERSIONS' newest row (tracekit/bundle_v2.py),
  * or VERSION when later (tracekit/verify/v2.py READS); a bundle needing a later one is UNVERIFIABLE. */
-export const READS = "1.7.2";
+export const READS = "1.8.0";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
@@ -160,14 +162,6 @@ const cut = (s: string, n: number) => [...s].slice(0, n).join("");
 const extend = <T>(to: T[], xs: Iterable<T>) => {
   for (const x of xs) to.push(x);
 };
-/** Python's order of strings, by code point (JavaScript's `<` and sort() compare UTF-16 code units, which put a
- * character above U+FFFF before one in U+E000..U+FFFF). */
-const byCodePoint = (a: string, b: string) => {
-  const unit = (u: number) => u >= 0xd800 && u < 0xe000 ? u + 0x2000 : u >= 0xe000 ? u - 0x800 : u;
-  for (let i = 0; i < Math.min(a.length, b.length); i++)
-    if (a.charCodeAt(i) !== b.charCodeAt(i)) return unit(a.charCodeAt(i)) - unit(b.charCodeAt(i));
-  return a.length - b.length;
-};
 const byKey = ([a]: [string, unknown], [b]: [string, unknown]) => byCodePoint(a, b);
 const count = (xs: string[]) => {
   const m = new Map<string, number>();
@@ -180,7 +174,7 @@ const fmt = (ts: bigint | number) => {
 };
 
 type Trust = { logs: string[]; witnesses: { vkey: string; class: string }[]; algs: string[]; witnesses_required: number;
-  rekor?: Record<string, J>; issuers: J[]; analyzers: string[] };
+  rekor?: Record<string, J>; issuers: J[]; analyzers: string[]; policies: Map<string, Uint8Array> };
 
 async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
   const floats: Floats = new WeakMap();
@@ -192,7 +186,7 @@ async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
   const opt = (o: Record<string, J>, k: string) => Object.hasOwn(o, k) ? o[k] : [];
   const r = isObj(t) ? get(t, "rekor", {}) : null;
   const ok = isObj(t) && Object.keys(t).every((k) => ["logs", "witnesses", "algs", "witnesses_required", "rekor",
-    "monitors", "issuers", "analyzers"].includes(k))
+    "monitors", "issuers", "analyzers", "policies"].includes(k))
     && isObj(r) && (!Object.keys(r).length || exactly(r, ["trusted_root", "publishing_key", "class"])
       && isObj(r.trusted_root) && typeof r.publishing_key === "string" && CLASSES.includes(r.class))
     && strings(t.logs)
@@ -204,9 +198,18 @@ async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
     && Array.isArray(opt(t, "issuers")) && opt(t, "issuers").every((i: J) => exactly(i, ["vkey", "issuance_log_vkey"])
       && Object.values(i).every((v) => typeof v === "string"))
     && Array.isArray(opt(t, "analyzers"))
-    && opt(t, "analyzers").every((a: J) => typeof a === "string" && /^[a-z0-9_]+:[^\n]+$/.test(a));
+    && opt(t, "analyzers").every((a: J) => typeof a === "string" && /^[a-z0-9_]+:[^\n]+$/.test(a))
+    && Array.isArray(opt(t, "policies")) && opt(t, "policies").every((x: J) => typeof x === "string");
   if (!ok) throw new ValueError(`${name}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, `
-    + "issuers, analyzers)");
+    + "issuers, analyzers, policies)");
+  const known = new Map<string, Uint8Array>();   // `policies`: each compiled policy's text, by its policy_hash
+  for (const text of opt(t, "policies") as string[]) {
+    const bytes = new TextEncoder().encode(text);
+    if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text)
+      || !isObj(strictParseBytes(bytes, new WeakMap())))
+      throw new ValueError(`${name}: a policies entry is not a compiled policy (a JSON object's text)`);
+    known.set(`sha256:${await sha256hex(bytes)}`, bytes);
+  }
   for (const k of [...t.logs, ...opt(t, "witnesses").map((w: J) => w.vkey), ...opt(t, "monitors").map((m: J) => m.vkey),
     ...opt(t, "issuers").flatMap((i: J) => Object.values(i))]) {
     try {
@@ -234,6 +237,7 @@ async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
   t.witnesses_required ??= 0;
   t.issuers ??= [];
   t.analyzers ??= [];
+  t.policies = known;
   return t as Trust;
 }
 
@@ -273,7 +277,8 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array | null,
   const rep = new Report();
   let t: Trust, files: Map<string, Uint8Array>, manifest: J, v1 = false;
   if (trust === null) {
-    t = { logs: [], witnesses: [], algs: ["ed25519"], witnesses_required: 0, issuers: [], analyzers: [] };
+    t = { logs: [], witnesses: [], algs: ["ed25519"], witnesses_required: 0, issuers: [], analyzers: [],
+      policies: new Map() };
     rep.check("trust config", false, "none: the checkpoint's signature and its witnesses are not checked, so nothing ties "
       + "these records to a signer you trust", [], true);
   } else try {
@@ -535,6 +540,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       p === `policies/${hex}.json` ? p : `${p} is not named by the SHA-256 of its bytes`);
     if (p === `policies/${hex}.json`) policies.set(`sha256:${hex}`, file(p));
   }
+  for (const [h, data] of trust.policies) if (!policies.has(h)) policies.set(h, data);   // and the trust config's
 
   const open = [...runs.values()].filter((rs) => get(rs.at(-1).event, "type") !== "run.final");
   rep.integrity = !open.length ? "VERIFIED" : only ? `VERIFIED TO HEAD ${str(get(open[0].at(-1).event, "run_seq"))} (open)`
@@ -543,6 +549,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   // a grant the run's own user issued (intent.grant) approves the calls it releases: a self-approval too
   const selfApproved = [...typed("approval"), ...typed("ext").filter((e) => get(at(e, "data"), "name") === "intent.grant")]
     .some((e) => get(at(e, "data"), "self_approved") === true);
+  // a label the run's own user cleared on a dev signer: who that is can be the agent, as for a self-approval
+  const selfCleared = typed("run.label").some((e) => get(at(e, "data"), "self_cleared") === true);
   const gaps = (k: string) => typed("capture.gap").filter((e) => get(at(e, "data"), "kind") === k)
     .map((e) => `seq ${e.seq}: ${cut(str(get(e.data, "reason")), 200)}`);
   const against = gaps("executed_against_policy");
@@ -609,6 +617,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   checkReviews(rep, runs, trust.analyzers);
   checkConstraints(rep, runs);
   checkIncidents(rep, runs, policies, floats);
+  checkLabels(rep, runs, policies, floats);
   const accessed = typed("content.accessed").length, erased = typed("content.erased").length;
   if (accessed || erased)   // signer records of the content vault (docs/privacy.md): who read or erased retained content
     rep.check("content vault", true, `${accessed} access(es), ${erased} erasure(s) of retained content, each signed by the signer`);
@@ -670,9 +679,10 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   rep.check("key assurance", true, "asserted: the log declares its record keys; none is attested");
   const algs = new Set([...every, ...keyRecords].map((r) => text(at(r, "alg"))));
   rep.assurance = !anchored ? "none: no trust config pins a log key or witness"
-    : await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
+    : await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs, selfCleared)
       + (provenTo < relied ? "; key retirements not proven complete" : "");
   approvals(rep, runs, policies, floats);
+  aiApprovals(rep, runs, policies, floats);
   const glass = typed("approval").filter((e) => get(at(e, "data"), "break_glass") === true);
   if (glass.length)
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
@@ -1077,12 +1087,50 @@ export async function checkGrants(rep: Report, events: J[], floats: Floats) {
 
 type ExtCheck = (rep: Report, events: J[], floats: Floats) => void | Promise<void>;
 /**
+ * ext.approval.decision (1.8.0): each approval.consumed names a policy.decision of its own run, tool_call_id and attempt
+ * that comes before it. The signer writes the decision it checked the approval's use against; the check is a warning,
+ * not a failure, when the bundle doesn't hold it (an ext name is non-critical).
+ */
+export function checkApprovalDecision(rep: Report, events: J[]): void {
+  const decisions = new Map<string, J[]>(), at = (v: J): number => typeof v === "number" ? v : 0;
+  const key = (e: J, id: string) => JSON.stringify([get(e, "run_id"), id]);
+  for (const e of events) {
+    const d = get(e, "data");
+    if (get(e, "type") === "policy.decision" && isObj(d) && typeof d.decision_id === "string")
+      decisions.set(key(e, d.decision_id), [...(decisions.get(key(e, d.decision_id)) ?? []), e]);
+  }
+  let n = 0;
+  const bad: J[] = [];
+  for (const e of events) {
+    if (!extNames(e).includes("approval.decision")) continue;
+    n++;
+    if (get(e, "type") !== "approval.consumed") {
+      bad.push(e);
+      continue;
+    }
+    const ext = isObj(get(e, "ext")) ? e.ext : {};
+    const did = ext["approval.decision"];
+    const before = typeof did === "string" ? (decisions.get(key(e, did)) ?? [])
+      .filter((d) => at(get(d, "run_seq")) < at(get(e, "run_seq"))) : [];
+    if (typeof did !== "string" || !before.some((d) =>
+      (get(d, "tool_call_id") ?? get(get(d, "data"), "tool_use_id")) === get(e, "tool_call_id")
+      && at(get(d, "attempt")) === at(get(e, "attempt")))) bad.push(e);
+  }
+  if (n) rep.check("approval decision", bad.length === 0,
+    bad.length === 0 ? `${n} record(s) name a policy.decision of their run, call id and attempt before them`
+      : `the record(s) at seq ${bad.slice(0, 5).map((e) => str(get(e, "seq"))).join(", ")} carry `
+        + "ext.approval.decision without naming a policy.decision of their run, call id and attempt before it",
+    [], true);
+}
+
+/**
  * The ext names this verifier interprets (the VERSIONS rows' "ext" in tracekit/bundle_v2.py): name -> its check, whose
  * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9). Names that
  * share a check are read together, once: a grant, its revocation and the calls it released.
  */
 const EXT_CHECKS = new Map<string, ExtCheck>([["amended", checkAmended], ["openshell.policy", checkOpenshellPolicy],
-  ["box", checkBox], ["intent.grant", checkGrants], ["intent.revoked", checkGrants], ["grant", checkGrants]]);
+  ["box", checkBox], ["approval.decision", checkApprovalDecision], ["intent.grant", checkGrants],
+  ["intent.revoked", checkGrants], ["grant", checkGrants]]);
 const MAX_UNREAD = 20;   // `not interpreted` lines, one per ext name; the rest on one line
 /** A run's problems past which its later records go unchecked: forged records cost a verifier little. */
 const RUN_PROBLEMS = 20;
@@ -1162,8 +1210,10 @@ export async function checkExt(rep: Report, events: J[], full: J, floats: Floats
     ? `; tracekit >= ${full} checks it` : "";
   let shown = 0, more = 0;
   const done = new Set<ExtCheck>();
-  // records a check reads beside its names' own: the decisions TK-GRANT names, ext.grant or not
-  const also = new Map<ExtCheck, J[]>([[checkGrants, events.filter(tkGrant)]]);
+  // records a check reads beside its names' own: the decisions TK-GRANT names, ext.grant or not; the decisions
+  // ext.approval.decision names
+  const also = new Map<ExtCheck, J[]>([[checkGrants, events.filter(tkGrant)],
+    [checkApprovalDecision, events.filter((e) => get(e, "type") === "policy.decision")]]);
   const run = async (f: ExtCheck) => {   // once, over the records of every name it reads and what it reads beside them
     done.add(f);
     await f(rep, [...new Set([...[...carry].filter(([k]) => EXT_CHECKS.get(k) === f).flatMap(([, v]) => v),
@@ -1232,18 +1282,25 @@ function approvals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Ui
           + "bundles the policies its records cite");
         continue;
       }
-      let asks: Map<J, J>, flags: Set<J>;
+      let asks: Map<J, J>, flags: Set<J>, listed: Set<J>, parseAsks: boolean;
       try {
         const pol = strictParseBytes(snap, floats);
         asks = new Map(list(get(pol, "ask", [])).map((r: J) => [at(r, "id"), r]));
         flags = new Set(list(get(pol, "flag", [])).map((r: J) => at(r, "id")));
+        if (get(pol, "unknown_tools") === "flag") flags.add("TK-UNKNOWN-TOOL");
+        listed = new Set(list(get(get(pol, "approval_agent") ?? {}, "rules") ?? []).filter((r: J) =>
+          APPROVER_RULES.includes(r)));
+        parseAsks = get(pol, "on_parse_error", "ask") === "ask";
       } catch {
         problems.push(`${where}: the policy snapshot is not a policy`);
         continue;
       }
       for (const rid of get(dec, "rule_ids") ?? []) {
         const approval = get(asks.get(rid) ?? {}, "approval") ?? {};
-        if (!flags.has(rid) && (!isObj(approval) || !has(approval, "agent") || approval.passkey === "required"))
+        // an AI approver's rule: one the policy's approval_agent lists (from the reviewed list), held as an ask there,
+        // or TK-SHELL-PARSE where on_parse_error asks
+        const ai = listed.has(rid) && (asks.has(rid) || rid === "TK-SHELL-PARSE" && parseAsks) && has(req, "ai");
+        if (!flags.has(rid) && !ai && (!isObj(approval) || !has(approval, "agent") || approval.passkey === "required"))
           problems.push(`${where}: rule ${cut(str(rid), 64)} does not permit agents`);
       }
     }
@@ -1254,6 +1311,146 @@ function approvals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Ui
       + "by agents (model output); argument bounds are not checkable offline (salted commitments): audit one with "
       + "`tracekit signer reveal`" + (unchecked.length ? `; agent approval bounds unchecked for ${unchecked.length}` : ""),
     `${agents} approval(s) answered by agents`), (problems.length ? problems : unchecked).slice(0, 20), !problems.length);
+}
+
+/** The rules an operator's approval_agent may list (tracekit/policy2/compile.py APPROVER_RULES). */
+export const APPROVER_RULES: J[] = ["TK-SHELL-PARSE", "TK-A062", "TK-A025"];
+
+/** How long a person's answer counts as a precedent (tracekit/signer/pipeline.py PRECEDENT_S). */
+export const PRECEDENT_S = 30 * 86400;
+
+/**
+ * The AI approver's records (docs/approvals.md#the-ai-approver), on a line of their own when the bundle has any: the
+ * `ai` of approval requests, what AI answers relied on (`relied_on`), and its playbook, precedent and circuit-breaker
+ * records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`) carries `relied_on`
+ * with mode enforce, two answers that approve and a person's precedent, the request's policy hash, and no person's
+ * rejection of a call like it; with the snapshot of the policy it names, none of the labels its run carried is one the
+ * policy's approval_agent run bound names: those the signer says it read (`relied_on.labels`) and those the run's own
+ * run.label records add and clear, replayed up to the yes and up to its consume. That is checked on a line of its own,
+ * `AI run bound`, when any AI yes had a label either way, which also fails when the bundle has no readable snapshot of
+ * the policy such a yes cites (a bundle can leave a snapshot out, never its signed records; a snapshot whose
+ * approval_agent.run isn't an object can't be read). A precedent it names, when the bundle holds it, and any person's rejection the bundle holds of a call like it,
+ * count as the signer counts them: a person's own answer (not a self-approval, not break-glass) to a request with the
+ * same precedent key (its digest), tenant and requester, made in a run clean when asked and when answered (run_clean),
+ * before the answer and at most PRECEDENT_S before it, not revoked as a precedent (precedent.revoked) before it. A
+ * named precedent that doesn't count, or a rejection that does, fails the line; a named precedent the bundle doesn't
+ * hold (often another run's) is counted, not checked.
+ */
+/**
+ * The run bound (approval_agent.run.clean) of policy snapshot `snap`: [] when the policy has no approval_agent; null
+ * when there is no snapshot or it can't be read, `run` included (not an object, its `clean` not a list of strings).
+ */
+function runBound(snap: Uint8Array | undefined, floats: Floats): string[] | null {
+  let aa: J;
+  try {
+    if (!snap) return null;
+    aa = get(strictParseBytes(snap, floats), "approval_agent") ?? null;
+  } catch {
+    return null;
+  }
+  if (aa !== null && !isObj(aa)) return null;
+  const run = aa !== null && has(aa, "run") ? aa.run : {};
+  const clean = isObj(run) ? (has(run, "clean") ? run.clean : []) : null;
+  return Array.isArray(clean) && clean.every((c: J) => typeof c === "string") ? clean : null;
+}
+
+function aiApprovals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
+  const events: J[] = [...runs.values()].flatMap((rs) => rs.map((r) => r.event)).sort((a, b) => a.seq - b.seq);
+  const asked = new Map<string, J>(), answered = new Map<string, J>(), gone = new Map<string, number>(), broken: string[] = [];
+  const boundBroken: string[] = [];
+  let yes = 0, shadow = 0, checked = 0, outside = 0, changes = 0, labelled = 0;
+  const key = (tenant: J, id: J) => JSON.stringify([tenant ?? null, id ?? null]);
+  // the labels each run's records add and clear, as of each record of note
+  const carried = new Map<string, Set<string>>(), held = new Map<number, Set<string>>();
+  const consumed = new Map<string, Set<string>>();
+  for (const e of events) {
+    const d = e.data, k = key(get(e, "tenant"), get(d, "approval_id"));
+    const rk = key(get(e, "tenant"), get(e, "run_id"));
+    if (!carried.has(rk)) carried.set(rk, new Set());
+    const have = carried.get(rk)!;
+    if (e.type === "run.label" && typeof get(d, "label") === "string") {
+      if (get(d, "action") === "add") have.add(d.label); else have.delete(d.label);
+    } else if (e.type === "approval") held.set(e.seq, new Set(have));
+    else if (e.type === "approval.consumed" && !consumed.has(k)) consumed.set(k, new Set(have));
+    if (e.type === "approval.request" && has(d, "ai")) asked.set(k, e);
+    else if (e.type === "approval" && get(d, "approver_kind") !== "agent") answered.set(k, e);
+    else if (["playbook.entry", "precedent.revoked", "approver.enabled", "approver.switched"].includes(e.type)) {
+      changes++;
+      if (e.type === "precedent.revoked" && !gone.has(k)) gone.set(k, e.seq);
+    }
+  }
+  const when = (e: J) => Date.parse(e.ts) / 1000;
+  /** Why person's answer `p` (to request `pa`) doesn't count as a precedent at AI answer `e`, or null. */
+  const discounted = (p: J, pa: J, e: J): string | null => p.data.self_approved ? "was self-approved"
+    : p.data.break_glass ? "was a break-glass answer"
+    : !(pa.data.ai.clean && p.data.run_clean === true) ? "was made in a run that wasn't clean"
+    : p.seq > e.seq ? "came after the answer"
+    : when(e) - when(p) > PRECEDENT_S ? `is more than ${PRECEDENT_S / 86400} days older than the answer`
+    : (gone.get(key(get(e, "tenant"), p.data.approval_id)) ?? e.seq) < e.seq
+      ? "was revoked as a precedent before the answer" : null;
+  for (const e of events) {
+    const d = e.data;
+    if (e.type === "approval.suggested" && has(d, "relied_on")) shadow++;
+    if (!(e.type === "approval" && get(d, "approver_kind") === "agent" && get(d, "decision") === "approve")) continue;
+    const mine = asked.get(key(get(e, "tenant"), get(d, "approval_id")));
+    if (mine === undefined) continue;   // an agent approver bounded by argument fields, or a request outside the bundle
+    yes++;
+    const where = `seq ${e.seq}`, x = get(d, "relied_on");
+    if (x === undefined || x.mode !== "enforce"
+      || JSON.stringify((x.answers ?? []).map((a: J) => a.decision)) !== JSON.stringify(["approve", "approve"])) {
+      broken.push(`${where}: an AI yes that decided without two answers that approve`);
+      continue;
+    }
+    if (!x.precedents.approve.length || x.precedents.reject.length)
+      broken.push(`${where}: an AI yes without a person's precedent, or with a person's rejection of a call like it`);
+    if (x.policy_hash !== mine.data.policy_hash)
+      broken.push(`${where}: an AI yes that cites policy ${x.policy_hash}, not the one its call was held under`);
+    // the run bound of the policy it cites decides whether the labels the run carried let it answer: those the signer
+    // read, and those the run's own records held at the yes and at its consume
+    const ways: [string, Set<string>][] = [["that carried {}", new Set(x.labels)],
+      ["whose records held {} at the yes", held.get(e.seq)!],
+      ["whose records held {} at its consume", consumed.get(key(get(e, "tenant"), get(d, "approval_id"))) ?? new Set()]];
+    if (ways.some(([, ls]) => ls.size)) {
+      labelled++;
+      const bound = runBound(policies.get(x.policy_hash), floats);
+      if (bound === null) {
+        const had = [...new Set(ways.flatMap(([, ls]) => [...ls]))].sort().join(", ");
+        boundBroken.push(`${where}: an AI yes in a run that carried ${had}, under policy ${x.policy_hash}, whose `
+          + "snapshot the bundle doesn't hold (or can't be read): export the run with its policy snapshots");
+      } else {
+        for (const [how, ls] of ways) {
+          const met = [...ls].filter((l) => bound.includes(l)).sort();
+          if (met.length) boundBroken.push(`${where}: an AI yes in a run ${how.replace("{}", met[0])}, which the `
+            + "policy's run bound names");
+        }
+      }
+    }
+    for (const pid of x.precedents.approve) {
+      const k = key(get(e, "tenant"), pid), p = answered.get(k), pa = asked.get(k);
+      if (p === undefined || pa === undefined) { outside++; continue; }
+      checked++;
+      const why = p.data.decision !== "approve" ? "is no person's approval"
+        : pa.data.ai.digest !== mine.data.ai.digest ? "is of another kind of call"
+        : pa.data.requester !== mine.data.requester ? "is another requester's" : discounted(p, pa, e);
+      if (why) broken.push(`${where}: precedent ${cut(str(pid), 64)} ${why}`);
+    }
+    for (const [k, p] of answered) {   // a rejection that counted, named or not
+      const pa = asked.get(k), [tenant, pid] = JSON.parse(k);
+      if (tenant === (get(e, "tenant") ?? null) && pa !== undefined && p.data.decision === "reject"
+        && pa.data.ai.digest === mine.data.ai.digest && pa.data.requester === mine.data.requester
+        && discounted(p, pa, e) === null)
+        broken.push(`${where}: a person's rejection of a call like it (${cut(str(pid), 64)}) counted when the AI said yes`);
+    }
+  }
+  if (!asked.size && !shadow && !changes) return;   // a bundle without the AI approver keeps the report it always had
+  rep.check("AI approvals", !broken.length, `${yes} AI approval(s) that decided, each with two answers that agree and a `
+    + `person's precedent (${checked} precedent(s) checked in this bundle, ${outside} in runs it doesn't hold); ${shadow} `
+    + `shadow suggestion(s); ${changes} switch, playbook, precedent and circuit-breaker record(s)`,
+    broken.slice(0, 20));
+  if (labelled) {
+    rep.check("AI run bound", !boundBroken.length, `${labelled} AI approval(s) in a run that carried a label, each read `
+      + "against the run bound of the policy snapshot it cites", boundBroken.slice(0, 20));
+  }
 }
 
 const CONTAINMENT = ["incident.opened", "incident.updated", "run.held", "run.quarantined", "run.resumed"];
@@ -1464,6 +1661,55 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
     rep.check("incident policies", false, `${unbundled.size} cited policy(ies) not in the bundle: their incidents are `
       + "signer-asserted, not recomputed (export the run with the signer's config, which bundles the policies its "
       + "records cite)", [...unbundled].sort(byCodePoint).slice(0, 20), true);
+}
+
+/** The `run labels` line, as verify/v2.py's _labels: each run's labels replayed under the compiled policies of the
+ * policy_hashes its decisions name (the bundle's or the trust config's), each record under its own; an inherited one
+ * signer-asserted; a `label policies` warning for each policy a decision names that neither carries. */
+function checkLabels(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
+  let problems: string[] = [];
+  const unbundled = new Set<string>(), inherited: [string, string, J][] = [], budget = new Budget();
+  const refused = new Map<string, [string, string]>();   // what verify/v2.py's _labels refuses, by policy and rule
+  let checked = 0, asserted = 0;
+  for (const rs of runs.values()) {
+    const events = rs.map((r) => r.event).filter((e) => isObj(e) && isObj(e.data));
+    const marked = events.some((e) => e.type === "run.label" || e.type === "policy.decision"
+      && Object.hasOwn(e.data, "run_labels"));
+    const hashes = new Set(events.filter((e) => e.type === "policy.decision" && Object.hasOwn(e.data, "policy_hash"))
+      .map((e) => str(e.data.policy_hash)));
+    for (const h of hashes) if (!policies.has(h)) unbundled.add(cut(h, 80));
+    if (!hashes.size || [...hashes].some((h) => !policies.has(h))) {
+      if (marked) asserted++;
+      continue;
+    }
+    const srcs = new Map([...hashes].sort(byCodePoint).map((h) => [h, new Sources(strictParseBytes(policies.get(h)!, floats))]));
+    for (const [h, src] of srcs)
+      for (const rid of src.refused.keys()) refused.set(JSON.stringify([cut(h, 80), cut(str(rid), 64)]), [cut(h, 80), cut(str(rid), 64)]);
+    if (marked || [...srcs.values()].some((src) => src.tracked.size)) {
+      checked++;
+      try {
+        extend(problems, runLabels(events, srcs, inherited, budget));
+      } catch (e) {
+        if (!(e instanceof Spent)) throw e;
+        problems.push(`${e.message}: the rest of the bundle's runs weren't replayed`);
+        break;
+      }
+    }
+  }
+  problems = [...refused.values()].sort(([a, b], [c, d]) => byCodePoint(a, c) || byCodePoint(b, d))
+    .map(([h, rid]) => `policy ${h}: ${rid} reads the labels with a pattern the signer would refuse (outside the RE2 `
+      + "subset check_pattern accepts, or too large): not replayed").concat(problems);
+  if (checked || asserted)
+    rep.check("run labels", !problems.length, found(problems, `${checked} run(s) replayed under their policies, `
+      + `${asserted} signer-asserted (under a policy not in the bundle)`
+      + (inherited.length ? `; ${inherited.length} label(s) inherited from another run of the requester, `
+        + "signer-asserted (that run's bundle shows its add)" : ""), "run labels"),
+    problems.slice(0, 20));
+  if (unbundled.size)
+    rep.check("label policies", false, `${unbundled.size} policy(ies) neither in the bundle nor the trust config: the `
+      + "labels of the runs decided under them are signer-asserted, not replayed, so one a signer left out wouldn't "
+      + "show (export the run with the signer's config, which bundles the policies its records cite, or add the "
+      + "policy's text to the trust config's `policies`)", [...unbundled].sort(byCodePoint).slice(0, 20), true);
 }
 
 /** The problems of one run's records with the holds and quarantines they record (verify/v2.py's _honoured). */
@@ -1710,14 +1956,14 @@ function level(cosigs: [string, bigint][], witnesses: Map<string, string>, trust
 /** dev: no pinned witness cosigned, or a self-approval in the run; local: only operator-run ones; witnessed: enough
  * independent ones. A run-set's registry notes cap the level by the same rule. */
 async function assurance(origin: string, cosigs: [string, bigint][], witnesses: Map<string, string>, trust: Trust,
-  algs: Set<string>, selfApproved: boolean, registryNotes: [string, bigint][][]) {
+  algs: Set<string>, selfApproved: boolean, registryNotes: [string, bigint][][], selfCleared = false) {
   let hybrid = false;
   for (const k of trust.logs) {
     const p = await parseVkey(k);
     hybrid ||= p.name === origin && p.type === HYBRID;
   }
   const times = cosigs.filter(([k]) => witnesses.get(k) !== "operator").map(([, ts]) => ts);
-  let lvl = selfApproved ? "dev" : level(cosigs, witnesses, trust);
+  let lvl = selfApproved || selfCleared ? "dev" : level(cosigs, witnesses, trust);
   let capped: string | null = registryNotes.map((c) => level(c, witnesses, trust))
     .reduce((a, b) => LEVELS.indexOf(b) < LEVELS.indexOf(a) ? b : a, "witnessed");
   if (LEVELS.indexOf(capped) < LEVELS.indexOf(lvl)) lvl = capped;
@@ -1727,7 +1973,8 @@ async function assurance(origin: string, cosigs: [string, bigint][], witnesses: 
   return `${lvl}; records ${[...algs].sort(byCodePoint).join("+")}; checkpoint ${hybrid ? "Ed25519 + SLH-DSA-SHA2-128s" : "Ed25519 only"} `
     + `(${origin})` + (cosigned ? `; cosigned ed25519 by ${cosigned}` : "; no witness cosignature")
     + (times.length ? `; earliest independent anchor ${fmt(times.reduce((a, b) => b < a ? b : a))}` : "")
-    + (capped ? `; capped by the run-set's registry notes (${capped})` : "") + (selfApproved ? "; approvals: self" : "");
+    + (capped ? `; capped by the run-set's registry notes (${capped})` : "") + (selfApproved ? "; approvals: self" : "")
+    + (selfCleared ? "; labels: self-cleared" : "");
 }
 
 /** `x` without control characters and the bidirectional and zero-width format characters that would reorder or hide

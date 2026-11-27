@@ -224,6 +224,11 @@ def _tally(key, records, tr, rules, unread):
     return held, list(waits.values())
 
 
+def _where(x):
+    """Where an example call was made: its run, and the sub-agent the harness said made it."""
+    return f"run {x['run_id']}" + (f", subagent {x['agent_id']} as reported" if x.get("agent_id") else "")
+
+
 def _oversight(holds, waits, span):
     """How much of the holds a person answered, from the signed approval records. Each hold's first answer is one of:
     a person's (neither of the next two), the run's own user's answer to its own call (`self`: the agent runs as that
@@ -362,7 +367,9 @@ def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None,
     def example(key, x):
         e = x["event"]
         return {"run_id": key[1], "run_seq": e["run_seq"], "call": call_text(e["data"].get("tool"),
-                                                                             args.get((key, e["run_seq"])))}
+                                                                             args.get((key, e["run_seq"]))),
+                # a sub-agent's call: its agent_id as the harness reported it
+                **({"agent_id": e["agent_id"]} if e.get("agent_id", "main") != "main" else {})}
     for g in rules.values():
         shown = {}   # call text -> its example: the same call twice is shown once
         for key, x in g["examples"]:
@@ -462,7 +469,7 @@ def text(rep, config=None, data_dir=None):
             lw = holds["longest_wait"]
             out.append(f"  longest wait for an answer: {_wait(lw['seconds'])} ({lw['tool']}, run {lw['run_id']})")
         out += _oversight_lines(holds["oversight"])
-        out += [f"  e.g. {o}: {x['call']}  (run {x['run_id']})" for o, x in holds["examples"].items()]
+        out += [f"  e.g. {o}: {x['call']}  ({_where(x)})" for o, x in holds["examples"].items()]
     for dec, title in (("deny", "Denied"), ("flag", "Flagged")):
         mine, flags = [g for g in rep["rules"] if g["decision"] == dec and g["why"]], dec == "flag"
         apart = [(f"also matched (not why it was {title.lower()})", False),
@@ -471,7 +478,7 @@ def text(rep, config=None, data_dir=None):
             out += ["", f"{title} calls ({calls[dec]:,}), by rule (one call can match several rules):"]
             for g in mine[:FLAGS_SHOWN] if flags else mine:   # flags are many: the most frequent, one example each
                 out.append(f"  {g['rule']}  {g['count']:,}  {g['reason']}".rstrip())
-                out += [f"      e.g. {x['call']}  (run {x['run_id']})" for x in g["examples"][:1 if flags else None]]
+                out += [f"      e.g. {x['call']}  ({_where(x)})" for x in g["examples"][:1 if flags else None]]
             if flags and mine[FLAGS_SHOWN:]:
                 out.append(f"  and {len(mine) - FLAGS_SHOWN} more flag rules (--json lists every rule)")
             for label, why in apart:
@@ -595,6 +602,11 @@ def share(rep):
     return "\n".join(_escaped(line) for line in out)
 
 
+def store_config(config, data_dir):
+    """The signer config the report reads: --config's file, else --data-dir's directory, else the dev signer's."""
+    return load_config(config) if config else {"data_dir": data_dir or dev_data_dir(create=False)}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit report", description="what the agents did in a window, on one page, "
                                  "from the v2 signer's store (read as tracekit view reads it, while the signer runs): "
@@ -618,7 +630,7 @@ def main(argv=None):
     if a.since >= (time.time() if a.until is None else a.until):
         ap.error("--since must be before --until (default: now)")
     try:
-        cfg = load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir(create=False)}
+        cfg = store_config(a.config, a.data_dir)
         dev, notes = not (a.config or a.data_dir), []
         rep = build(cfg, a.since, time.time() if a.until is None else a.until, a.tenant, a.log_vkey,
                     # --share shows no call, so it reads none: each read is a signed content.accessed record

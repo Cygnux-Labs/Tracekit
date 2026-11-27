@@ -4,7 +4,8 @@ It detects the setup: v1 system mode (/etc/tracekit/client.json names a socket),
 the v2 dev signer (no system config), or the signer.yaml given with --config. Every check has a stable id and gives
 ok, warn or fail; docs/doctor.md lists them. Exit 1 when any fails, else 0: a warning is advice, not a failure.
 Run it as root for system mode: it then probes the files as the agent's user, in a forked child that dropped to it.
-`--k8s` checks the pod it runs in, or the manifests under `--manifests DIR`, instead.
+`--k8s` checks the pod it runs in, or the manifests under `--manifests DIR`, instead; `--reviewer reviewer.yaml`, run
+as the AI reviewer's user, checks that reviewer (reviewer_checks).
 
 Doctor output is advice, not evidence: it reads the host as it is now, and nothing it prints is signed or verified.
 """
@@ -16,6 +17,7 @@ import hashlib
 import itertools
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -50,6 +52,8 @@ REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 
           f"{shlex.quote(_PY)} -m tracekit init --v2 --user <agent-user>"
           + (" --experimental-macos" if sys.platform == "darwin" else ""))
 V2_FLAGS = "--approver, --policy, --harness, --egress, --project DIR, --managed-only"   # some of what init --v2 records
+# the environment names that move where the dev hook finds its signer and data, or the Python it runs (D-HOOK-ENV)
+_HOOK_ENV = ("HOME", "XDG_DATA_HOME", "TRACEKIT_PYTHON", "TRACEKIT_SIGNER")
 DEV_INFO = {"D-WITNESS-CONFIGURED"}   # info in the dev profile, not a warning: the dev signer uses the public
 # witness by default, and has none only until a release names it or after --no-witness
 ROOT_DOCTOR = "run doctor as root (system mode: sudo /opt/tracekit/bin/python -I -m tracekit doctor)"
@@ -77,7 +81,77 @@ def report(results, as_json=False):
     return 1 if any(r["status"] == FAIL for r in results) else 0
 
 
-def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None):
+def _google_re2_supported(python_version=None, implementation=None, sys_platform=None, machine=None):
+    """Whether google-re2 is declared for this Python and platform.
+
+    Keep these conditions in sync with the google-re2 markers in pyproject.toml.
+    """
+    python_version = python_version or f"{sys.version_info.major}.{sys.version_info.minor}"
+    implementation = implementation or platform.python_implementation()
+    sys_platform = sys_platform or sys.platform
+    machine = machine or platform.machine()
+
+    version = tuple(int(part) for part in python_version.split("."))
+
+    if implementation != "CPython" or not ((3, 10) <= version < (3, 15)):
+        return False
+
+    return (
+        (sys_platform == "win32" and (
+            machine in ("x86", "AMD64") or
+            (version >= (3, 11) and machine == "ARM64")
+        ))
+        or (sys_platform == "linux" and machine in ("x86_64", "aarch64"))
+        or (sys_platform == "darwin" and machine in ("x86_64", "arm64"))
+    )
+
+
+def _google_re2_wheel_expected():
+    """The marker, and what it cannot see: libc and OS version constraints."""
+    if not _google_re2_supported():
+        return False
+
+    if sys.platform == "linux":
+        if sys.maxsize <= 2**32 - 1:
+            return False
+        libc, version = platform.libc_ver()
+        return (
+            libc == "glibc"
+            and tuple(int(p) for p in version.split(".")[:2] if p.isdigit()) >= (2, 28)
+        )
+
+    if sys.platform == "darwin":
+        return int((platform.mac_ver()[0] or "0").split(".")[0]) >= 13
+
+    return True
+
+
+def reviewer_checks(path):
+    """The AI reviewer's own checks of its reviewer.yaml `path`, as the user doctor runs as (the reviewer's: docs/
+    approvals.md#the-ai-approver): D-REVIEWER-CONFIG, it loads, and it, its folder, `state_file` and `key_file` are that
+    user's or root's and not writable by group or others (reviewer.load); D-REVIEWER-MODEL, a model server on this
+    machine's loopback listens as that user or root (reviewer.endpoint_problem)."""
+    from . import reviewer
+    try:
+        cfg = reviewer.load(path)
+    except (OSError, ValueError) as e:
+        return [result("D-REVIEWER-CONFIG", FAIL, str(e), "run doctor as the reviewer's user (sudo -u <reviewer> "
+                       "/opt/tracekit/bin/python -m tracekit doctor --reviewer PATH); give reviewer.yaml, its folder, "
+                       "state_file and key_file to that user and chmod go-w them")]
+    target = cfg.get("url") or cfg["gateway"]
+    why = reviewer.endpoint_problem(target)
+    return [result("D-REVIEWER-CONFIG", OK, f"{path} loads, and it and the files it names are this user's or root's, "
+                   "not writable by group or others"),
+            result("D-REVIEWER-MODEL", OK if not why else FAIL, why or (
+                f"{target} listens as this user or root" if reviewer.loopback(target) else
+                f"{target} is off this machine, called over https with a key or token"),
+                "run the model server as the reviewer's user, its model files owned by that user; or use an endpoint "
+                "off this machine with a key")]
+
+
+def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None, reviewer=None):
+    if reviewer:
+        return report(reviewer_checks(reviewer), as_json)
     if not (k8s or manifests):
         rows = collect(config, issuer_key)
         code = report(rows, as_json)
@@ -122,8 +196,9 @@ def collect(config=None, issuer_key=None):
                          signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
                          client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
                          sandbox_settings=layers,
-                         gemini_settings=_gemini(agent and agent.pw_dir,
+                         gemini_settings=_gemini(agent and os.path.join(agent.pw_dir, ".gemini", "settings.json"),
                                                  h.get("settings") if h.get("agent") == "gemini" else None),
+                         gemini_project=h.get("settings") if h.get("agent") == "gemini" else None,
                          harnesses={agent_name: h["settings"]} if agent_name != "claude" and h.get("settings")
                          else None, no_hooks=h.get("no_hooks") is True)
         # the re-init a fix names keeps init's agent, and --no-hooks where init was told it or Claude Code's
@@ -148,8 +223,9 @@ def collect(config=None, issuer_key=None):
                 text = text.replace(REINIT + " --managed-only", REINIT)
             return text.replace(REINIT, REINIT + extra) + tail if REINIT in text else text
         # a detail's re-init (D-HOOKS-PRESENT after init --no-hooks) is the one that adds the hooks
-        return out + [dict(r, fix=again(r["fix"], agent_flag + no_hooks + flags),
-                           detail=again(r["detail"], agent_flag + flags)) for r in rows]
+        return out + _signer_answers((sc or {}).get("signer")) + [
+            dict(r, fix=again(r["fix"], agent_flag + no_hooks + flags), detail=again(r["detail"], agent_flag + flags))
+            for r in rows]
     if sc:
         return out
     from . import agent_hooks
@@ -157,15 +233,19 @@ def collect(config=None, issuer_key=None):
     from .signer.service import dev_content, dev_witnesses
     dev_data = autospawn.data_dir()
     project = os.path.join(os.getcwd(), ".claude")
-    mine, harnesses = client.client_config(), _dev_harnesses()
+    mine, harnesses, plugin_on = client.client_config(), _dev_harnesses(), install.plugin_enabled()
     rows = v2_checks({"data_dir": dev_data, "content": dev_content().get("content"),
                       "witnesses": dev_witnesses(dev_data)}, "dev",
-                     settings=_dev_settings(), plugin=install.plugin_enabled(), harnesses=harnesses,
-                     no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True,
+                     settings=_dev_settings(), plugin=plugin_on, harnesses=harnesses,
+                     no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True, init_run=bool(mine),
                      sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
                                        os.path.join(project, "settings.local.json"), _managed()],
-                     gemini_settings=_gemini(os.path.expanduser("~"),
-                                             os.path.join(os.getcwd(), ".gemini", "settings.json")))
+                     gemini_settings=_gemini(agent_hooks.config_path("gemini"),
+                                             os.path.join(os.getcwd(), ".gemini", "settings.json")),
+                     gemini_project=os.path.join(os.getcwd(), ".gemini", "settings.json"))
+    if plugin_on and not _plugin_idle(plugin_on, False, _dev_settings()) and not install.plugin_hook_python():
+        rows.append(result("D-HOOKS-PYTHON", FAIL, "the plugin's hook finds no Python with tracekit (TRACEKIT_PYTHON, "
+                           "python3, python), so it blocks every tool call", install.plugin_python_fix()))
     for trusting in agent_hooks.TRUSTING:   # their v1 hooks (init --dev --agent codex) run only once trusted, as v2 do
         if trusting in harnesses:
             continue
@@ -188,8 +268,112 @@ def collect(config=None, issuer_key=None):
     return rows
 
 
+def _signer_answers(signer, wait=10.0):
+    """D-SIGNER-ANSWERS: the system signer answers a status call on its socket (none when client.json names none).
+    The call runs on a thread doctor stops waiting for after `wait` seconds, so a signer that trickles bytes can't hang
+    it; a refused call reads as refused; a signer that answers another protocol is said so (an older one still runs
+    after an upgrade: restart it; a newer one: upgrade this venv)."""
+    if not signer:
+        return []
+    import threading
+
+    from .sdk import client as sdk_client
+    from .signer.rpc_schema import RPCError
+    service_log = (f"sudo launchctl print system/{install.V2_LABEL}; sudo tail {install.V2_DATA}/signer.log"
+                   if sys.platform == "darwin" else
+                   f"systemctl status {install.V2_UNIT}; journalctl -u {install.V2_UNIT} -n 50")
+    outcome = []
+
+    def ask():
+        c = sdk_client.Client(signer, timeout=5)
+        try:
+            outcome.append(c.status({})["signer"]["version"])
+        except (sdk_client.SignerUnavailable, sdk_client.Incompatible, RPCError, OSError) as e:
+            outcome.append(e)
+        finally:
+            c.close()
+
+    t = threading.Thread(target=ask, daemon=True)
+    t.start()
+    t.join(wait)
+    e = outcome[0] if outcome else None
+    if outcome and not isinstance(e, Exception):
+        return [result("D-SIGNER-ANSWERS", OK, f"the signer at {signer} answers (Tracekit {e})")]
+    start = (f"read what the signer says: {service_log}; fix it and start it again (re-running init keeps what "
+             "you added to signer.yaml where it can, and rewrites the service file)")
+    fix = start
+    if isinstance(e, sdk_client.Incompatible):
+        detail = (f"an older signer still runs at {signer}, from before the upgrade ({e})" if e.older else
+                  f"the signer at {signer} runs a newer Tracekit than this doctor ({e})")
+        fix = (f"restart it (Linux: sudo systemctl restart {install.V2_UNIT}; macOS: sudo launchctl kickstart -k "
+               f"system/{install.V2_LABEL})" if e.older else f"upgrade {install.OPT} to the signer's release: {REINIT}")
+    elif isinstance(e, RPCError):
+        detail = f"the signer at {signer} answers, but refused this identity's status call ({str(e)[:200]})"
+        fix = "run doctor as root, or as a user signer.yaml's tenants or authorize let call status"
+    else:
+        detail = (f"the signer does not answer on {signer}: {str(e)[:200]}" if e else
+                  f"the signer on {signer} did not answer within {wait:g} s")
+    return [result("D-SIGNER-ANSWERS", FAIL, detail, fix)]
+
+
 def _managed():
     return install.MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+
+def _dropin_folder(settings):
+    """Claude Code's `managed-settings.d/`: the drop-ins it merges with the admin-managed settings file beside them."""
+    return os.path.join(os.path.dirname(settings), "managed-settings.d")
+
+
+def _managed_dropins(settings):
+    """The drop-ins Claude Code merges with the admin-managed settings `settings`, in its order: the `*.json` files of
+    the `managed-settings.d/` folder beside it, by name. Claude Code's docs (code.claude.com/docs/en/managed-settings,
+    "Split a file-based policy across teams", read 2026-11-23): it "merges `managed-settings.json` first, then every
+    `*.json` file in the directory in alphabetical order", and "ignores hidden files and files that don't end in
+    `.json`"."""
+    folder = _dropin_folder(settings)
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:   # no folder
+        return []
+    return [os.path.join(folder, n) for n in names
+            if n.endswith(".json") and not n.startswith(".") and os.path.isfile(os.path.join(folder, n))]
+
+
+def _admin_files(settings):
+    """The file-based managed sources in the order Claude Code merges them: `managed-settings.json`, then each drop-in
+    by name."""
+    return [settings, *_managed_dropins(settings)]
+
+
+def _setting_in_order(paths, key):
+    """(the file whose value Claude Code uses for `key`, that value) over file-based managed sources in merge order.
+    Its docs: for a single value, "the later file's value replaces the earlier one", so the last file that sets the key
+    decides — and a drop-in setting it false lifts an earlier true."""
+    at, value = None, None
+    for p in paths:
+        v = _setting(p, key)
+        if v is not None:
+            at, value = p, v
+    return at, value
+
+
+def _dropins(settings, unreadable=()):
+    """(problem with the drop-ins beside the admin-managed `settings`, what the detail then says was checked). A drop-in
+    the agent's user can write is a way to set `disableAllHooks` and turn every hook off, so the folder and each file in
+    it must be trusted the way the managed file is: `trusted_file` resolves a symlink and checks every directory above
+    it, which is what Claude Code reads (its docs: "You can deploy any of these files as a symbolic link, and Claude
+    Code reads the file the link leads to"). A source the agent's user can't read is a fault too: its docs say that when
+    the OS denies the read, "every session starts without that source's policies", and `unreadable` names those. The
+    folder is checked even when it holds no drop-ins: an empty one the agent's user can write is where a
+    `99-off.json` can be added."""
+    folder, found = _dropin_folder(settings), _managed_dropins(settings)
+    if not found and not os.path.isdir(folder):
+        return None, ""
+    bad = [why for why in map(trusted_file, (folder, *found)) if why]
+    bad += [f"{p} isn't readable by the agent's user, so its Claude Code starts without that source's policies"
+            for p in (folder, *found) if p in unreadable]
+    return "; ".join(bad) or None, (f", and the {len(found)} drop-in(s) in {folder} are root-owned too" if found
+                                    else f", and {folder} is root-owned too")
 
 
 def _layers(paths, key):
@@ -214,15 +398,73 @@ def _sandbox(paths):
     return out
 
 
-def _gemini(home, project):
-    """Gemini CLI's settings files, lowest rank first: system defaults, the user's, the project's, system settings
-    (the system ones where Gemini CLI looks for them, its two environment variables included)."""
-    d = {"darwin": "/Library/Application Support/GeminiCli", "win32": r"C:\ProgramData\gemini-cli"}.get(
-        sys.platform, "/etc/gemini-cli")
-    system = os.environ.get("GEMINI_CLI_SYSTEM_SETTINGS_PATH") or os.path.join(d, "settings.json")
-    defaults = os.environ.get("GEMINI_CLI_SYSTEM_DEFAULTS_PATH") or os.path.join(os.path.dirname(system),
-                                                                                  "system-defaults.json")
-    return [p for p in (defaults, home and os.path.join(home, ".gemini", "settings.json"), project, system) if p]
+def _gemini(user, project, cli="gemini"):
+    """Gemini CLI's settings files (cli "qwen": Qwen Code's, a fork), lowest rank first: system defaults, the user's,
+    the project's, system settings (the system ones where the CLI looks for them, its two environment variables
+    included; qwen-code 0.28.0 storage-paths-lite)."""
+    env, mac, folder = ("QWEN_CODE", "QwenCode", "qwen-code") if cli == "qwen" else ("GEMINI_CLI", "GeminiCli",
+                                                                                       "gemini-cli")
+    d = {"darwin": f"/Library/Application Support/{mac}", "win32": rf"C:\ProgramData\{folder}"}.get(
+        sys.platform, f"/etc/{folder}")
+    system = os.environ.get(f"{env}_SYSTEM_SETTINGS_PATH") or os.path.join(d, "settings.json")
+    defaults = os.environ.get(f"{env}_SYSTEM_DEFAULTS_PATH") or os.path.join(os.path.dirname(system),
+                                                                              "system-defaults.json")
+    return [p for p in (defaults, user, project, system) if p]
+
+
+def _folder_trust(cli, home, project):
+    """Whether Gemini CLI (cli "gemini") or Qwen Code ("qwen") loads the project settings file `project` by its folder
+    trust, as gemini-cli 0.68.0 (checkPathTrust) and qwen-code 0.28.0 (isWorkspaceTrusted) decide from their files
+    (home: the agent user's home, else this user's): True when it is the user's own file, or
+    security.folderTrust.enabled is off in the system and user settings (Gemini CLI's default is on, Qwen Code's off);
+    else by the rule in trustedFolders.json for the project's folder (Gemini CLI: the longest rule path; Qwen Code:
+    the deepest folder, DO_NOT_TRUST on a tie), no rule being untrusted; None when that file can't be read (the CLI
+    stops then). Before folder trust, Gemini CLI's environment decides: GEMINI_RESTRICTED_MODE=true or
+    GEMINI_CLI_TRUST_WORKSPACE=false untrusted, GEMINI_CLI_TRUST_WORKSPACE=true trusted (Qwen Code 0.28.0 has no
+    such variable).
+    -> (that, the trust file, the variable setting that made it untrusted or None).
+    lean: IDE trust decides before the file and doctor can't see it; the environment read is doctor's own (this user's
+    only), which a Gemini CLI started elsewhere may not share; a trust file with comments (JSONC) reads as unreadable"""
+    from . import agent_hooks
+    user = agent_hooks.config_path(cli, home=home)
+    trust = (None if home else os.environ.get(f"{'QWEN_CODE' if cli == 'qwen' else 'GEMINI_CLI'}_TRUSTED_FOLDERS_PATH")
+             ) or os.path.join(os.path.dirname(user), "trustedFolders.json")
+    on = cli == "gemini"
+    for s in _layers(_gemini(user, None, cli), "security"):   # a project's can't turn it on or off
+        if isinstance(s.get("folderTrust"), dict) and s["folderTrust"].get("enabled") is not None:
+            on = s["folderTrust"]["enabled"]
+    if os.path.realpath(project) == os.path.realpath(user):
+        return True, trust, None
+    if cli == "gemini" and not home:
+        for env in ("GEMINI_RESTRICTED_MODE=true", "GEMINI_CLI_TRUST_WORKSPACE=false"):
+            if os.environ.get(env.split("=")[0]) == env.split("=")[1]:
+                return False, trust, env
+        if os.environ.get("GEMINI_CLI_TRUST_WORKSPACE") == "true":
+            return True, trust, None
+    if not on:
+        return True, trust, None
+    try:
+        rules = _json(trust)
+    except FileNotFoundError:
+        rules = {}
+    except (OSError, ValueError):
+        return None, trust, None
+    if not isinstance(rules, dict):
+        return None, trust, None
+
+    def real(p):
+        p = os.path.realpath(p)
+        return p.lower() if sys.platform in ("darwin", "win32") else p
+    here, best = real(os.path.dirname(os.path.dirname(project))), None
+    for rule, level in rules.items():
+        if level not in ("TRUST_FOLDER", "TRUST_PARENT", "DO_NOT_TRUST"):
+            continue
+        at = real(os.path.dirname(rule) if level == "TRUST_PARENT" else rule)
+        if here == at or here.startswith(at.rstrip(os.sep) + os.sep):
+            rank = (len(rule),) if cli == "gemini" else (len(at.rstrip(os.sep).split(os.sep)), level == "DO_NOT_TRUST")
+            if best is None or rank > best[0]:
+                best = rank, level
+    return best is not None and best[1] != "DO_NOT_TRUST", trust, None
 
 
 def _dev_settings():
@@ -268,6 +510,12 @@ def _harness_hooks(harness, config):
                      for c in (table[k] if isinstance(table[k], list) else [table[k]])]
                 for k, ev in agent_hooks.JCODE_EVENTS.items() if k in table}
     return config.get("hooks") or {}
+
+
+def _hook_entries(hooks):
+    """[(event, hook)] of a coding agent's {event: [hook groups]}: each group's hooks, or the group itself."""
+    return [(ev, h) for ev, groups in hooks.items() for g in groups
+            for h in (g.get("hooks") or () if "hooks" in g else [g]) if isinstance(h, dict)]
 
 
 def _config(harness, path):
@@ -321,7 +569,7 @@ def _hook_commands(harness, path):
         return [shlex.join(argv)] if argv else []
     if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
-        return list(json.loads(m.group(1)).values()) if m else []
+        return list(_loads(m.group(1)).values()) if m else []
     hooks = _harness_hooks(harness, _config(harness, path))
     return [h["command"] for lst in hooks.values() for g in lst
             for h in (g.get("hooks") or () if "hooks" in g else [g])
@@ -334,7 +582,7 @@ def _gptme_argv(path):
     if not source.startswith(agent_hooks.GPTME_MARKER + "\n"):
         return []
     match = re.search(r"^COMMAND = (.*)$", source, re.M)
-    return json.loads(match[1]) if match else []
+    return _loads(match[1]) if match else []
 
 
 def _outside_cwd(path):
@@ -523,20 +771,24 @@ def _dev_signer():
 # the environment variables that place a user's hook files (install.user_settings_all, agent_hooks.config_path); `~`
 # is USERPROFILE on Windows
 USER_ENV = ("USERPROFILE" if os.name == "nt" else "HOME", "CLAUDE_CONFIG_DIR", "TRACEKIT_CLIENT_HOME", "CODEX_HOME",
-            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG", "COPILOT_HOME", "CODEBUDDY_CONFIG_DIR")
+            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG", "COPILOT_HOME", "CODEBUDDY_CONFIG_DIR", "QWEN_HOME",
+            "INTERPRETER_HOME")
 
 
 def _user_hook_files():
     """(the realpaths of the user's own hook files, the USER_ENV variables set to a relative path). A file such a
     variable places resolves against doctor's working directory, so it isn't counted as the user's (the XDG spec says
-    to ignore a relative XDG_CONFIG_HOME, and Codex resolves a relative CODEX_HOME against its own directory)."""
+    to ignore a relative XDG_CONFIG_HOME, and Codex, Qwen Code and Open Interpreter resolve a relative CODEX_HOME,
+    QWEN_HOME or INTERPRETER_HOME against their own directory)."""
     from . import agent_hooks
-    relative = [k for k in USER_ENV if os.environ.get(k) and not os.path.isabs(os.environ[k])]
+    relative = [k for k in USER_ENV if os.environ.get(k) and not os.path.isabs(
+        os.path.expanduser(os.environ[k]) if k == "QWEN_HOME" else os.environ[k])]   # Qwen Code expands ~
     record = os.environ.get("TRACEKIT_CLIENT_HOME") or os.path.expanduser("~")   # init's record is under it
     paths = [install.user_settings(), os.path.join(os.path.expanduser("~"), ".claude", "settings.json"),
              *(install.user_settings_all() if os.path.isabs(record) else ()),   # + the absolute paths it records
              *(agent_hooks.config_path(h) for h in agent_hooks.HARNESSES   # it resolves CODEX_HOME itself
-               if not (h == "codex" and "CODEX_HOME" in relative))]
+               if {"codex": "CODEX_HOME", "qwen": "QWEN_HOME", "interpreter": "INTERPRETER_HOME"}.get(h)
+               not in relative)]
     return {os.path.realpath(p) for p in paths if os.path.isabs(p)}, relative
 
 
@@ -641,11 +893,24 @@ def _reasoning_checks(add, harnesses, vault, fix):
     for harness, path in sorted((harnesses or {}).items()):
         if harness == "codex":
             toml = os.path.join(os.path.dirname(path), "config.toml")
+            value, why = None, None
             try:
-                value = agent_hooks.codex_summary(install.agent_file(toml).decode("utf-8"))
-            except (OSError, ValueError):
-                value = None
+                text = install.agent_file(toml).decode("utf-8")
+                try:
+                    from . import tomlsafe   # Python 3.11 and newer
+                    tomlsafe.loads(text)
+                except ImportError:   # lean: no TOML parser before 3.11, the line scan alone decides there
+                    pass
+                value = agent_hooks.codex_summary(text)
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError) as e:   # unreadable, or not TOML: the line scan can't say what Codex reads
+                why = f"{toml}: {e}"
             on, key = value not in (None, "none"), agent_hooks.CODEX_SUMMARY
+            if why and vault:
+                add("D-CODEX-REASONING", False, f"can't check Codex's reasoning summaries ({why})",
+                    f'keep {key} = "auto" at the top of {toml}', bad=INFO)
+                continue
             add("D-CODEX-REASONING", on or not vault, f'Codex\'s reasoning summaries are on ({key} = "{value}" in {toml})'
                 if on else "the content vault is off: no reasoning is kept to check" if not vault else
                 f"the content vault keeps each Codex response, but its reasoning summaries are off ({key} is "
@@ -662,6 +927,72 @@ def _reasoning_checks(add, harnesses, vault, fix):
                 if not vault else f"{path} sets includeThoughts: false in modelConfigs: Gemini CLI records no thoughts, "
                 "so `tracekit analyze --v2` has no reasoning to read", f"remove includeThoughts: false from "
                 f"modelConfigs in {path} (Gemini CLI's default includes thoughts)", bad=WARN)
+
+
+def _codex_sandbox(add, harnesses):
+    """D-CODEX-SANDBOX: whether Codex's settings leave a person to answer its escalations. Codex's PreToolUse hook
+    sends a shell call's command alone, so a request to run outside the sandbox, and Codex's answer to it, never reach
+    Tracekit (docs/integrations/codex-sandbox.md).
+    Keys and values as codex-rs/core/config.schema.json names them in openai/codex rust-v0.172.0; a value this doesn't
+    know (such as a `granular` approval policy) gives no WARN.
+    lean: reads the config.toml beside Tracekit's hooks and its selected [profiles.<name>]; not a project's
+    .codex/config.toml, /etc/codex/config.toml, managed_config.toml or -c flags at launch, which Codex layers on top
+    (codex-rs/config/src/loader/README.md, "Layering model")"""
+    path = (harnesses or {}).get("codex")
+    if not path:
+        return
+    toml, why = os.path.join(os.path.dirname(path), "config.toml"), None
+    try:
+        from . import tomlsafe as tomllib   # Python 3.11 and newer
+        cfg = tomllib.loads(install.agent_file(toml).decode("utf-8"))
+    except FileNotFoundError:   # Codex's defaults: on-request, a person reviews, the feature off
+        cfg = {}
+    except ImportError:
+        why = "Python 3.11 or newer reads Codex's config.toml, this is " + sys.version.split()[0]
+    except (OSError, ValueError) as e:   # unreadable, or not TOML
+        why = f"{toml}: {e}"
+    if why:
+        add("D-CODEX-SANDBOX", False, f"can't check Codex's approval settings ({why})",
+            f"keep approvals_reviewer = \"user\" and features.exec_permission_approvals off in {toml}", bad=INFO)
+        return
+    profiles = cfg.get("profiles")
+    chosen = profiles.get(cfg.get("profile")) if isinstance(profiles, dict) and isinstance(cfg.get("profile"), str) \
+        else None
+    layers = [cfg] + ([chosen] if isinstance(chosen, dict) else [])
+
+    def setting(key, table=None):   # the selected profile wins each key
+        value, where = None, None
+        for layer, name in zip(layers, ("", f"[profiles.{cfg.get('profile')}] ")):
+            src = layer.get(table) if table else layer
+            if isinstance(src, dict) and key in src:
+                value, where = src[key], name
+        return value, where or ""
+
+    feature, feature_at = setting("exec_permission_approvals", "features")
+    policy, _ = setting("approval_policy")
+    reviewer, reviewer_at = setting("approvals_reviewer")
+    feature_on = feature is True
+    # AskForApproval in codex-rs/protocol/src/protocol.rs: on-request is its #[default] and on-failure an alias of it;
+    # under untrusted every command a rule doesn't allow asks for approval. The reviewer answers all of them.
+    asks = policy in ("on-request", "on-failure", "untrusted", None)
+    model_reviews = asks and reviewer in ("auto_review", "guardian_subagent")
+    why, fix = [], []
+    if feature_on:
+        why.append(f"{feature_at}features.exec_permission_approvals is true in {toml}: Codex can then run some calls "
+                   "with no hook, so Tracekit neither decides nor records them")
+        fix.append("turn features.exec_permission_approvals off")
+    if model_reviews:
+        why.append(f'{reviewer_at}approvals_reviewer = "{reviewer}" with approval_policy "{policy or "on-request"}" in '
+                   f"{toml}: a model, not a person, answers Codex's approval requests, and Tracekit sees neither the "
+                   "request nor the answer")
+        fix.append('set approvals_reviewer = "user"')
+    add("D-CODEX-SANDBOX", not why, "; ".join(why) or (
+        f'Codex asks a person for approval (approval_policy = "{policy or "on-request"}", {toml})'
+        if asks and reviewer in ("user", None) else
+        f'Codex never asks to run a call outside its sandbox (approval_policy = "never", {toml})' if policy == "never"
+        else f"doctor doesn't know Codex's approval settings in {toml} (approval_policy = {policy!r}, "
+        f"approvals_reviewer = {reviewer!r})"),
+        f"{'; '.join(fix)} in {toml} ({wiki_url('docs/integrations/codex-sandbox.md')})" if fix else "", bad=WARN)
 
 
 def _agy_runs(add, path, home, fix):
@@ -739,7 +1070,7 @@ def _codex_trust(add, path, hooks, home, bad, harness="codex"):
         return
     store, state, why = agent_hooks.codex_trust_store(home, harness), {}, None
     try:
-        import tomllib   # Python 3.11 and newer
+        from . import tomlsafe as tomllib   # Python 3.11 and newer
         state = tomllib.loads(install.agent_file(store).decode("utf-8")).get("hooks", {}).get("state", {})
         if not isinstance(state, dict):
             raise ValueError("hooks.state is not a table")
@@ -851,6 +1182,8 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             continue
         if harness == "antigravity":
             _agy_runs(add, path, home or os.path.expanduser("~"), fix)
+        if harness == "qwen":
+            _qwen_runs(add, path, home)
         if harness == "kiro":
             version = agent_hooks.kiro_version()
             old = version is not None and version < (3,)
@@ -867,12 +1200,25 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
                     "skips them" if off else f"Tracekit's Kiro hooks in {path} are enabled", fix, bad=WARN)
         try:
             hooks = _harness_hooks(harness, _config(harness, path))
-            cmds = [(ev, h) for ev, groups in hooks.items() for g in groups
-                    for h in (g.get("hooks") or () if "hooks" in g else [g])
-                    if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
+            every = _hook_entries(hooks)
+            cmds = [(ev, h) for ev, h in every if agent_hooks._version(h.get("command")) == "v2"]
         except (OSError, ValueError, AttributeError, TypeError) as e:
             add("D-HOOKS-EVENT", False, f"cannot check {harness} hooks in {path}: {e}", fix, bad=WARN)
             continue
+        if harness == "interpreter":   # /import copies Claude Code's hooks into the user's file (#940)
+            held = {path: every}
+            user = agent_hooks.config_path(harness, home=home)
+            if os.path.realpath(user) != os.path.realpath(path):
+                with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):   # none, or not hooks
+                    held[user] = _hook_entries(_harness_hooks(harness, _config(harness, user)))
+            copied = {f: sorted({ev for ev, h in entries if install._cmd_version(h.get("command")) is not None})
+                      for f, entries in held.items()}
+            copied = {f: evs for f, evs in copied.items() if evs}
+            add("D-HOOKS-EVENT", not copied,
+                " and ".join(f"{f} holds Tracekit's Claude Code hook ({', '.join(evs)})" for f, evs in copied.items())
+                + ": Open Interpreter runs it as well as its own, so each call is decided a second time, recorded as "
+                "claude-code" if copied else f"no Tracekit Claude Code hook in {' or '.join(held)}",
+                f"remove Tracekit's Claude Code hook from {' and '.join(copied or held)}", bad=WARN)
         if harness in agent_hooks.TRUSTING:
             _codex_trust(add, path, hooks, home, FAIL if prod else WARN, harness)
         if harness == "openhands":
@@ -896,6 +1242,18 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             "whose hook can't run, undecided and unrecorded" if lets_past else
             f"each {harness} hook command in {path} names its event", fix, bad=WARN)
         if harness == "codebuddy":
+            off = _codebuddy_off(home)
+            add("D-HOOKS-EVENT", not off,
+                f"disableAllHooks is set in {off}: CodeBuddy Code runs none of its hooks, so every call runs "
+                "undecided and unrecorded" if off else "no CodeBuddy Code settings file turns its hooks off",
+                f'remove "disableAllHooks" from {off}' if off else fix, bad=FAIL if prod else WARN)
+            moved = (os.environ.get("CODEBUDDY_CONFIG_DIR") or "").strip()
+            here = os.path.dirname(path)
+            if moved and os.path.realpath(os.path.expanduser(moved)) != os.path.realpath(here):
+                add("D-HOOKS-EVENT", False,
+                    f"CODEBUDDY_CONFIG_DIR names {moved}, but Tracekit's hooks are in {path}: a CodeBuddy Code started "
+                    "with that variable reads another settings file, so these hooks don't run",
+                    f"unset CODEBUDDY_CONFIG_DIR, or re-run init where it names {here}", bad=WARN)
             later = _codebuddy_later(home)
             add("D-HOOKS-ORDER", not later,
                 f"a CodeBuddy Code PreToolUse hook in {' and '.join(later)} runs after Tracekit's, and CodeBuddy takes "
@@ -924,6 +1282,30 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
                 f"{harness} pre-tool timeout {min(pre)} {unit} in {path}; " + _hook_run(scale, unit), fix, bad=WARN)
 
 
+def _qwen_runs(add, path, home):
+    """Whether Qwen Code (0.28.0) runs Tracekit's hooks in `path` (home: the agent user's home, else this user's): none
+    while a settings file sets disableAllHooks (a true value), and a project's none when folder trust is on and the
+    project's folder isn't trusted (_folder_trust), as Qwen Code then loads none of the project's settings.
+    lean: with folder trust off a project's hooks run only once a person approves them (hookApprovals.json, bound to
+    the hooks' exact configuration), which doctor doesn't read"""
+    from . import agent_hooks
+    project = agent_hooks.config_path("qwen", os.getcwd())
+    files = [p for p in dict.fromkeys([*_gemini(agent_hooks.config_path("qwen", home=home), project, "qwen"), path])
+             if p not in (project, path) or _folder_trust("qwen", home, p)[0] is not False]   # Qwen Code loads it
+    off = [p for p in files if _setting(p, "disableAllHooks") not in (None, False, 0, "")]
+    if off:
+        add("D-HOOKS-EVENT", False, f"disableAllHooks is set in {', '.join(off)}: Qwen Code runs none of its hooks, so "
+            "every call runs undecided and unrecorded", f'remove "disableAllHooks" from {", ".join(off)}', bad=WARN)
+    loads, trust, _ = _folder_trust("qwen", home, path)   # no variable decides Qwen Code's
+    folder = os.path.dirname(os.path.dirname(path))
+    if not loads:
+        add("D-HOOKS-EVENT", False, (f"folder trust is on and {trust} doesn't trust {folder}: Qwen Code loads none of "
+            f"its settings there, so the hooks in {path} don't run" if loads is False else f"{trust} can't be read, "
+            f"so doctor can't tell whether Qwen Code trusts {folder} and runs the hooks in {path}")
+            + " (IDE trust, which doctor can't see, decides first)", f"trust {folder} in Qwen Code (/permissions)",
+            bad=WARN)
+
+
 def _opencode_loads(add, path, fix, bad):
     """D-OPENCODE-PLUGIN: whether the OpenCode on PATH loads Tracekit's plugin at `path`. OpenCode 2.x (@opencode/cli)
     loads a plugin only from its default export, {id, setup}; one without it (as an earlier Tracekit wrote) it logs as
@@ -948,13 +1330,41 @@ def _opencode_loads(add, path, fix, bad):
         "would run undecided and unrecorded", fix, bad=bad if two else WARN)
 
 
+def _codebuddy_off(home=None):
+    """The CodeBuddy Code settings file whose `disableAllHooks` is in force, or None. The layers are CodeBuddy's own
+    settings order — its settings page, "Settings Priority": the user's `settings.json`, the project's
+    `.codebuddy/settings.json`, then `settings.local.json` beside it — and the last file that sets the key decides.
+    `@tencent-ai/codebuddy-code` 2.183.0 (`dist/codebuddy.js`) reads exactly those three files for the key in
+    `settingsDisableAllHooks`, which is `codebuddy plugin test`'s refusal helper (module 902551, beside
+    `pluginTestFormOf` and `pluginTestRefusal`, called only from `runPluginTestFastPath`) — not the code that decides
+    whether a session runs its hooks, which the bundle doesn't expose. It keeps the last value
+    (`eA?.disableAllHooks !== void 0 && (el = eA.disableAllHooks)`) and returns `true === el`, so this reads a literal
+    `true`: a later file's `false` lifts an earlier file's `true`, and a later `null` does not, which matches it rather
+    than JavaScript truthiness.
+    lean: `allowManagedHooksOnly` turns the hooks off too ("hooks modules are turned off here (disableAllHooks,
+    allowManagedHooksOnly or a policy)"), but CodeBuddy reads it only from its managed settings documents
+    (`parseManagedModSettings`), which doctor can't see"""
+    from . import agent_hooks
+    user = agent_hooks.config_path("codebuddy", home=home) if home else agent_hooks.config_path("codebuddy")
+    project = agent_hooks.config_path("codebuddy", os.getcwd())
+    at, value = None, None
+    for f in dict.fromkeys([user, project, os.path.join(os.path.dirname(project), "settings.local.json")]):
+        v = _setting(f, "disableAllHooks")
+        if v is not None:
+            at, value = f, v
+    return at if value is True else None
+
+
 def _codebuddy_later(home=None):
     """The settings files with a CodeBuddy Code PreToolUse hook that runs after Tracekit's. CodeBuddy runs the user's
     settings' hooks (`home`: the agent user's home), then the project's .codebuddy/settings.json and
     settings.local.json (doctor's working directory's), each in its order, and the last permissionDecision stands.
     Tracekit's hook is the first that runs its module; after it, any hook but the exact PreToolUse command init writes
     (v1 or v2, dev or system mode) is named: one that only names the module, in a comment, may answer anything.
-    lean: a plugin's, a skill's or an SDK host's hooks, which run later too, aren't read (docs/limits.md)"""
+    lean: a plugin's, a skill's or an SDK host's hooks, which run later too, aren't read (docs/limits.md). The bundle
+    names the file a plugin's hooks live in — `hooks/hooks.json` inside the plugin ("no hooks module to load;
+    hooks/hooks.json names none in …", "hooks.json declares PreToolUse/PermissionRequest at its top") — but not the root
+    a plugin or a skill is installed under, which is what a check would have to walk"""
     from . import agent_hooks
     mine = {agent_hooks._command("codebuddy", "PreToolUse", v2, python)
             for v2 in (True, False) for python in (None, install.OPT_PYTHON)}
@@ -983,10 +1393,13 @@ def _text(path):
         return ""
 
 
+_loads = install.agent_loads
+
+
 def _json(path):
     """A settings file the agent's user controls, parsed (install.agent_file: a FIFO or a device can't hang or flood
     doctor)."""
-    return json.loads(install.agent_file(path))
+    return install.agent_json(path)
 
 
 _setting = install.setting   # a Claude Code settings file's key, or None
@@ -1000,12 +1413,16 @@ def _user(name):
 
 
 def _access(targets):
-    return [[p, m] for p, m in targets if os.access(p, os.R_OK if m == "read" else os.W_OK)]
+    """The targets the agent's user can reach, as [[path, mode]]. "read" asks for R_OK and "write" for W_OK; "open"
+    is for a folder, which has to be *entered*: a folder at 0744 is readable by others and cannot be listed or walked
+    into, so the files in it are unreadable to Claude Code too, and R_OK alone would call it fine."""
+    return [[p, m] for p, m in targets
+            if os.access(p, os.R_OK | os.X_OK if m == "open" else os.W_OK if m == "write" else os.R_OK)]
 
 
 def agent_access(pw, targets):
-    """The (path, "read"|"write") targets the agent's user can access, probed as that user without changing anything;
-    None when this process can't act as it (not root, not the agent)."""
+    """The (path, "read"|"write"|"open") targets the agent's user can access, probed as that user without changing
+    anything; None when this process can't act as it (not root, not the agent)."""
     if not hasattr(os, "geteuid") or os.geteuid() not in (0, pw.pw_uid):
         return None
     return files.as_user(pw, _access, targets)
@@ -1142,6 +1559,29 @@ def _acl_perms(out, uid):
     return named if named is not None else other or ""
 
 
+def _hook_decided():
+    """The calls the v2 hooks decided themselves while the signer was down (claude_code.HOOK_DECIDED), oldest first,
+    over every session whose state the runtime dir keeps (none when there is no runtime dir: doctor creates nothing).
+    The files are the agent's to write: an entry that isn't an object is skipped, and one whose ts is no number sorts
+    first."""
+    import glob
+    import hashlib
+    from .integrations import claude_code
+    from .sdk import autospawn
+    try:
+        run = autospawn.runtime_dir(create=False)
+    except OSError:
+        return []
+    tag = hashlib.sha256(claude_code.HOOK_DECIDED.encode()).hexdigest()   # (as claude_code._state names its file)
+    out = []
+    for f in glob.glob(os.path.join(glob.escape(run), f"claude-code-*.{tag}.json")):
+        try:
+            out += [x for x in read_json(f) if isinstance(x, dict)]
+        except (OSError, ValueError, TypeError):
+            continue
+    return sorted(out, key=lambda x: x["ts"] if type(x.get("ts")) in (int, float) and x["ts"] == x["ts"] else 0)
+
+
 def _tailer_checks(add, client_json, agent):
     """D-TAILER-*: what system init sets up for a Claude Code agent's transcript tailer (install._tailer_acl,
     install._tailer_sudo, client.json's `tailer` key). Without it each session records a tailer_lost gap, whose signed
@@ -1218,18 +1658,20 @@ def _tailer_checks(add, client_json, agent):
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
               client_json=None, now=None, issuer_key=None, plugin=None, sandbox_settings=(), gemini_settings=(),
-              harnesses=None, no_hooks=False):
+              harnesses=None, no_hooks=False, gemini_project=None, init_run=True):
     """Checks of a v2 signer. config: a signer.yaml path, or the dev signer's config dict. profile "dev" turns what
     a dev setup can't have into warnings. agent: the agent's pwd entry; settings: its Claude Code settings; signer: the
     socket client.json names; opt: the root-owned venv; unit: the service file; client_json: the system client config;
     issuer_key: the KMS key of the record key issuer, which this host's AWS principal must not sign with; plugin: the
     (settings file, plugin key) returned by install.plugin_enabled, whose hooks are init's;
     sandbox_settings: the Claude Code settings files that set its sandbox, lowest rank first (_sandbox);
-    gemini_settings: Gemini CLI's settings files, lowest rank first (_gemini); harnesses: {coding agent: its hook
+    gemini_settings: Gemini CLI's settings files, lowest rank first (_gemini), of which gemini_project is the project's
+    (left out of D-GEMINI-SANDBOX when Gemini doesn't trust its folder: _folder_trust); harnesses: {coding agent: its hook
     config} of the other agents with v2 hooks (agent_hooks), whose hooks and reasoning settings are checked; no_hooks:
     init was told --no-hooks (install.record_hooks_settings; system mode: client.json's hooks.no_hooks), so no Claude
-    Code hook is the person's choice."""
-    from . import agent_hooks
+    Code hook is the person's choice; init_run: False when `tracekit init` never ran here, so no coding-agent hook was
+    asked for (an SDK-only setup: D-HOOKS-PRESENT is info)."""
+    from . import agent_hooks, public_witness
     from .format import checkpoint
     from .integrations.claude_code import APPROVAL_WAIT_S
     from .signer import service
@@ -1269,6 +1711,35 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "runs" if listed else f"{agent.pw_name} is not in analyzers",
             "remove the agent's uid from analyzers in signer.yaml; run tracekit analyze --v2 as an operator identity",
             bad=WARN)
+    # lean: the agent's uid only; which other identities registered runs is in the signer's records alone, a read of the
+    # whole log on every doctor run (the signer treats each as an agent's itself: SignerService._agent_session); read
+    # them if an operator lists approvers that also run agents on servers
+    if prod and agent:   # the uid whose sessions register the runs, answering approvals as a person
+        a = cfg.get("approvals") or {}
+        listed = [k for k in ("approvers", "break_glass") if f"uid:{agent.pw_uid}" in (a.get(k) or ())]
+        add("D-APPROVER-AGENT", not listed, f"approvals.{' and approvals.'.join(listed)} list uid:{agent.pw_uid}, the "
+            f"agent's user {agent.pw_name}, whose sessions register the runs: it answers approvals as a person (the "
+            "signer refuses its changes to the AI reviewer and its take-backs, and records its answers as no precedent, "
+            "as an identity an agent session ran as)"
+            if listed else f"no approver is {agent.pw_name}, the agent's user",
+            "list a person's own user in approvals.approvers, another than the agent's (init's --approver), and take the "
+            "agent's uid out")
+    if prod:   # init keeps the operator's break_glass and agents entries when it replaces the approver
+        approvals = cfg.get("approvals") or {}
+        try:
+            replaced = read_json(client_json).get("replaced_approvers") or []
+        except (OSError, ValueError, AttributeError, TypeError):   # D-SYSTEM-CONFIG's
+            replaced = []
+        stale = [r for r in (replaced if isinstance(replaced, list) else []) if isinstance(r, str)
+                 and r not in (approvals.get("approvers") or ())
+                 and (install._covers(approvals.get("break_glass") or [], r)
+                      or install._covers(approvals.get("agents") or [], r))]
+        add("D-BREAK-GLASS-STALE", not stale,
+            f"{', '.join(stale)} was replaced as approver (client.json replaced_approvers) and approvals.break_glass "
+            "or approvals.agents still names it" if stale
+            else "none of the replaced approvers keeps break_glass or agents rights, or none was replaced",
+            "remove it from approvals.break_glass in signer.yaml, or add it as an approver, then restart the signer",
+            bad=WARN)
     try:
         owner = os.stat(data).st_uid
     except OSError as e:
@@ -1282,6 +1753,23 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     else:
         add("D-PROCESS-BOUNDARY", False, install.DEV_MODE_LINE,
             "use system mode where the agent must not reach the signer: " + REINIT, bad=WARN)
+    agents = (cfg.get("approvals") or {}).get("agents") or ()
+    if owner is not None and any(str(a).startswith("uid:") for a in agents):   # an AI approver on this machine
+        why = service.agent_key_access(agents, data, owner)
+        uids = sorted(str(a) for a in agents if re.fullmatch(r"uid:[0-9]{1,10}", str(a))) if pwd and not why else []
+        for a in uids:   # and as the reviewer's own uid when doctor can act as it (root), as D-AGENT-PROBE does
+            try:
+                rpw = pwd.getpwuid(int(a[4:]))
+                listed = sorted(os.listdir(keys)) if os.path.isdir(keys) else []
+            except (KeyError, OSError):   # no such user here: nothing runs as it
+                continue
+            hits = agent_access(rpw, [[data, "read"], [keys, "read"]] + [[os.path.join(keys, n), "read"] for n in listed])
+            if hits:
+                why = f"approvals.agents: {a} can read " + ", ".join(p for p, _ in hits)
+                break
+        add("D-REVIEWER-USER", not why, why or "the agent approvers that are local users can't read the signer's keys",
+            "run the reviewer as a user of its own, listed as uid:<its uid> in approvals.agents, and keep the keys "
+            "readable by the signer's user alone (docs/approvals.md#the-ai-approver)")
 
     acl = "Windows controls access with ACLs, which doctor doesn't read: check that only the signer's user can read it"
     try:
@@ -1346,7 +1834,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     if (cfg.get("log_key") or {}).get("aws_kms"):
         out += kms_checks(cfg["log_key"]["aws_kms"], issuer_key)
     if (cfg.get("storage") or {}).get("postgres") is not None:
-        out += pg_checks(cfg["storage"]["postgres"])
+        out += pg_checks(cfg["storage"]["postgres"],
+                         isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True)
 
     try:
         with open(os.path.join(data, "hygiene.json"), encoding="utf-8") as f:
@@ -1396,18 +1885,28 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
 
     managed = settings in install.MANAGED_SETTINGS.values()   # init --managed: Claude Code's admin-managed settings
     hook_fix = REINIT if prod else "tracekit init --dev --v2"   # collect() adds --managed, as to every re-init
+    # Claude Code merges the drop-ins beside the managed file with it, in both modes: they are a settings layer
+    dropins = _managed_dropins(settings if managed else _managed())
     if managed:   # the hooks are for the agent: whether other users' Claude Code reads the file doesn't count
-        read = agent and agent_access(agent, [[settings, "read"]])   # None: not probed (doctor isn't root)
+        folder = _dropin_folder(settings)
+        sources = list(dict.fromkeys([settings, folder, *dropins]))   # the folder whenever it exists, empty or not
+        # the files are read; the folder has to be enterable too, or Claude Code can't open the drop-ins in it either
+        probes = [(p, "open" if p == folder else "read") for p in sources]
+        read = agent and agent_access(agent, probes)   # None: not probed (doctor isn't root)
+        can = {p for p, how in (read or [])}
+        unreadable = [p for p in sources if read is not None and p not in can]
+        problem, note = _dropins(settings, unreadable)
         bad = trusted_file(settings) or (f"{agent.pw_name} can't read {settings}, so its Claude Code starts without "
-                                         "it" if read == [] else None)
+                                         "it" if settings in unreadable else None) or problem
         add("D-HOOKS-MANAGED", not bad, bad or f"{settings} is root-owned and writable by root only"
-            + (f", and {agent.pw_name} can read it" if read else ""), f"sudo chown 0:0 and sudo chmod 644 "
+            + (f", and {agent.pw_name} can read it" if read else "") + note, f"sudo chown 0:0 and sudo chmod 644 "
             f"{settings}, and sudo chmod go-w the directories above it; or {hook_fix}")
-    layers = list(dict.fromkeys(sandbox_settings or [p for p in (
+    layers = list(dict.fromkeys([*(sandbox_settings or [p for p in (
         os.path.join(agent.pw_dir, ".claude", "settings.json") if agent else install.user_settings(),
-        settings, _managed()) if p]))
+        settings, _managed()) if p]), *dropins]))
     plugin_settings, plugin_key = plugin or (None, install.PLUGIN)
-    only = managed and _setting(settings, "allowManagedHooksOnly") is True   # Claude Code runs managed hooks only,
+    # Claude Code runs managed hooks only, and a drop-in can set that too: the later file's value wins
+    only = managed and _setting_in_order(_admin_files(settings), "allowManagedHooksOnly")[1] is True
     why = _plugin_idle(plugin, prod, settings)   # and in system mode only managed settings count for the plugin
     active_plugin = plugin if plugin and not why else None
     note = _plugin_note(plugin_settings, why)
@@ -1445,6 +1944,9 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-HOOKS-PRESENT", False, "no Claude Code here (no claude on PATH, no "
                 f"{os.path.dirname(install.user_settings())}), so no hooks: runs that SDK clients send "
                 "(tracekit.instrument()) are still recorded", f"once Claude Code is installed: {hook_fix}", bad=INFO)
+        elif hooks is not None and not prod and not init_run and not any(hooks.values()):
+            add("D-HOOKS-PRESENT", False, "no coding-agent hooks: tracekit init hasn't been run here, so only SDK agents "
+                "(tracekit.instrument()) are recorded", f"to record Claude Code too: {hook_fix}", bad=INFO)
         elif hooks is not None:
             missing = [ev for ev, hs in hooks.items() if not hs]
             own = managed and agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
@@ -1463,12 +1965,15 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             # what Claude Code skips: every hook (disableAllHooks, a true value in JavaScript; only managed settings can
             # turn managed hooks off), the tools a matcher other than "*", "" or none leaves out, and on POSIX a
             # PreToolUse hook that can't start and isn't wrapped to block the call
-            # lean: of the managed files, managed-settings.json only, not managed-settings.d/; read it if admins use it
+            # a drop-in is a managed source too, merged after managed-settings.json by name: for a single value the
+            # later file wins, so the last file that sets disableAllHooks decides, and a later false lifts an earlier true
             managed_hooks = managed or (not any(hooks.values()) and plugin_settings in install.MANAGED_SETTINGS.values())
-            off = [p for p in ([plugin_settings if not managed else settings] if managed_hooks
-                               else dict.fromkeys([*layers, settings]))   # the hooks' own file too
-                   if _setting(p, "disableAllHooks") not in (None, False, 0, "")] \
-                if any(hooks.values()) or active_plugin or (why or "").startswith("disableAllHooks ") else []
+            order = [*(([plugin_settings] if not managed else [settings]) if managed_hooks
+                       else [*layers, settings]),   # the hooks' own file too
+                     *dropins]
+            at, value = _setting_in_order(order, "disableAllHooks")
+            off = [at] if at and value not in (False, 0, "") and (
+                any(hooks.values()) or active_plugin or (why or "").startswith("disableAllHooks ")) else []
             narrowed = {ev: hs[0]["matcher"] for ev, hs in hooks.items()
                         if hs and all(h["matcher"] not in (None, "", "*") for h in hs)}
             unwrapped = os.name != "nt" and hooks["PreToolUse"] and not any(
@@ -1519,6 +2024,14 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 add("D-SIGNER-ENV", env in (None, signer), f"TRACEKIT_SIGNER is {str(env)[:256]!r}, not {signer}" if env not in
                     (None, signer) else "TRACEKIT_SIGNER names the system socket or is unset",
                     f"remove env.TRACEKIT_SIGNER from {settings} (the hook refuses it and blocks every call)")
+    if not prod and (settings or active_plugin):
+        # Claude Code gives the hooks its settings' `env`: one that sets where the dev signer and its data are, or the
+        # Python the hook runs, sends the hook's calls elsewhere (a later layer wins; any layer that sets one is named)
+        moved = [f"{p} sets {', '.join(n for n in _HOOK_ENV if n in e)}" for p in layers
+                 if isinstance(e := _setting(p, "env"), dict) and any(n in e for n in _HOOK_ENV)]
+        add("D-HOOK-ENV", not moved, "; ".join(moved) or "no settings file sets the hook's HOME, XDG_DATA_HOME, "
+            "TRACEKIT_PYTHON or TRACEKIT_SIGNER", "remove those names from each file's env, unless you set them yourself",
+            bad=WARN)
 
     sandbox = _sandbox(sandbox_settings)
     if sandbox.get("enabled") is True:
@@ -1539,26 +2052,42 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "; ".join(fix) + f" ({wiki_url('docs/integrations/claude-code-sandbox.md')})" if fix else "", bad=WARN)
 
     # lean: the settings files only, a later one winning each key of `tools` and `security`; doctor doesn't see
-    # GEMINI_SANDBOX or -s at launch (they override tools.sandbox), folder trust (Gemini skips an untrusted project's
-    # settings) or Gemini's deeper merge of objects such as tools.sandbox; upgrade if a setup relies on them
+    # GEMINI_SANDBOX or -s at launch (they override tools.sandbox), IDE trust or Gemini's deeper merge of objects such
+    # as tools.sandbox; upgrade if a setup relies on them
     if any(agent_hooks._version(json.dumps(h)) for h in _layers(gemini_settings, "hooks")):
-        tools, security = ({k: v for s in _layers(gemini_settings, key) for k, v in s.items()}
-                           for key in ("tools", "security"))
-        box = tools.get("sandbox")
-        whole = bool(box.get("enabled")) if isinstance(box, dict) else (
-            isinstance(box, (int, float, str)) and box not in (False, "", "0", "false"))
-        if whole or security.get("toolSandboxing") is True:
-            add("D-GEMINI-SANDBOX", not whole, "Gemini's tools.sandbox runs the whole CLI, Tracekit's hooks with it, in a "
+        loads, trust, env = _folder_trust("gemini", agent and agent.pw_dir, gemini_project) if gemini_project else (
+            True, None, None)
+        skip, cure = (f"{env} in the environment makes Gemini skip the project's settings",
+                      f"unset {env.split('=')[0]}") if env else (
+            f"folder trust is on and {trust} doesn't trust its folder (IDE trust, which doctor can't see, decides first)",
+            "trust the folder (/permissions)")
+        def sandboxes(paths):   # (the whole CLI's sandbox, the tool sandbox) the files turn on
+            tools, security = ({k: v for s in _layers(paths, key) for k, v in s.items()}
+                               for key in ("tools", "security"))
+            box = tools.get("sandbox")
+            return (bool(box.get("enabled")) if isinstance(box, dict) else (
+                isinstance(box, (int, float, str)) and box not in (False, "", "0", "false")),
+                security.get("toolSandboxing") is True)
+        whole, tool = sandboxes([p for p in gemini_settings if loads is not False or p != gemini_project])
+        if not (whole or tool) and loads is False and any(sandboxes(gemini_settings)):
+            add("D-GEMINI-SANDBOX", False, f"{gemini_project} turns Gemini's sandbox on, but Gemini doesn't load it: "
+                + skip, f"to sandbox Gemini there, {cure} or set the sandbox in your user settings", bad=INFO)
+        if whole or tool:
+            add("D-GEMINI-SANDBOX", not whole, ("Gemini's tools.sandbox runs the whole CLI, Tracekit's hooks with it, in a "
                 "sandbox: in a container the hooks don't run and nothing is recorded; under Seatbelt they can't keep "
                 "their state and block every call" if whole else "Gemini's tool sandbox is on (security.toolSandboxing): "
                 "the shipped coding pack's TK-A004 holds each command that asks it for more; GEMINI_SANDBOX or -s at "
-                "launch, which doctor can't see, would run the whole CLI in a sandbox instead",
+                "launch, which doctor can't see, would run the whole CLI in a sandbox instead") + (
+                "" if loads else f" ({gemini_project} left out: {skip})" if loads is False else
+                f" ({trust} can't be read, so doctor can't tell whether Gemini trusts the folder of {gemini_project}, "
+                "and reads it)"),
                 'remove tools.sandbox and set "toolSandboxing": true under "security" '
                 f"({wiki_url('docs/integrations/gemini-sandbox.md')})", bad=WARN)
 
     _harness_hook_checks(add, harnesses, prod, agent and agent.pw_dir)
     _reasoning_checks(add, harnesses, isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True,
                       REINIT if prod else "tracekit init --dev --v2")
+    _codex_sandbox(add, harnesses)
     # lean: dev only; system mode's hooks run the root-owned venv doctor runs from (D-HOOKS-VENV), but its running
     # signer isn't compared with it; read its hello too if /opt/tracekit gets upgraded in place under a running signer
     if not prod:
@@ -1570,7 +2099,32 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "root-owned and not group/world-writable, or set policy: in signer.yaml to such a file")
     try:
         # lean: loads the policy with this process's Python; check the signer venv's engine if they ever differ
-        add("D-POLICY-ENGINE", True, f"{policy} loads on {service.load_policy(policy).engine}", "")
+        loaded = service.load_policy(policy)
+        using_re2 = loaded.engine.startswith("re2@")
+        wheel_expected = _google_re2_wheel_expected()
+        detail = f"{policy} loads on {loaded.engine}"
+        if not using_re2:
+            detail += (
+                " (regex fallback: large inputs can exhaust the 1 s budget "
+                "and the call will be denied)"
+                if wheel_expected else
+                " (no google-re2 wheel is expected for this Python or platform)"
+            )
+        fix = (
+            f"{sys.executable} -m pip install google-re2, then restart the signer "
+            "(tracekit down in dev)"
+            if wheel_expected and not using_re2 else ""
+        )
+        add("D-POLICY-ENGINE", using_re2, detail, fix,
+            bad=WARN if wheel_expected else INFO)
+        wants = service.wants_agents(loaded)
+        if wants or agents:   # without one, the signer refuses to start (SignerService)
+            add("D-AGENT-APPROVERS", not wants or bool(agents), f"approvals.agents names {len(agents)}; " + (
+                f"{policy} lets agent approvers answer" if wants else "the policy lets none answer yet")
+                if agents else f"{policy} lets agent approvers answer (approval_agent or a rule's approval.agent), "
+                "but signer.yaml's approvals.agents names none: the signer refuses to start",
+                "add the reviewer's identity to approvals.agents in signer.yaml, merged into init's approvals section "
+                "(docs/approvals.md#the-ai-approver), or take approval_agent out of the policy; then restart the signer")
     except ImportError as e:
         add("D-POLICY-ENGINE", False, f"no regex engine: {e}", "pip install tracekit-ai (a --no-deps install leaves the engine out)")
     except (OSError, ValueError) as e:
@@ -1586,21 +2140,37 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             open_.append(f"{client_json} fail_mode")
     except (OSError, ValueError):
         pass
-    add("D-FAIL-MODES", not open_, f"fail-open: {', '.join(open_)}" if open_ else "every class fails closed",
+    add("D-FAIL-MODES", not open_, f"fail-open: {', '.join(open_)} (the coding-agent hooks still block secrets, "
+                                    "deploys, payments and pushes to main; the SDK and framework integrations fail "
+                                    "open by class alone)" if open_ else "every class fails closed",
         "set fail_modes to closed in signer.yaml (and fail_mode in client.json) unless an outage must not stop the agent",
         bad=WARN)
+    if not prod:   # (a system-mode hook fails closed with no signer answering: it decides nothing itself)
+        decided = _hook_decided()
+        add("D-HOOK-DECIDED", not decided, "no call decided by the hook while the signer was down" if not decided else
+            f"{len(decided)} call(s) decided by the hook while the signer was down "
+            f"({sum(x.get('decision') == 'allowed' for x in decided)} allowed, which ran unchecked; "
+            f"{sum(not x.get('sent') for x in decided)} not yet sent to the signer); the latest: "
+            f"{decided[-1].get('decision')} {decided[-1].get('tool')} ({decided[-1].get('why') or 'fail-open'})",
+            "find out why the signer was down, and review each allowed call in tracekit view (THE AGENT-SIDE HOOK "
+            "REPORTS, after the signer's client_counter_gap for it)", bad=WARN)
     if prod and client_json:
         _tailer_checks(add, client_json, agent)
 
     ws = cfg.get("witnesses") or []
+    # laptop system mode (init --v2) uses the public witness too: until one is deployed it is a reason, not a fault
+    undeployed = not (ws or public_witness.configured()) and bool(client_json)
     add("D-WITNESS-CONFIGURED", bool(ws), f"{len(ws)} witnesses" if ws else "no witnesses: checkpoints are not cosigned, "
-        f"so assurance stays {'local' if cfg.get('anchors') else 'dev'}", f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
+        f"so assurance stays {'local' if cfg.get('anchors') else 'dev'}",
+        "the public witness isn't deployed yet: nothing to do until a release names it; to anchor now, list your own "
+        f"witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})" if undeployed else
+        f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
         if prod else ("--no-witness turned the dev signer's witness off: tracekit init --dev --v2 --public-witness turns "
                       "it back on" if os.path.exists(os.path.join(data, service.NO_WITNESS)) else
                       "the dev signer uses the public witness, which isn't deployed yet: nothing to do until a release "
                       "names it; to anchor now, run a signer from a signer.yaml that lists your own witness "
                       f"({wiki_url('docs/witnesses.md')})"),
-        bad=sev)
+        bad=WARN if undeployed else sev)
     if ws:
         operator = all(w["class"] == "operator" for w in ws)
         add("D-WITNESS-OWNERSHIP", not operator, "only operator witnesses: whoever runs the signer can also rewrite "
@@ -1695,26 +2265,33 @@ def kms_checks(kms, issuer_key=None):
 
 
 LOG_TABLES = ["tracekit_records", "tracekit_registry", "tracekit_notes", "tracekit_anchors"]
+VAULT_TABLES = ["tracekit_content_keys", "tracekit_content"]
 PG_WRITERS = """SELECT r.rolname, t FROM pg_roles r, unnest(%s::text[]) t
 WHERE r.rolname <> current_user AND r.rolname !~ '^pg_' AND NOT r.rolsuper
   AND NOT pg_has_role(r.oid, (SELECT relowner FROM pg_class WHERE oid = t::regclass), 'USAGE')
   AND has_table_privilege(r.oid, t, 'INSERT, UPDATE, DELETE, TRUNCATE') ORDER BY 1, 2"""
 
 
-def pg_checks(section):
+def pg_checks(section, vault=False):
     """The signer's Postgres role, connected to as the signer, against the grants of postgres.GRANTS: no UPDATE, DELETE
-    or TRUNCATE on the logs and not superuser; and no other role but the tables' owner may write the logs."""
+    or TRUNCATE on the logs and not superuser; and no other role but the tables' owner may write the logs. With the
+    content vault on (`vault`), it also holds every grant of GRANTS on the vault's tables."""
     try:
         import psycopg
         from .storage import postgres
     except ImportError:
         return [result("D-PG-SIGNER-ROLE", WARN, "not checked: no psycopg", "pip install 'tracekit-ai[postgres]'")]
     try:
-        with psycopg.connect(postgres.read_dsn(section), autocommit=True, connect_timeout=10) as c:
+        with psycopg.connect(postgres.read_dsn(section), autocommit=True, connect_timeout=10,
+                             client_encoding="utf8") as c:   # names as str, even on a SQL_ASCII database
             role, superuser = c.execute("SELECT rolname, rolsuper FROM pg_roles WHERE rolname = current_user").fetchone()
             bad = c.execute("SELECT t || ': ' || p FROM unnest(%s::text[]) t, unnest(array['UPDATE', 'DELETE', "
                             "'TRUNCATE']) p WHERE has_table_privilege(t, p) ORDER BY 1", (LOG_TABLES,)).fetchall()
             writers = c.execute(PG_WRITERS, (LOG_TABLES,)).fetchall()
+            lacks = c.execute("SELECT t || ': ' || p, to_regclass(t) IS NULL FROM unnest(%s::text[]) t, unnest(array["
+                              "'SELECT', 'INSERT', 'UPDATE', 'DELETE']) p WHERE CASE WHEN to_regclass(t) IS NULL THEN "
+                              "true ELSE NOT has_table_privilege(t, p) END ORDER BY (t || ': ' || p) COLLATE \"C\"",
+                              (VAULT_TABLES,)).fetchall() if vault else []
     except (OSError, psycopg.Error) as e:
         return [result("D-PG-SIGNER-ROLE", WARN, f"not checked: {str(e)[:256]}",
                        "run doctor where the signer's DSN reaches Postgres, after `tracekit signer migrate`")]
@@ -1724,7 +2301,13 @@ def pg_checks(section):
                    f"DELETE, TRUNCATE ON {', '.join(LOG_TABLES)} FROM {role}; ALTER ROLE {role} NOSUPERUSER"),
             result("D-PG-READER-ROLES", FAIL if writers else OK, "; ".join(f"{r} can write {t}" for r, t in writers)
                    or f"no role but {role} and the tables' owner can write the logs",
-                   "readers get SELECT only: REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON the log tables FROM them")]
+                   "readers get SELECT only: REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON the log tables FROM them")] + ([
+            result("D-PG-VAULT-GRANTS", FAIL if lacks else OK,
+                   "the content vault's tables are missing (schema version 1)" if any(m for _, m in lacks)
+                   else f"{role} lacks " + ", ".join(t for t, _ in lacks) if lacks
+                   else f"{role} may keep and erase the content vault's items",
+                   ("run `tracekit signer migrate`, then " if any(m for _, m in lacks) else "")   # a v1 store
+                   + postgres.VAULT_GRANTS.format(role=role))] if vault else [])
 
 
 # Kubernetes: the signer image's user and paths (deploy/docker), and what hands a pod cloud credentials
