@@ -2502,11 +2502,17 @@ class WhyLive(WhyServer):
 
     def test_stream_announces_ingested_runs(self):
         msgs, _, t = self.stream()
-        SYSTEM.run(seed=0, run_id="remote-live", sink=HttpSink(self.base, TOKEN))
+
+        class FirstAnnounced(HttpSink):   # the rest of the run waits until its first batch is announced
+            def flush(self):
+                super().flush()
+                wait_for(lambda: msgs)
+
+        SYSTEM.run(seed=0, run_id="remote-live", sink=FirstAnnounced(self.base, TOKEN))
         t.join(10)
         self.assertEqual(msgs[0]["run_id"], "remote-live")
         # announced while the run is live, not only at its end: a scan takes every batch that arrived since the last
-        # one, so how many messages a run gets depends on timing (3 or more alone, 2 under a parallel suite's load)
+        # one, so on a loaded runner one scan could take the whole run; the sink above makes the first scan see part
         self.assertFalse(msgs[0]["finished"])
         self.assertTrue(msgs[-1]["finished"])
         highs = [a for m in msgs for a in m["alerts"] if a["severity"] == "high"]

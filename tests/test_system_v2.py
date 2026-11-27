@@ -204,6 +204,13 @@ class SignerConfig(unittest.TestCase):
             service.check_identities({}, {"uid:501": ["export_run", "status"]}, tenants={})
         service.check_identities({}, {"uid:501": ["export_run", "status"]}, tenants={"uid:501": "t"})
 
+    def test_init_passes_an_export_run_identity_whose_uid_is_mapped_in_tenants(self):
+        text = self.earlier(authorize='  "uid:501": [export_run, status, read, approval_get, approval_list]\n')
+        self.assertEqual(install.yamlmini.loads(text)["tenants"]["uid:501"], "agent")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        r = subprocess.run([sys.executable, "-c", install.CHECK_CONFIG], input=text, capture_output=True, text=True, cwd=root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_an_identity_whose_entries_add_up_to_running_agents_and_deciding_on_behalf_is_refused_at_decision_time(self):
         """An OIDC identity's grants combine its oidc, person and group entries; the startup check sees each entry
         alone, so the signer checks the combined grants when it is asked to decide on someone's behalf."""
@@ -447,6 +454,25 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertEqual(cfg["tenants"]["uid:1234"], "other")
         self.assertIn("kept what you added: approvals.persons, tenants.uid:1234", out.getvalue())
 
+    def test_a_rerun_that_replaces_the_approver_records_one_that_keeps_break_glass_or_agents(self):
+        old = install.v2_signer_yaml(AGENT, 777, POLICY, "/run/tracekit-signer/signer.sock", self.me.pw_uid)
+        old = old.replace("approvals:\n", 'approvals:\n  break_glass: ["uid:0", "uid:777"]\n', 1)
+        with open(install.V2_CONFIG, "w") as f:
+            f.write(old)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.init_v2(replaced=["uid:777"])
+
+    def test_replaced_approvers_are_kept_across_inits_until_they_keep_no_rights(self):
+        def text(**approvals):
+            return f"approvals: {json.dumps(approvals)}\n"
+        merged = text(approvers=["uid:502"], break_glass=["uid:0", "uid:777"])
+        old = text(approvers=["uid:501"])
+        self.assertEqual(install.replaced_approvers(old, merged, ["uid:777"], 502), ["uid:777"])
+        self.assertEqual(install.replaced_approvers(old, merged, ["uid:777", "uid:501"], 502), ["uid:777"])
+        self.assertEqual(install.replaced_approvers(old, merged, ["uid:777"], 777), [])
+        self.assertEqual(install.replaced_approvers(old, text(approvers=["uid:502"]), ["uid:777"], 502), [])
+        self.assertEqual(install.replaced_approvers(old, text(agents=["uid:501"]), [], 502), ["uid:501"])
+
     def test_a_rerun_prints_what_it_dropped_of_the_operators_edits(self):
         self.earlier_config(approvals='  persons: {"uid:777": "ana"}\n')
         old = open(install.V2_CONFIG).read().replace('self_approval: "deny"', 'self_approval: "allow"', 1)
@@ -570,7 +596,7 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertEqual([c.args[0] for c in run.call_args_list],
                          [["launchctl", "bootout", "system", plist], ["launchctl", "bootstrap", "system", plist]])
 
-    def init_v2(self, sudo_why=None, harnesses=(), public_witness=None):
+    def init_v2(self, sudo_why=None, harnesses=(), public_witness=None, replaced=()):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
         v1 = {"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system", "fail_mode": "closed",
               "tailer": {"user": "stale"}}
@@ -609,7 +635,8 @@ class InstallAndUninstall(unittest.TestCase):
                                                                                       "agent": "claude",
                                                                                       "init_flags": flags},
                                                          tailer={"user": self.me.pw_name, "uid": self.me.pw_uid,
-                                                                 "python": install.OPT_PYTHON}))
+                                                                 "python": install.OPT_PYTHON},
+                                                         **({"replaced_approvers": list(replaced)} if replaced else {})))
         self.assertEqual(cfg["authorize"], {f"uid:{self.me.pw_uid}": install.TAILER_METHODS})
         self.assertEqual(hooks.call_args.kwargs, {"owner": AGENT, "python": install.OPT_PYTHON,
                                                   "module": install.V2_HOOK, "signer": sock, "thinking": True})
