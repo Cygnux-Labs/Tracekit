@@ -347,11 +347,12 @@ def down(timeout=10, d=None, show_log=True):
     d = d or signer_dir()
     lock = os.path.join(d, LOCK)
     # one still starting (`tracekit up` without --wait) publishes its pid once started: given as long as ensure() gives it
-    deadline = time.monotonic() + max(timeout, START_WAIT_S)
+    # while endpoint.json isn't there yet; one that published a pid no signal may go to gets `timeout`
+    begun = time.monotonic()
     while (pid := _pid(d)) is None:
         if not _held(lock):
             return None
-        if time.monotonic() > deadline:
+        if time.monotonic() > begun + (timeout if _published(d) else max(timeout, START_WAIT_S)):
             raise Hung(f"a dev signer holds {lock} but never published {ENDPOINT}; see {os.path.join(d, LOG)}")
         time.sleep(0.05)
     if not _held(lock):   # the endpoint of a signer that has exited
