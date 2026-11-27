@@ -5217,7 +5217,7 @@ class DecideTime(unittest.TestCase):
         for backend in BACKENDS:
             for _, took, _, verdict in self.decide([line], backend):
                 with self.subTest(backend=backend):
-                    self.assertLess(took, 1.0 * SLOWER)
+                    self.assertLess(took, 1.0 * SLOWER * machine_scale())   # 1.002 s on a busy py3.9 runner
                     self.assertEqual(verdict, "ask")
         d = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0]).decide("Bash", {"command": line})
         self.assertEqual((d["rule_ids"], d.get("unread")), (["TK-SHELL-PARSE"], "budget"))

@@ -16,6 +16,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 from factories import wait_for
 from test_signer_service import SIGTERM_IN_WAIT
 from tracekit import __version__, cli
@@ -186,6 +188,23 @@ class DevSignerEndToEnd(unittest.TestCase):
 
     def test_down_right_after_up_stops_the_starting_signer(self):
         """`tracekit up` returns while the signer starts; a `down` before it published endpoint.json exited 1 (Hung)."""
+        self.assertIn("dev signer starting", self.cli("up"))
+        self.assertIn("dev signer stopped (pid ", self.cli("down"))
+        self.assertFalse(self.held())
+
+    @pytest.mark.serial
+    def test_down_waits_for_a_signer_slow_to_start(self):
+        """A signer can take longer to start than down's 10 s to stop one (1.8's packs on a loaded runner: `down`
+        right after `up` exited 1, Hung): down waits for one to publish as long as ensure() waits for a starting one."""
+        slow = os.path.join(self.dir, "slow")
+        os.makedirs(slow)
+        with open(os.path.join(slow, "sitecustomize.py"), "w") as f:
+            f.write("import sys, time\n"
+                    "if sys.argv[1:] == ['signer', 'serve', '--dev']:\n"
+                    "    from tracekit.signer import service\n"
+                    "    open_dev = service.open_dev\n"
+                    "    service.open_dev = lambda: time.sleep(12) or open_dev()\n")
+        os.environ["PYTHONPATH"] = os.pathsep.join((slow, ROOT))
         self.assertIn("dev signer starting", self.cli("up"))
         self.assertIn("dev signer stopped (pid ", self.cli("down"))
         self.assertFalse(self.held())

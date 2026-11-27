@@ -346,8 +346,9 @@ def down(timeout=10, d=None, show_log=True):
     stacks it wrote there; a hook replacing it leaves them out of what the agent reads)."""
     d = d or signer_dir()
     lock = os.path.join(d, LOCK)
-    deadline = time.monotonic() + timeout
-    while (pid := _pid(d)) is None:   # one still starting (`tracekit up` without --wait) publishes its pid shortly
+    # one still starting (`tracekit up` without --wait) publishes its pid once started: given as long as ensure() gives it
+    deadline = time.monotonic() + max(timeout, START_WAIT_S)
+    while (pid := _pid(d)) is None:
         if not _held(lock):
             return None
         if time.monotonic() > deadline:

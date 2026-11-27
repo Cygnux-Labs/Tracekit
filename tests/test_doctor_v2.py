@@ -2778,7 +2778,7 @@ class HostileSettings(unittest.TestCase):
                 gemini_settings=[fifo, dev], harnesses={"codex": os.path.join(d, "hooks.json"),
                                                         "gemini": fifo})), daemon=True)
             t.start()
-            t.join(5)
+            t.join(30)   # a read of the FIFO never returns; doctor's first run takes 2 s on a laptop, over 5 on CI's runners
         self.assertFalse(t.is_alive(), "doctor blocked on the FIFO")
         got = {r["id"]: r for r in out}
         self.assertEqual(got["D-HOOKS-PRESENT"]["status"], "warn")
