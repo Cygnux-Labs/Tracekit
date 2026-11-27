@@ -11,7 +11,7 @@ a secret), and ten CLIs are read by their own grammar, so `unless` exemptions fo
 Claude Code plugin also installs in Codex, GitHub Copilot CLI and Cursor, and the run page's TIMELINE is a table in the
 style of a browser's network panel. The shipped packs change (`coding` is `2026.11-v2-112`, `dev` is `2026.11-dev-14`,
 `server` is `2026.11-server-21`, `strict` is `2026.11-strict-18`), so a run's policy hash changes and some calls that
-were allowed are now held. The signer protocol goes from 26 to 29, so upgrade the signer first, as for 1.7.1; the bundle
+were allowed are now held. The signer protocol goes from 26 to 29, so upgrade the signer first; the bundle
 format gets a 1.8.0 row, and a bundle that carries its records says `verifier_min_version` 1.8.0.
 
 ### Breaking
@@ -66,7 +66,7 @@ format gets a 1.8.0 row, and a bundle that carries its records says `verifier_mi
 ### Faster
 Measured, not estimated.
 - The Claude Code hook imports the policy parser, asyncio and TLS only where a call uses them. On an Apple-silicon Mac
-  with Python 3.11.15, importing the hook module went from 87 ms to 54 ms (median of 21 runs), and a Read call's hook
+  with Python 3.11.15, importing the hook module went from 84 ms to 49 ms (median of 15 runs), and a Read call's hook
   events from 86 ms and 99 ms to 52 ms and 67 ms (PreToolUse and PostToolUse; 15 runs, scratch signer). A Bash call's
   hook is unchanged at about 85 ms and 100 ms (#1162).
 - The TIPS page parses only what a transcript gained since its last read. On synthetic transcripts (a 1 GB folder,
@@ -99,7 +99,7 @@ Rules by id. The packs are `coding` `2026.11-v2-112`, `dev` `2026.11-dev-14`, `s
   publish (by @aryankalantri), `lerna`, `changeset` and `bun pm publish` (#1137, by @pm25coder); `hatch env run` is
   read as the runner it is (#1035, by @pm25coder).
 - `TK-A085`: a `` !`cmd` `` line written into the instruction files OpenHands runs as skills (#1088, by @munjikesh).
-- `TK-A078`: a heredoc body written to a startup file; `TK-D012`: a literal `#` or `%` removal is computed; Python,
+- `TK-A078`: a heredoc body written to a startup file; `TK-D012` computes a `${VAR#…}` or `${VAR%…}` removal of a literal value; Python,
   bun and deno file writes and `xargs` fed by a group or subshell are read; curl's options through 8.22.0 (all by
   @aryankalantri).
 - `TK-A062` reads SQL behind `EXPLAIN ANALYZE` or a leading `(`, and under `sql_query` or `stmt` (#1015, by
@@ -130,6 +130,9 @@ Rules by id. The packs are `coding` `2026.11-v2-112`, `dev` `2026.11-dev-14`, `s
   @Afrid-21).
 - `tracekit feedback` reads the selected signer store, as `report` does (#1142, by @Riyanshverma).
 - CI shards the Linux test jobs and runs macOS and Windows nightly (#1055, #1086).
+- The docs were checked against the code page by page, and about 40 statements that had drifted were corrected;
+  tests now keep the agent lists, the fields kept in clear, the rule wording (flagged, held, denied) and the
+  field-report agent names in step with the code (#1161).
 
 ### Fixed
 - Re-running `tracekit init` in system mode keeps the `signer.yaml` keys init doesn't write, and no longer needs
@@ -146,6 +149,10 @@ Rules by id. The packs are `coding` `2026.11-v2-112`, `dev` `2026.11-dev-14`, `s
   while parsing a line nested to the recursion limit (#1150); an open run whose only call is held shows its own why
   import in the viewer (#1164).
 - Tests: speed checks measure without loaded-runner flakes (#1134, by @kunaltaydetayde7552-ship-it).
+- `tracekit init --dev --v2` refuses a runtime folder that isn't private, before it writes any hook, and says how to
+  fix it (each hook would otherwise block every call); from a venv install it notes that only the plugin's hook
+  needs a uv tool or pipx install, after the line naming the hooks it wrote. The viewer shows a blocked call as one
+  alert, not once from its signed record and again from its why import.
 
 ### Contributors
 @pm25coder, @Seyamalam, @aryankalantri, @costajohnt, @60507, @seung-waedet, @kunaltaydetayde7552-ship-it,
