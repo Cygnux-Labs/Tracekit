@@ -69,6 +69,8 @@ Measured, not estimated.
   with Python 3.11.15, importing the hook module went from 84 ms to 49 ms (median of 15 runs), and a Read call's hook
   events from 86 ms and 99 ms to 52 ms and 67 ms (PreToolUse and PostToolUse; 15 runs, scratch signer). A Bash call's
   hook is unchanged at about 85 ms and 100 ms (#1162).
+- The policy packs load about 2.3x faster where PyYAML isn't installed (the signer container): a line with no `#`
+  skips the comment scan (#1155, by @dexhunter).
 - The TIPS page parses only what a transcript gained since its last read. On synthetic transcripts (a 1 GB folder,
   Intel i7, Python 3.11, CPU seconds), a refresh after 10 files gained 76 KB took 1.33 s where it took 14.2 s; the first
   read costs more (17.2 s against 14.2 s) because it keeps the parsed records (#1120, by @seung-waedet).
@@ -160,7 +162,7 @@ Rules by id. The packs are `coding` `2026.11-v2-112`, `dev` `2026.11-dev-14`, `s
 @pm25coder, @Seyamalam, @aryankalantri, @costajohnt, @60507, @seung-waedet, @kunaltaydetayde7552-ship-it,
 @Jainil-devaliya28, @AnvitDevadiga, @Riyanshverma, @kausthubhk, @NarenDawar, @kushaldave002, @samueladebisi-dev,
 @X6M-Work, @Koloyaaa, @Ashitaka-Laputa-IV, @NguyenDinhKhoi213, @munjikesh, @lyn1dev, @Afrid-21, @nabeelbaghoor,
-@Hoaiduc195, @mwc0, @MikeFTV, @embrace897, @tharunsridhar and @Gennifer-Dominic. Thank you.
+@Hoaiduc195, @mwc0, @MikeFTV, @embrace897, @tharunsridhar, @Gennifer-Dominic and @dexhunter. Thank you.
 
 ## 1.7.3 (2026-11-23) — policy and approver-copy hardening, the LangSmith Tool Gateway, and fixes from contributors
 
