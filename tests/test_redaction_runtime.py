@@ -167,6 +167,24 @@ class RedactionRuntimeTests(unittest.TestCase):
                                   for line in (repeated(prefix)[:SIZE // 4], repeated(prefix)))
                 self.assertLess(whole, 6 * quarter + 0.05)
 
+    @pytest.mark.serial
+    def test_the_shapes_code_scanning_flags_read_in_linear_time(self):
+        """CodeQL's py/polynomial-redos flags _NAME_WORDS (zeros), _BLOCK_HEAD (tabs) and _NAME_RUN_EQ (zeros) as
+        polynomial (alerts 58-60): each is matched at one place per name, block head or word, and each of those is read
+        once, so these lines, built to stretch each one, take about four times as long at four times the length."""
+        n = SIZE
+        for name, f in (
+                ("_NAME_WORDS, a secret name of zeros", lambda k: privacy.redact_text("PASSWORD" + "0" * k + "=x")),
+                ("_NAME_WORDS, capitals and zeros", lambda k: privacy.redact_text("TOKEN" + "A0" * (k // 2) + "=x")),
+                ("_BLOCK_HEAD, a head and tabs", lambda k: privacy.redact_text("password: |" + "\t" * k + "x\n")),
+                ("_BLOCK_HEAD, heads and tabs", lambda k: privacy.redact_text("token:\t|\t\tx" * (k // 12))),
+                ("_NAME_RUN_EQ, a word of zeros", lambda k: privacy.redact_command("export TOKEN" + "0" * k, True)),
+                ("_NAME_RUN_EQ, words of zeros",
+                 lambda k: privacy.redact_command("export " + "TOKEN0000 " * (k // 10), True))):
+            with self.subTest(name):
+                quarter, whole = seconds(lambda: f(n // 4)), seconds(lambda: f(n))
+                self.assertLess(whole, 6 * quarter + 0.05)
+
     def test_realistic_secrets_still_redacted(self):
         # fake redaction fixtures  agent-flow:allow-secret
         jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
