@@ -54,6 +54,16 @@
         "fix": "list a person's own user in approvals.approvers, another than the agent's (init's --approver), and take the agent's uid out"
       }
     },
+    "replaced approver keeps break_glass": {
+      "expect": "D-BREAK-GLASS-STALE",
+      "flagged": true,
+      "result": {
+        "id": "D-BREAK-GLASS-STALE",
+        "status": "warn",
+        "detail": "<run> was replaced as approver (client.json replaced_approvers) and approvals.break_glass or approvals.agents still names it",
+        "fix": "remove it from approvals.break_glass in signer.yaml, or add it as an approver, then restart the signer"
+      }
+    },
     "keys readable by the agent": {
       "expect": "D-AGENT-PROBE",
       "flagged": true,
@@ -279,9 +289,9 @@
       "flagged": true,
       "result": {
         "id": "D-WITNESS-CONFIGURED",
-        "status": "fail",
+        "status": "warn",
         "detail": "no witnesses: checkpoints are not cosigned, so assurance stays dev",
-        "fix": "add a witness under witnesses: in signer.yaml (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses)"
+        "fix": "the public witness isn't deployed yet: nothing to do until a release names it; to anchor now, list your own witness under witnesses: in signer.yaml (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses)"
       }
     },
     "only operator witnesses": {

@@ -147,6 +147,39 @@ class E16(unittest.TestCase):
         self.assertEqual(got["status"], "ok")
 
 
+class BreakGlassStale(unittest.TestCase):
+    ON_CALL = {"approvers": ["uid:502"], "break_glass": ["uid:0", "group:corp/oncall"]}
+
+    def row(self, approvals, replaced=(), profile="system"):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        client_json = os.path.join(d, "client.json")
+        with open(client_json, "w") as f:
+            json.dump({"mode": "system", "replaced_approvers": list(replaced)}, f)
+        got = doctor.v2_checks({"data_dir": d, "approvals": approvals}, profile, settings="none", client_json=client_json)
+        return {r["id"]: r for r in got}.get("D-BREAK-GLASS-STALE")
+
+    def test_a_replaced_approver_that_keeps_break_glass_or_agents_is_named(self):
+        for approvals in ({**self.ON_CALL, "break_glass": ["uid:0", "uid:501"]},
+                          {**self.ON_CALL, "agents": ["uid:501"]}):
+            with self.subTest(approvals=approvals):
+                row = self.row(approvals, ["uid:501"])
+                self.assertEqual(row["status"], "warn")
+                self.assertIn("uid:501", row["detail"])
+                self.assertIn("remove it from approvals.break_glass in signer.yaml, or add it as an approver", row["fix"])
+
+    def test_the_documented_on_call_group_with_no_replaced_approver_is_ok(self):
+        self.assertEqual(self.row(self.ON_CALL)["status"], "ok")
+
+    def test_a_replaced_approver_removed_from_break_glass_or_made_an_approver_again_is_ok(self):
+        self.assertEqual(self.row(self.ON_CALL, ["uid:501"])["status"], "ok")
+        self.assertEqual(self.row({"approvers": ["uid:501"], "break_glass": ["uid:0", "uid:501"]}, ["uid:501"])["status"],
+                         "ok")
+
+    def test_dev_mode_has_no_such_row(self):
+        self.assertIsNone(self.row({"approvers": ["uid:502"], "break_glass": ["uid:501"]}, ["uid:501"], "dev"))
+
+
 class CodingAgentHooks(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

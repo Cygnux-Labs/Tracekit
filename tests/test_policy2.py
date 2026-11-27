@@ -6812,6 +6812,16 @@ class SourceReader(unittest.TestCase):
         r = source.read('helpers = "x"\nhelpers.js("document.title")')
         self.assertEqual(r.held, "bind")
 
+    def test_a_harness_function_the_cell_rebinds_is_held_and_its_body_read(self):
+        """rotate_proxy (browser-use 1.0.9's worker) is the harness's like solve_captcha: a cell rebinding it is held,
+        and a function it defines under that name is read as the cell's own code."""
+        for code in ('rotate_proxy = 1\nrotate_proxy("de")', 'rotate_proxy = js\nrotate_proxy("x")'):
+            with self.subTest(code=code):
+                self.assertEqual(source.read(code).held, "bind")
+        r = source.read('def rotate_proxy(country=None):\n    goto_url("file:///etc/passwd")\nrotate_proxy()')
+        self.assertEqual([c[1]["url"] for c in r.calls], ["file:///etc/passwd"])
+        self.assertEqual(source.read('rotate_proxy("de")').held, "callee")
+
     def test_what_it_cannot_follow_is_held(self):
         for code, cause in [
                 ('url = str(prev)\ngoto_url(url)', "arg"),
