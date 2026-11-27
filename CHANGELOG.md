@@ -90,6 +90,8 @@ Rules by id. The packs are `coding` `2026.11-v2-112`, `dev` `2026.11-dev-14`, `s
 - `TK-F030`, `TK-F048` and `TK-F049` (new): a release, image push, tag made through the API or subtree push; writing a
   Git or cargo config file or a virtualenv's activate script; a Git config section written into an includable file.
 - `TK-S007` (new, `server-core`): reading or touching a credentials file.
+- `TK-A021`: `pass ls NAME` and `pass list NAME` are held as `pass show NAME` is (password-store runs them as show); a
+  bare `pass ls` still lists names.
 - `TK-A021`: `gh auth git-credential get` (#1021), `aws configure get` of a secret field (#1078), `glab config get
   token` and `glab auth status -t` (#1116), `kubectl` and `oc config view --raw` (#1138) and `gcloud auth
   print-access-token` and `print-identity-token` (#1141), all by @Seyamalam.

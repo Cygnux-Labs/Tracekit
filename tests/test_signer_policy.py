@@ -6252,6 +6252,8 @@ class CodingPack(unittest.TestCase):
                        ("glab config get -h ghe.corp token", "TK-A021"), ("glab config get --host=gitlab.com token", "TK-A021"),
                        ("glab auth status --show-token", "TK-A021"), ("glab auth status -t", "TK-A021"),
                        ("glab auth status -th ghe.corp", "TK-A021"),
+                       # password-store runs `ls` and `list` as `show`: with an entry they print it
+                       ("pass ls github", "TK-A021"), ("pass list email/github", "TK-A021"),
                        ("kubectl config view --raw", "TK-A021"), ("kubectl config view --minify --raw", "TK-A021"),
                        ("kubectl config view --raw --minify", "TK-A021"), ("kubectl config view --raw=true", "TK-A021"),
                        ("kubectl config view --raw -o json", "TK-A021"), ("kubectl -n prod config view --raw", "TK-A021"),
