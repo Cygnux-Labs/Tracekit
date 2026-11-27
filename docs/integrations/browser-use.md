@@ -13,7 +13,7 @@ after the action it records the outcome. It works with any object that implement
 pip install tracekit-ai "browser-use>=0.13.11,<1.1"
 ```
 
-Python 3.11 or newer (browser-use's own requirement). Tested with 0.13.11, 1.0.2 and 1.0.3. Every push runs the 0.13
+Python 3.11 or newer (browser-use's own requirement). Tested with 0.13.11, 1.0.2, 1.0.3 and 1.0.9 (the names a cell finds bound are checked against 1.0.3 to 1.0.9). Every push runs the 0.13
 adapter contract, and the 1.0 one, over `BrowserLoop` and `Repl.call` on the real classes, against browser-use 1.0.x
 in its own job; the nightly adapter-contract job runs it against browser-use `@latest`. On 0.13 the adapter wraps
 the action registry; on 1.0 it wraps `BrowserLoop.wrap_tool_execute`, which every function tool, the `python` cell
