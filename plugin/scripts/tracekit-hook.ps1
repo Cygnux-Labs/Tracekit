@@ -22,7 +22,7 @@ function Finish($status, $what, $fix) {
 # an error this script didn't expect blocks a tool call too, as a hook that starts but can't finish does
 trap { Finish 3 "the plugin's hook script failed ($_)" 'Ask the person to reinstall the plugin.' }
 
-$min = '1.7.3'   # the oldest tracekit it runs with, as tracekit-hook's MIN_TRACEKIT
+$min = '1.8.0'   # the oldest tracekit it runs with, as tracekit-hook's MIN_TRACEKIT
 $userSite = 'import site, sys; sys.path.append(site.getusersitepackages())'   # (addsitedir would run its .pth files)
 $run = "`nMIN = '$min'" + @'
 
@@ -39,7 +39,7 @@ if not why:
     why = '' if now >= tuple(map(int, MIN.split('.'))) else 'is older than this plugin, which needs %s' % MIN
 if why:
     import tracekit
-    print('tracekit plugin: tracekit %s in %s %s, so this %s. Ask the person to run: uv tool install tracekit-ai==1.7.3 && '
+    print('tracekit plugin: tracekit %s in %s %s, so this %s. Ask the person to run: uv tool install tracekit-ai==1.8.0 && '
           'tracekit init --dev --v2 --no-hooks' % (getattr(tracekit, '__version__', '?'), sys.executable, why,
                                      'call was blocked' if pre else 'event was NOT recorded'), file=sys.stderr)
     raise SystemExit(2 if pre else 1)
@@ -77,20 +77,20 @@ if ($rec) {
         if ($recPath.StartsWith($tool, [StringComparison]::OrdinalIgnoreCase)) { $inside = $true }
     }
     if (-not $inside -and $recorded.hook_python_allowed -ne $true) {
-        Finish 3 "the Python tracekit init recorded for this hook ($rec) is not one of a uv tool or pipx install of Tracekit" 'Ask the person to run: uv tool install --reinstall tracekit-ai==1.7.3 && tracekit init --dev --v2 --no-hooks'
+        Finish 3 "the Python tracekit init recorded for this hook ($rec) is not one of a uv tool or pipx install of Tracekit" 'Ask the person to run: uv tool install --reinstall tracekit-ai==1.8.0 && tracekit init --dev --v2 --no-hooks'
     }
     if (Test-Path -LiteralPath $rec -PathType Leaf) {
         & $rec -I -c 'import tracekit' *> $null
         if ($LASTEXITCODE -eq 0) {
             & $rec -I -c ('import sys' + $run) @args
-            Finish $LASTEXITCODE "$rec could not run the tracekit hook" 'Ask the person to reinstall: uv tool install --reinstall tracekit-ai==1.7.3 && tracekit init --dev --v2 --no-hooks'
+            Finish $LASTEXITCODE "$rec could not run the tracekit hook" 'Ask the person to reinstall: uv tool install --reinstall tracekit-ai==1.8.0 && tracekit init --dev --v2 --no-hooks'
         }
     }
-    Finish 3 "$rec, the Python tracekit init recorded for this hook, cannot import tracekit" 'Ask the person to run: uv tool install --reinstall tracekit-ai==1.7.3 && tracekit init --dev --v2 --no-hooks'
+    Finish 3 "$rec, the Python tracekit init recorded for this hook, cannot import tracekit" 'Ask the person to run: uv tool install --reinstall tracekit-ai==1.8.0 && tracekit init --dev --v2 --no-hooks'
 }
 $setUp = $env:LOCALAPPDATA -and (Test-Path -PathType Container (Join-Path $env:LOCALAPPDATA 'tracekit'))
 if ($setUp) {
-    Finish 3 'tracekit init has recorded no Python for this hook, though Tracekit is set up' "Ask the person to run: uv tool install tracekit-ai==1.7.3 && tracekit init --dev --v2 --no-hooks, or $off"
+    Finish 3 'tracekit init has recorded no Python for this hook, though Tracekit is set up' "Ask the person to run: uv tool install tracekit-ai==1.8.0 && tracekit init --dev --v2 --no-hooks, or $off"
 }
 # Before Tracekit is set up: the first of TRACEKIT_PYTHON, python3 and python that has the package.
 # lean: unlike tracekit-hook, no uv tool or pipx install's Python comes first and no `tracekit` command's Python is tried;
@@ -102,11 +102,11 @@ foreach ($py in @($env:TRACEKIT_PYTHON, 'python3', 'python')) {
     & $py -I -c "$userSite; import tracekit" *> $null
     if ($LASTEXITCODE -eq 0) {
         & $py -I -c ($userSite + $run) @args
-        Finish $LASTEXITCODE "$py could not run the tracekit hook" 'Ask the person to reinstall: uv tool install --reinstall tracekit-ai==1.7.3'
+        Finish $LASTEXITCODE "$py could not run the tracekit hook" 'Ask the person to reinstall: uv tool install --reinstall tracekit-ai==1.8.0'
     }
 }
 if ($env:TRACEKIT_PYTHON -or $env:TRACEKIT_SIGNER) {
-    Finish 3 'no Python here (TRACEKIT_PYTHON, python3, python) has the tracekit package, though Tracekit is set up' "Ask the person to install it (uv tool install tracekit-ai==1.7.3), set TRACEKIT_PYTHON to the Python that has it, or $off"
+    Finish 3 'no Python here (TRACEKIT_PYTHON, python3, python) has the tracekit package, though Tracekit is set up' "Ask the person to install it (uv tool install tracekit-ai==1.8.0), set TRACEKIT_PYTHON to the Python that has it, or $off"
 }
-[Console]::Error.WriteLine("tracekit plugin: the tracekit package is not installed for python3, so this $ev event was NOT recorded. Ask the person to set it up: uv tool install tracekit-ai==1.7.3 && tracekit init --dev --v2 --no-hooks")
+[Console]::Error.WriteLine("tracekit plugin: the tracekit package is not installed for python3, so this $ev event was NOT recorded. Ask the person to set it up: uv tool install tracekit-ai==1.8.0 && tracekit init --dev --v2 --no-hooks")
 exit 1

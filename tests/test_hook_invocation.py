@@ -583,7 +583,8 @@ class PluginShim(unittest.TestCase):
             version = json.load(f)["version"]
         with open(os.path.join(ROOT, "plugin", "scripts", "tracekit-hook"), encoding="utf-8") as f:
             self.assertIn(f"MIN_TRACEKIT={version} ", f.read())
-        older = ".".join(str(max(int(p) - (i == 2), 0)) for i, p in enumerate(version.split(".")[:3]))
+        major, minor, patch = (int(p) for p in version.split(".")[:3])
+        older = f"{major}.{minor}.{patch - 1}" if patch else f"{major}.{minor - 1}.9"
         self.install_tracekit("def _entry(event=None):\n    return 0\n", older)
         code, err = self.hook("PreToolUse")
         self.assertEqual(code, 2, err)
