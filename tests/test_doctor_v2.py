@@ -179,6 +179,19 @@ class BreakGlassStale(unittest.TestCase):
     def test_dev_mode_has_no_such_row(self):
         self.assertIsNone(self.row({"approvers": ["uid:502"], "break_glass": ["uid:501"]}, ["uid:501"], "dev"))
 
+    def test_replaced_approvers_that_arent_a_list_of_names_read_as_none(self):
+        """A number raised TypeError out of doctor, and a string was read a character at a time."""
+        for bad in (5, "uid:501", [["uid:501"]], [None, 7]):
+            with self.subTest(bad=bad):
+                d = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, d, True)
+                client_json = os.path.join(d, "client.json")
+                with open(client_json, "w") as f:
+                    json.dump({"mode": "system", "replaced_approvers": bad}, f)
+                got = doctor.v2_checks({"data_dir": d, "approvals": {**self.ON_CALL, "break_glass": ["uid:0", "uid:501"]}},
+                                       "system", settings="none", client_json=client_json)
+                self.assertEqual({r["id"]: r for r in got}["D-BREAK-GLASS-STALE"]["status"], "ok")
+
 
 class CodingAgentHooks(unittest.TestCase):
     def setUp(self):

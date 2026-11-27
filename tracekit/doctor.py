@@ -1730,7 +1730,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             replaced = read_json(client_json).get("replaced_approvers") or []
         except (OSError, ValueError, AttributeError, TypeError):   # D-SYSTEM-CONFIG's
             replaced = []
-        stale = [r for r in replaced if r not in (approvals.get("approvers") or ())
+        stale = [r for r in (replaced if isinstance(replaced, list) else []) if isinstance(r, str)
+                 and r not in (approvals.get("approvers") or ())
                  and (install._covers(approvals.get("break_glass") or [], r)
                       or install._covers(approvals.get("agents") or [], r))]
         add("D-BREAK-GLASS-STALE", not stale,

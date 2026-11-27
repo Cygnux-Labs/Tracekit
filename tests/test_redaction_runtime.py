@@ -183,7 +183,7 @@ class RedactionRuntimeTests(unittest.TestCase):
                  lambda k: privacy.redact_command("export " + "TOKEN0000 " * (k // 10), True))):
             with self.subTest(name):
                 quarter, whole = seconds(lambda: f(n // 4)), seconds(lambda: f(n))
-                self.assertLess(whole, 6 * quarter + 0.05)
+                self.assertLess(whole, 6 * quarter + 0.005)   # the cheapest takes ~2 ms at a quarter: 16x must fail
 
     def test_realistic_secrets_still_redacted(self):
         # fake redaction fixtures  agent-flow:allow-secret

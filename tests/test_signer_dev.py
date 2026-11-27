@@ -248,6 +248,24 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.assertIn("was still starting after 0.2s", message)
         self.assertIn(os.path.join(self.run_dir, autospawn.LOG), message)
 
+    def test_down_says_hung_for_a_signer_that_never_publishes(self):
+        """A lock holder that never publishes endpoint.json is reported once a start's wait (START_WAIT_S) is over, not
+        waited on for good."""
+        os.makedirs(self.run_dir, 0o700, exist_ok=True)
+        ready = os.path.join(self.run_dir, "ready")
+        child = ("import os, sys, time; from tracekit.locking import lock_file; d = sys.argv[1]; "
+                 "f = open(os.path.join(d, 'signer.lock'), 'a'); lock_file(f); "
+                 "open(os.path.join(d, 'ready'), 'w').close(); time.sleep(30)")
+        p = subprocess.Popen([sys.executable, "-c", child, self.run_dir])
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        wait_for(lambda: os.path.exists(ready), 10)
+        begun = time.monotonic()
+        with mock.patch.object(autospawn, "START_WAIT_S", 1), self.assertRaises(autospawn.Hung) as got:
+            autospawn.down(timeout=0.5, d=self.run_dir)
+        self.assertIn("never published endpoint.json", str(got.exception))
+        self.assertLess(time.monotonic() - begun, 5)
+
     def serving(self, child):
         """`python -c child` with self.run_dir as its argument, once it serves as the dev signer there. Its process."""
         os.makedirs(self.run_dir, 0o700, exist_ok=True)
