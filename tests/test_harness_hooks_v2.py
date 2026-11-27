@@ -2978,9 +2978,10 @@ class SlowSignerStart(HarnessCase):
 
     @pytest.mark.serial
     def test_a_cline_hook_that_waits_for_its_signer_and_an_approval_answers_before_cline_runs_the_call(self):
-        """One deadline for the whole hook: a start that takes 15 s leaves the held call's approval wait (20 s here)
-        nothing, and the hook blocks the call before Cline's 30 s."""
-        self.slow_signer(15)
+        """One deadline for the whole hook: a start that takes 10 s leaves the held call's approval wait (20 s here) less
+        than it asks for, and the hook blocks the call before Cline's 30 s. (15 s left a slow runner's real start,
+        1.8's larger packs among it, past the 25 s the hook has.)"""
+        self.slow_signer(10)
         os.environ["TRACEKIT_APPROVAL_WAIT"] = "20"
         agent_hooks.cline_cap_wait()
         begun = time.monotonic()
