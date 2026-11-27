@@ -2533,26 +2533,23 @@ class SignerService:
         return them
 
     def _passkey(self, identity, aid, a, assertion):
-        """Verify a passkey assertion and return its credential and pending counter update."""
+        """The credential id of a passkey assertion that approves `a` for `identity`; RPCError forbidden otherwise."""
         who = person(identity)
-
         if assertion is None or not who or self._webauthn is None:
             raise RPCError("forbidden", "approving this call needs a passkey assertion")
-
-        cred = self._passkeys.get(who)
-
-        if cred is None or cred["id"] != assertion["credential_id"]:
-            raise RPCError("forbidden", "not the passkey registered for this person")
-
-        try:
-            count = webauthn.verify(
-                base64.b64decode(cred["key"]), cred["count"], self._webauthn["rp_id"], self._webauthn["origin"],
-                webauthn.challenge(aid, a["binding_digest"], "approve"),
-                *(webauthn.unb64url(assertion[k]) for k in ("client_data_json", "authenticator_data", "signature")))
-
-        except ValueError as e:
-            raise RPCError("forbidden", f"passkey refused: {e}") from None
-        return cred["id"], who, count
+        with self._passkeys_lock:
+            cred = self._passkeys.get(who)
+            if cred is None or cred["id"] != assertion["credential_id"]:
+                raise RPCError("forbidden", "not the passkey registered for this person")
+            try:
+                count = webauthn.verify(
+                    base64.b64decode(cred["key"]), cred["count"], self._webauthn["rp_id"], self._webauthn["origin"],
+                    webauthn.challenge(aid, a["binding_digest"], "approve"),
+                    *(webauthn.unb64url(assertion[k]) for k in ("client_data_json", "authenticator_data", "signature")))
+            except ValueError as e:
+                raise RPCError("forbidden", f"passkey refused: {e}") from None
+            self._save_passkeys(dict(self._passkeys, **{who: dict(cred, count=count)}))
+        return cred["id"]
 
     def _save_passkeys(self, passkeys):
         """Replace passkeys.json (under _passkeys_lock), then the in-memory copy."""
@@ -4425,40 +4422,20 @@ class SignerService:
         return self._answer(identity, req, sub, sub, groups)
 
     def _answer(self, identity, req, sub, own, groups=None, bridge=None):
-        """Serialize human approval answers with passkey counter updates."""
-        if self._is_agent(identity):
-            return self._agent_answer(identity, req)
-
-        with self._passkeys_lock:
-            return self._answer_impl(identity, req, sub, own, groups, bridge)
-
-    def _answer_impl(self, identity, req, sub, own, groups=None, bridge=None):
         """`identity` answers an approval as `sub` (`own`: as a run's owner would record it). `groups`: None when it
         answers for itself, else it is a bridge answering for `sub`, a member of `groups`. `bridge`: the identity that
         answers for the OIDC person `identity` (`on_behalf`)."""
         if self._is_agent(identity):
             return self._agent_answer(identity, req)
-
-        # Check the request-ID cache before accessing approval state.
         method = "approval_decide" if groups is None else ON_BEHALF
-
-        rid = (identity.scheme, identity.subject, req["request_id"])
-
-        print("DEBUG RETRY ID:", rid)
-        print("DEBUG CACHE ENTRY:", self.log.done.get(rid))
-        print("DEBUG CACHE METHOD:", method)
-
-        found, cached_response = self.log.cached(identity, method, req)
-
-        print("DEBUG CACHE FOUND:", found)
-        print("DEBUG CACHED RESPONSE:", cached_response)
-
-        if found:
-            return cached_response
-
+        # a retry gets its first answer even once the run is final and the approval gone (#765); not a viewer's
+        # (`bridge`): its cache key is the person's, with no tenant, and only _visible checks the tenant
+        if bridge is None and (identity.scheme, identity.subject, req["request_id"]) in self.log.done:
+            found, out = self.log.cached(identity, method, req)
+            if found:
+                return out
         if req["decision"] == "escalate":
             raise RPCError("invalid_request", "escalate is an agent approver's answer: a person approves or rejects")
-
         aid = req["approval_id"]
         a = self._visible(identity, aid)
         run_key = a["run_key"]
@@ -4491,17 +4468,10 @@ class SignerService:
                                                 "lists who may answer")
                 if not req.get("reason", "").strip():
                     raise RPCError("forbidden", "a break-glass answer needs a reason")
-        # a retry already answered by the writer must use its cached result
+        # a retry of an answer is the writer's to answer from its request_id cache: its assertion's signCount is spent
         retry = (identity.scheme, identity.subject, req["request_id"]) in self.log.done
-
-        credential = None
-        passkey_update=None
-
-        if a.get("passkey") and req["decision"] == "approve" and not retry:
-            credential,passkey_who,passkey_count = self._passkey(
-                identity, aid, a, req.get("passkey")
-            )
-            passkey_update = (passkey_who, passkey_count)
+        credential = a.get("passkey") and req["decision"] == "approve" and not retry and \
+            self._passkey(identity, aid, a, req.get("passkey"))
         self.quotas.take_event(identity)
 
         def fn(tx, run):
@@ -4540,22 +4510,11 @@ class SignerService:
                     run, a["requester"]) and not self._agent_session(identity, run["tenant"], allowed=False)
             tx.emit(run, "approval", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"])
             return {"approval_id": aid, "state": a["state"], "self_approved": same}
-        out = self.log.submit(identity, "approval_decide" if groups is None else ON_BEHALF, req, fn, run_key)
-
-    # Persist the signCount only after the approval was successfully committed.
-        if passkey_update is not None:
-            passkey_who, passkey_count = passkey_update
-            cred = self._passkeys[passkey_who]
-
-            self._save_passkeys({
-                **self._passkeys,
-                passkey_who: dict(cred, count=passkey_count)
-                })
-
+        out = self.log.submit(identity, method, req, fn, run_key)
         if out["state"] == "rejected":
             self._drop_args(aid)
-            with self._cond:
-                self._cond.notify_all()
+        with self._cond:
+            self._cond.notify_all()
         return out
 
     def _agent_answer(self, identity, req):
@@ -5167,16 +5126,12 @@ class SignerService:
         return more() if full else {"approvals": page, "next_cursor": None}
 
     def _approval_abandon(self, identity, req):
-        found, cached_response = self.log.cached(
-            identity, "approval_abandon", req
-        )
-
-        if found:
-            return cached_response
         key, aid = self._authorize(identity, req), req["approval_id"]
+        if (identity.scheme, identity.subject, req["request_id"]) not in self.log.done:   # a retry: the writer answers it
+            self._approval(key, aid)
 
         def fn(tx, run):
-            a = self._approval(key,aid)
+            a = self._approval(key, aid)
             # takes no caller: an approval of a gateway's call expires on its own, or with its run
             self._hold(run["calls"].get(a["tool_call_id"]), (None, None), a["tool_call_id"])
             if a["state"] not in LIVE:

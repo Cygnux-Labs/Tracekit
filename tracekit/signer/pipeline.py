@@ -106,6 +106,11 @@ def _monotonic(t):
     return time.monotonic() - max(0.0, time.time() - t)
 
 
+def _digest(method, req):
+    """A request's payload digest, which the request_id cache (RecordLog.done) keeps with its response."""
+    return hashlib.sha256(json.dumps([method, req], sort_keys=True, default=repr).encode()).hexdigest()
+
+
 def since(ts):
     """The monotonic time at which a record with wall-clock `ts` was written (never in the future)."""
     return _monotonic(epoch(ts))
@@ -1012,34 +1017,24 @@ class RecordLog:
         `late`: also accepted while the run is closing (a late record), not only while it is open."""
         if self.refuse_writes:
             raise RPCError("unavailable", self.refuse_writes)
-        digest = hashlib.sha256(json.dumps([method, req], sort_keys=True, default=repr).encode()).hexdigest()
+        digest = _digest(method, req)
         start = time.monotonic()
         out = self._wait(lambda tx: self._item(tx, identity, method, req, digest, fn, run_key, late))
         self.metrics.ack_seconds.observe(time.monotonic() - start)
         return out
 
     def cached(self, identity, method, req):
-        """Return an existing request-ID response, or indicate that it is not cached."""
-        digest = hashlib.sha256(
-            json.dumps([method, req], sort_keys=True, default=repr).encode()
-        ).hexdigest()
-
-        rid = (identity.scheme, identity.subject, req["request_id"])
+        """(True, the response) when `identity` already sent `req`'s request id with this payload, else (False, None); a
+        conflict for another payload. A retry gets its answer here even once its run is final, which submit refuses."""
+        digest, rid = _digest(method, req), (identity.scheme, identity.subject, req["request_id"])
 
         def fn(tx):
             item = self.done.get(rid)
-
             if item is None:
                 return False, None
-
             if item[0] != digest:
-                raise RPCError(
-                    "conflict",
-                    f"request_id {rid[2]} was used with another payload"
-                )
-
-            return True, copy.deepcopy(self.done[rid][1])
-
+                raise RPCError("conflict", f"request_id {rid[2]} was used with another payload")
+            return True, copy.deepcopy(item[1])
         return self.write(fn)
 
     def write(self, fn):
