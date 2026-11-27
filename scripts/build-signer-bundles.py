@@ -25,7 +25,7 @@ PY = "3.12"
 PBS = ("https://github.com/astral-sh/python-build-standalone/releases/download/20261009/"
        "cpython-3.12.15+20261009-{triple}-install_only_stripped.tar.gz")
 # npm key: (PBS triple, its sha256, npm os, npm cpu, pip --platform tags)
-TARGETS = {   # no Intel Mac: google-re2 and cryptography publish no x86_64 macOS wheels it can use; pip install there
+TARGETS = {   # no Intel Mac: the pinned cryptography publishes no x86_64 macOS wheel; pip install there
     # macosx_13_0: the pinned google-re2's oldest macOS wheel (older macOS runs the regex backend)
     "darwin-arm64": ("aarch64-apple-darwin", "233f8e15255b3e1d1fd47ea5dd5230dfed803f371138e896e54d98c60ae19f6f",
                      "darwin", "arm64", ["macosx_13_0_arm64"]),

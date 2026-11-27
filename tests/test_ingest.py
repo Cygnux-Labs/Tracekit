@@ -149,7 +149,7 @@ class Tokens(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             self.assertEqual(ingest.main(["token", "box", "--home", d]), 0)
         self.assertEqual(err.getvalue().count("deprecated"), 1)
-        self.assertIn("removed in tracekit 0.5", err.getvalue())
+        self.assertIn("tracekit ingest is deprecated", err.getvalue())
         self.assertIn("tracekit init --remote URL --v2", err.getvalue())
 
 
