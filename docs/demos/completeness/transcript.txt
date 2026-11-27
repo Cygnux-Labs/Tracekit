@@ -3,18 +3,20 @@ Bash 'ls': allow
 Bash 'npm test': allow
 call-1 completed; call-2 never did, and the run ends
 
-$ tracekit verify 03fb5d2084c703fbc8441576c9364580.tkb --trust trust.json --detail
+$ tracekit verify 17d9fefd9c8dc040754883a8df3611fc.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
-[PASS] checkpoint — tracekit.local/6826710591a55c91cf18ed6d68d0087a at tree size 8, signed by its pinned log key
+[PASS] checkpoint — tracekit.local/kb986555d6e9c5ff78f555a60e4957a19c33d3c176d31a06bad45676f5b06692a at tree size 8, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required
 [PASS] keys — 1 record key(s) from 1 key record(s)
 [PASS] signatures — 7 record(s), keys valid at their position
-[PASS] run chain — run '03fb5d2084c703fbc8441576c9364580' of tenant 'default', contiguous from run_seq 0
+[PASS] run chain — run '17d9fefd9c8dc040754883a8df3611fc' of tenant 'default', contiguous from run_seq 0
 [PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 8
+[PASS] policy snapshot — policies/6a672068b8a69b63519a07645be002f3cfab85a0cd6ac13731aa8190264afd4b.json
 [WARN] gaps — 1 signed gap, tamper or mismatch record(s): decided_not_completed 1
         seq 6: decided_not_completed: call-2 (Bash) was allowed and never completed: no result reached the signer (the agent stopped or was interrupted, its post-call hook did not run, or a client dropped the result); read the harness's t
 [PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
 [PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] run labels — 1 run(s) replayed under their policies, 0 signer-asserted (under a policy not in the bundle)
 [PASS] tiers — 2 tool call(s): T1 0, T2 0, T3 0, untiered 2
 [PASS] args source — 2 record(s): raw 0, parsed 2, coerced 0
 [PASS] isolation — signer-reported: same-user 1 run(s)
@@ -22,7 +24,7 @@ $ tracekit verify 03fb5d2084c703fbc8441576c9364580.tkb --trust trust.json --deta
 [PASS] key assurance — asserted: the log declares its record keys; none is attested
 
 Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/6826710591a55c91cf18ed6d68d0087a); no witness cosignature; key retirements not proven complete.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/kb986555d6e9c5ff78f555a60e4957a19c33d3c176d31a06bad45676f5b06692a); no witness cosignature; key retirements not proven complete.
 
 the signed records of both calls:
   #1 policy.decision {"decision": "allow", "rule_ids": [], "tool": "Bash", "tool_use_id": "call-1"}
@@ -32,18 +34,20 @@ the signed records of both calls:
 
 one byte changed in a copy (the gap's tool_use_id call-2 now reads call-1):
 $ tracekit verify tampered.tkb --trust trust.json --detail
-[FAIL] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
-[PASS] checkpoint — tracekit.local/6826710591a55c91cf18ed6d68d0087a at tree size 8, signed by its pinned log key
+[FAIL] manifest — files differ from the manifest: runs/f6e7a85c42c6411ccd5ab4ba93fca7e1.jsonl (changed)
+[PASS] checkpoint — tracekit.local/kb986555d6e9c5ff78f555a60e4957a19c33d3c176d31a06bad45676f5b06692a at tree size 8, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required
 [PASS] keys — 1 record key(s) from 1 key record(s)
-[FAIL] signatures — 7 record(s), keys valid at their position
+[FAIL] signatures — 1 problem(s) in 7 record(s)
         seq 6: hash does not match the event
-[PASS] run chain — run '03fb5d2084c703fbc8441576c9364580' of tenant 'default', contiguous from run_seq 0
+[PASS] run chain — run '17d9fefd9c8dc040754883a8df3611fc' of tenant 'default', contiguous from run_seq 0
 [PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 8
+[PASS] policy snapshot — policies/6a672068b8a69b63519a07645be002f3cfab85a0cd6ac13731aa8190264afd4b.json
 [WARN] gaps — 1 signed gap, tamper or mismatch record(s): decided_not_completed 1
         seq 6: decided_not_completed: call-2 (Bash) was allowed and never completed: no result reached the signer (the agent stopped or was interrupted, its post-call hook did not run, or a client dropped the result); read the harness's t
 [PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
 [PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] run labels — 1 run(s) replayed under their policies, 0 signer-asserted (under a policy not in the bundle)
 [PASS] tiers — 2 tool call(s): T1 0, T2 0, T3 0, untiered 2
 [PASS] args source — 2 record(s): raw 0, parsed 2, coerced 0
 [PASS] isolation — signer-reported: same-user 1 run(s)
@@ -51,4 +55,4 @@ $ tracekit verify tampered.tkb --trust trust.json --detail
 [PASS] key assurance — asserted: the log declares its record keys; none is attested
 
 Integrity: FAILED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/6826710591a55c91cf18ed6d68d0087a); no witness cosignature; key retirements not proven complete.
+Assurance: not rated (the bundle failed verification).

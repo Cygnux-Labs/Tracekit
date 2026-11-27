@@ -613,3 +613,5 @@
 {"args": {"command": "vault write auth/approle/login role_id=r secret_id=s"}, "expect": "ask", "note": "#981: an approle login returns a token (TK-A053)", "tool": "Bash"}
 {"args": {"command": "vault write pki/issue/web common_name=web.example"}, "expect": "ask", "note": "#981: an issued certificate is a credential (TK-A053)", "tool": "Bash"}
 {"args": {"command": "vault token lookup"}, "expect": "ask", "note": "#981: token lookup prints the token's own id (TK-A053)", "tool": "Bash"}
+{"tool": "Bash", "args": {"command": "pass ls github"}, "expect": "ask", "note": "password-store runs ls as show: with an entry it prints the password (TK-A021)"}
+{"tool": "Bash", "args": {"command": "pass list email/github"}, "expect": "ask", "note": "list is show too (TK-A021)"}

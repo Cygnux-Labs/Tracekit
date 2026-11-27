@@ -30,7 +30,8 @@ SECRET_PATTERNS = [
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     ("stripe_key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{16,}\b")),
     ("npm_token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
-    ("bearer_token", re.compile(r"(?i)\b(authorization\s*:\s*(?:bearer|basic|token)\s+)[A-Za-z0-9._~+/=\-]{12,}")),
+    ("bearer_token", re.compile(r"(?i)\b(authorization[\"']?\s*:\s*[\"']?(?:bearer|basic|token)\s+)"
+                                r"[A-Za-z0-9._~+/=\-]{12,}")),
     ("aws_secret_key", re.compile(r"(?i)(aws_secret_access_key[\"']?\s*[=:]\s*[\"']?)[A-Za-z0-9/+]{40}")),
 ]
 # dotenv-style lines: every value is treated as secret when the content comes from a .env file
@@ -172,11 +173,16 @@ def _redact_jwts(run, s):
     return _marked(s, _jwts(run, s), "jwt")
 
 
-_AFTER = re.compile(r"(\s*[=:]\s*)((?:\$'|\\?[\"'])?)([^\s\"'#]{4,})")   # (a quote escaped in a string too)
+# what follows a name: its own closing quote (a JSON key's), `=` or `:`, and the value's quote, with a string prefix
+# (r'…', b"…") or triple quotes; a quote escaped in a string too
+_STR_PREFIX = "rRbBuUfF"
+_QUOTE = r"(?:\$'|[" + _STR_PREFIX + r"]{0,2}(?:\"\"\"|'''|\\?[\"']))?"
+_AFTER = re.compile(r"(?:\\?[\"'])?(\s*[=:]\s*)(" + _QUOTE + r")([^\s\"'#]{4,})")
 _IDCH = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")
 
 
-_KWS = ("secret", "password", "passwd", "token", "apikey", "api_key", "private_key", "access_key", "credential")
+_KWS = ("secret", "password", "passwd", "token", "apikey", "api_key", "api-key", "private_key", "access_key",
+        "credential", "_pwd")
 
 
 def _kw_hits(s):
@@ -190,26 +196,79 @@ def _kw_hits(s):
     return sorted(hits)
 
 
+def _identifier(s, a, b):
+    """(start, end) of the identifier around the keyword at [a, b) in `s`."""
+    while a > 0 and s[a - 1] in _IDCH:
+        a -= 1
+    while b < len(s) and s[b] in _IDCH:
+        b += 1
+    return a, b
+
+
+# a name with a secret-looking word that names something about the secret, not the secret: a count, size, limit,
+# switch, kind or version of it by its last word (token_count, password_min_length, secret_scanning_enabled,
+# credential_type), or a maximum, minimum or number of them by its first unless its last is itself a secret word
+# (max_tokens, num_tokens; not max_tokens_secret). Its value is shown, so a held call that writes one stays approvable
+_ABOUT_LAST = frozenset(("count", "counts", "length", "len", "size", "limit", "used", "enabled", "disabled", "type", "kind",
+                         "version", "min", "max", "ttl"))
+_ABOUT_FIRST = frozenset(("max", "min", "num", "total"))
+_NAME_WORDS = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z0-9]+(?![a-z])")
+
+
+def _about_secret(name):
+    """Whether identifier `name` names something about a secret rather than one (_ABOUT_LAST, _ABOUT_FIRST)."""
+    words = [w.lower() for w in _NAME_WORDS.findall(name)]
+    return bool(words) and (words[-1] in _ABOUT_LAST or words[0] in _ABOUT_FIRST and not _SECRET_WORD.fullmatch(words[-1]))
+
+
 def _assignments(s, end=None, stop=None):
     """(start, end) of each value _redact_assignments hides in `s`: ASSIGNMENT's, found fast on large inputs (the
-    keywords with str.find, then a look around each one). `end(name_end, m)`: where the value _AFTER's match `m` found
-    after a name ending at `name_end` ends instead, or None to leave it; `stop(name_end)`: where its match may end at
-    the latest (so a value cut short is read once: linear)."""
+    keywords with str.find, then a look around each one), but a name about a secret's (_about_secret). `end(name_end,
+    m)`: where the value _AFTER's match `m` found after a name ending at `name_end` ends instead, or None to leave it;
+    `stop(name_end)`: where its match may end at the latest (so a value cut short is read once: linear)."""
     last = b = 0
     for ks, ke in _kw_hits(s):
         if ks < last or ks < b:  # ks < b: same identifier as the previous hit, already handled
             continue
-        a, b = ks, ke
-        while a > 0 and s[a - 1] in _IDCH:
-            a -= 1
-        while b < len(s) and s[b] in _IDCH:
-            b += 1
+        a, b = _identifier(s, ks, ke)
+        if _about_secret(s[a:b]):
+            continue
         am = _AFTER.match(s, b, stop(b) if stop else len(s))
         if am and a >= last:
-            e = am.end(3) if end is None else end(b, am)
+            e = am.end(3) if end is None else end(am.start(1), am)
             if e is not None and e > am.start(3):
                 yield am.start(3), e
                 last = e
+
+
+# a YAML block scalar's head after a key (`password: |`, `>-`, `|2`): the value is the lines more indented than the key
+_BLOCK_HEAD = re.compile(r"[\"']?[ \t]*:[ \t]*[|>][+\-0-9]{0,2}[ \t]*(?:#[^\n]*)?(?=\n)")
+
+
+def _blocks(s):
+    """(start, end) of each line's text (its indentation kept) of the YAML block scalar a secret-looking key opens
+    (`password: |`, `token: >-`), each block read once, so linear."""
+    last = b = 0
+    for ks, ke in _kw_hits(s):
+        if ks < last or ks < b:   # (ks < b: the identifier before's)
+            continue
+        a, b = _identifier(s, ks, ke)
+        head = not _about_secret(s[a:b]) and _BLOCK_HEAD.match(s, b)
+        if not head:
+            continue
+        lead = s[s.rfind("\n", 0, a) + 1:a]
+        indent = len(lead.rstrip("\"'")) if not lead.strip(" \t-\"'") else len(lead) - len(lead.lstrip(" \t"))
+        k = head.end() + 1
+        while k < len(s):
+            e = s.find("\n", k)
+            e = len(s) if e < 0 else e
+            text = s[k:e].lstrip(" \t")
+            if text:
+                if e - k - len(text) <= indent:
+                    break
+                yield e - len(text), e
+                last = e
+            k = e + 1
 
 
 _QUOTING = re.compile(r"[\n\"'\\]")
@@ -229,7 +288,10 @@ def _text_end(s):
     read = [0, ""]   # how far `s` is read for the quote its lines leave open, and that quote
 
     def end(b, m, limit=len(s)):   # (`limit`: where it ends at the latest)
-        g, v = m.group(2), m.start(3)
+        g, v = m.group(2).lstrip(_STR_PREFIX), m.start(3)
+        if g in ('"""', "'''"):   # a triple-quoted string, to its close
+            k = s.find(g, v, limit)
+            return limit if k < 0 else k
         if g[:1] == "\\":
             k, n = s.find(g, v, limit), s.find("\n", v, limit)
             return min(x for x in (k, n, limit) if x >= 0)
@@ -269,7 +331,10 @@ def _redact_assignments(s, counts=None):
     """ASSIGNMENT's values hidden (_assignments), each as a shell reads it on its line (_text_end). `counts`: as for
     redact_text."""
     out, last, n = [], 0, 0
-    for v, e in _assignments(s, _text_end(s)):
+    for v, e in sorted((*_assignments(s, _text_end(s)), *_blocks(s))):
+        v = max(v, last)   # (a line of a block that holds an assignment: one mark)
+        if e <= v:
+            continue
         out += [s[last:v], "[REDACTED:assignment]"]
         if counts is not None and _hides(s[v:e]):
             counts["assignment"] += 1
@@ -290,6 +355,22 @@ def redact_dotenv(s, counts=None):
 
 def mentions_dotenv(*texts):
     return any(isinstance(t, str) and DOTENV_PATH.search(t) for t in texts)
+
+
+MARKED = "[REDACTED:assignment]"
+# a structured argument's key that names a secret by its last word (a `secret_id` or `password_file` is a name, a
+# location), and a header's or variable's `name` pair, whose `value` it hides: {"API_TOKEN": "x"},
+# {"name": "Authorization", "value": "Bearer x"}
+_SECRET_KEY = re.compile(r"(?i)(?:secret|password|passwd|pwd|token|api[_-]?key|private[_-]key|access[_-]key|"
+                         r"credentials?|authorization|_auth)\Z")
+
+
+def _secret_value(k, obj):
+    """Whether the string at key `k` of dict `obj` is a secret by its key's name, or its `name` pair's."""
+    if not isinstance(k, str):
+        return False
+    return bool(_SECRET_KEY.search(k)) or k.lower() == "value" and any(
+        isinstance(obj.get(n), str) and _SECRET_KEY.search(obj[n]) for n in ("name", "key", "header"))
 
 
 MAX_DEPTH = 64
@@ -337,7 +418,14 @@ def redact(obj, dotenv=False, _depth=0, counts=None, commands=(), noted=False, _
                 unclean.append(True)
             name = k.lower() if isinstance(k, str) else None
             how = _shell or name in commands and ("lines" if name == "commands" else True)
-            if not how and (k in CODE_ARGS or name in QUERY_ARGS) and isinstance(v, str):
+            if not how and isinstance(v, str) and v and _secret_value(k, obj):
+                rv, hv = MARKED, True
+                if counts is not None and _hides(v):
+                    counts["assignment"] += 1
+                if unclean is not None and _coded(v, rv):
+                    unclean.append(True)
+                rv = (hidden(v, rv) if noted else "") + rv
+            elif not how and (k in CODE_ARGS or name in QUERY_ARGS) and isinstance(v, str):
                 rv, hv = redact(v, dotenv, _depth + 1, counts, commands, noted, "interp", unclean, own, budget)
             elif not how and k in ARGV_ARGS and isinstance(v, list) and all(isinstance(x, str) for x in v):
                 program = next((obj[p] for p in _PROGRAM_ARGS if isinstance(obj.get(p), str)), None)
@@ -564,7 +652,7 @@ _CASE = re.compile(r"case(?=[ \t\n;&|<>()]|\Z)")
 _NAME_EQ = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*=")   # a word's KEY=, named as DOTENV_LINE names it
 _ARRAY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")   # what an array's (…) follows: x=(1 2), x+=(3)
 _LEAD = re.compile(r"[ \t]*(?:export\s+)?")   # what DOTENV_LINE reads before a KEY
-_SEP = re.compile(r"\s*[=:]\s*(?:\$'|\\?[\"'])?")   # what ASSIGNMENT reads between a name and its value
+_SEP = re.compile(r"(?:\\?[\"'])?\s*[=:]\s*" + _QUOTE)   # what _AFTER reads between a name and its value
 # what on a line may give a program's name another meaning (a function, an alias, `hash -p`, PATH however it is set,
 # a file it sources) or send what a program prints to one that runs it (>(…), a coprocess, a named pipe): no heredoc
 # on it is data, and no program on it is one of DATA_READERS
@@ -655,7 +743,7 @@ _URIS = {"psql": re.compile(r"postgres(?:ql)?://"), "mysql": re.compile(r"mysql:
 # value given one before a program is data (`DATABASE_URL=… npm run migrate`, `TF_VAR_db_password=…`, `SECRET_KEY=…`);
 # any other name there may be code the program runs (LD_PRELOAD, NODE_OPTIONS, PYTHONSTARTUP, BASH_ENV, GIT_ASKPASS,
 # GIT_SSH_COMMAND, EDITOR, PAGER), quoted or not
-_DATA_ENV = re.compile(r"DATABASE_URL|PGPASSWORD|MYSQL_PWD|(?:\w*_)?(?:URL|DSN|PASSWORD|PASSWD|PASS|TOKEN|SECRET|"
+_DATA_ENV = re.compile(r"DATABASE_URL|PGPASSWORD|MYSQL_PWD|(?:\w*_)?(?:URL|DSN|PASSWORD|PASSWD|PWD|PASS|TOKEN|SECRET|"
                        r"API_KEY|KEY)|\w*_ACCESS_KEY\w*", re.I)
 
 
@@ -695,6 +783,82 @@ def _data_args(name, args):
                 out.add(k)
             first = False
     return out
+# a credential some programs take as an option's value, by program name (lower-case): the words its arguments start with
+# (a subcommand) and the options. Each is data to its program (a password it sends, a secret it stores), so a copy
+# that hides it stays clean. mysql's -p takes its value only joined; curl's -u and --user, a user:password, only its
+# part after the colon is the credential. A long option for any program whose name ends in a secret word is one too
+# (`--token x`, `--api-key=x`; not `--secret-id`, `--password-file`: a name, a location), clean only where the program
+# is listed and its words lead the arguments
+_SECRET_OPTIONS = {"curl": ((), ("-u", "--user", "--proxy-user")), "sshpass": ((), ("-p",)),
+                   "docker": (("login",), ("-p",)), "podman": (("login",), ("-p",)),
+                   "redis-cli": ((), ("-a", "--pass")), "mysql": ((), ("-p",)), "mariadb": ((), ("-p",)),
+                   "gh": (("secret", "set"), ("-b", "--body"))}
+_OPTION_SECRET = re.compile(r"--[\w-]*(?:secret|password|passwd|token|api-?key)", re.I)
+_CONFIG_SET = ("npm", "pnpm", "yarn")   # `npm config set KEY VALUE`: the value of a key that names a secret
+# the programs and the option or subcommand words that may give one, so only a line that holds both is parsed for it
+_SECRET_PROGRAMS = re.compile(r"\b(?:curl|sshpass|mysql|mariadb|redis-cli|docker|podman|gh|npm|pnpm|yarn)\b")
+_SECRET_FLAGS = re.compile(r"(?<![\w-])-[upab]|--(?:user|proxy-user|pass|body)\b|\bconfig\s+set\b")
+# programs whose options end at their first operand, the command they run (sshpass: `ssh host time -p x` is ssh's) or
+# send (redis-cli: EVAL's script runs its arguments), by the options that take the next word as their value (each
+# one's usage: sshpass's getopt, redis-cli --help's short options, --user and --pass)
+_OPTIONS_END = {"sshpass": ("-f", "-d", "-p", "-P"),
+                "redis-cli": ("-h", "-p", "-t", "-s", "-a", "-u", "-r", "-i", "-n", "-X", "-d", "-D", "--user", "--pass")}
+
+
+def _options_end(name, args):
+    """How many of program `name`'s `args` (its words after its name) may be its options: all, unless _OPTIONS_END
+    lists it, then those before its first operand, or before a word an option it doesn't name may take (either)."""
+    takes, k = _OPTIONS_END.get(name), 0
+    if takes is None:
+        return len(args)
+    while k < len(args) and args[k][:1] == "-":
+        k += 2 if args[k] in takes else 1
+    return k
+
+
+def _secret_values(line, name, args):
+    """(k, start, end, data, quoted) for each credential among program `name`'s `args` (its words after its name, its
+    options: _options_end) as `line` holds them: the span of what follows the option in the word k that gives it (a
+    quote wrapping it left out), whether it is data to its program (_SECRET_OPTIONS lists it, or a config key's value: a
+    copy that hides it is clean), and whether one pair of quotes wraps all of it and nothing else of the word."""
+    lead, opts = _SECRET_OPTIONS.get(name, ((), ()))
+    listed = list(args[:len(lead)]) == list(lead) and name in _SECRET_OPTIONS
+    found = []
+    for k, a in enumerate(args[:_options_end(name, args)]):
+        option, eq, _ = a.partition("=")
+        value, skip, user, data = k, 0, False, listed   # the word the credential is in, the characters before it there
+        if listed and (a in opts or eq and option in opts):
+            user = name == "curl"
+            value, skip = (k + 1, 0) if a in opts else (k, len(option) + 1)
+            if a in opts and name in ("mysql", "mariadb"):   # -p alone asks for it
+                continue
+        elif listed and len(a) > 2 and a[:2] in opts and not a.startswith("--"):
+            user, skip = name == "curl", 2
+        elif option.startswith("--") and _OPTION_SECRET.fullmatch(option):
+            if not eq and (k + 1 == len(args) or args[k + 1].startswith("-")):
+                continue
+            value, skip = (k + 1, 0) if not eq else (k, len(option) + 1)
+        elif name in _CONFIG_SET and k == 2 and args[:2] == ["config", "set"] and _SECRET_KEY.search(a):
+            value, data = 3, True
+        else:
+            continue
+        at = getattr(args[value], "at", None) if value < len(args) else None
+        if not at:
+            continue
+        a_, b_ = at
+        bare = not skip or line.startswith(args[value][:skip], a_)   # (else it is quoted: the whole word)
+        a_ += skip if skip and bare else 0
+        rest = line[a_:b_]
+        quoted = len(rest) > 1 and rest[0] in "'\"" and rest[-1] == rest[0] and rest.count(rest[0]) == 2
+        if quoted:
+            a_, b_ = a_ + 1, b_ - 1
+        if user:
+            a_ = line.find(":", a_, b_) + 1 or b_
+        if b_ > a_:
+            found.append((value, a_, b_, data, quoted and bare))
+    return found
+
+
 _SEEN = {CODE: _CODE_LIKE, SQ: re.compile(r"[\s|&;()<>$`']"), DQ: re.compile(r'[\s|&;()<>$`"\\]'),
          ANSI: re.compile(r"[\s|&;()<>$`'\\]"), LITERAL: re.compile(r"[\s|&;()<>$`]"),
          EXPANDED: re.compile(r"[\s|&;()<>$`\\]")}
@@ -797,13 +961,17 @@ class _Facts:
     script file (a shell's, source's or an interpreter's: whose text it may have written there by a path the parser
     doesn't follow, cp, ln, find -exec), sets BASH_ENV or ENV, or runs one of _RUNS_LATER; `sure`, False when it can't
     read the line (ParseError, over engine.MAX_SUBJECT, past the call's Budget, its loop values' readings cut) or a
-    command runs what it can't read (opaque: `echo x | sh`, `$X` it can't follow, sed's `e`). Readings are kept by
-    text in the call's Budget (of)."""
+    command runs what it can't read (opaque: `echo x | sh`, `$X` it can't follow, sed's `e`); `secrets`, the spans of
+    each command's credentials (_secret_values), and `quoted`, of those each that is data to a program the line runs
+    itself (reached through nothing: no wrapper, which may join its words into a line, sh -c, eval, a heredoc, a
+    substitution or a function), named by its bare name, in one pair of quotes. Readings are kept by text in the call's
+    Budget (of)."""
 
     def __init__(self, line=None, argv=None, work=None):
         self.programs, self.placed, self.args, self.sure, work = [], [], [], False, [0] if work is None else work
         text = line if line is not None else "\n".join(argv)
         self.runners, self.written, self.runs_file = [], [], bool(_SOURCES_ENV.search(text))
+        self.secrets, self.quoted = [], set()
         shell, engine = _policy("shell"), _policy("engine")
         if (len(line) if line is not None else sum(map(len, argv))) > engine.MAX_SUBJECT:
             return
@@ -822,7 +990,13 @@ class _Facts:
             self.programs.append((at, within))
             runs = _runner_args(name, args)
             reads = name in DATA_READERS and c.get("word") == name and not renamed and not runs
-            data = _data_args(name, args) if name in _DATA_OPTIONS else ()
+            data = set(_data_args(name, args)) if name in _DATA_OPTIONS else set()
+            for k, a, b, clean, quoted in _secret_values(line, name, args) if line is not None else ():
+                self.secrets.append((a, b))
+                if clean and c.get("word") == name and not renamed:
+                    data.add(k)
+                    if quoted and not c.get("via"):
+                        self.quoted.add((a, b))
             spans = [(*a.at, reads or k in data) for k, a in enumerate(args) if getattr(a, "at", None)]
             self.args.append((name, spans))
             self.runners += [args[k].at for k in runs if getattr(args[k], "at", None)]
@@ -1148,7 +1322,7 @@ def _rank(kind, first=("private_key", "dotenv", "assignment")):
     return first.index(kind) if kind in first else len(first)
 
 
-def _marks(cmd, r, dotenv, own, expands):
+def _marks(cmd, r, dotenv, own, expands, secrets=()):
     """([(start, end, kind)] of what redact_command hides in shell line `cmd` as _Reading `r` reads it, sorted; the
     starts of those a value's name ends in the word before: `KEY: x`, `KEY = x`). `expands`: bash expands `cmd`'s
     $NAME, so one where it does ($TOKEN, "$TOKEN", a body with an unquoted end word) is no value."""
@@ -1214,7 +1388,8 @@ def _marks(cmd, r, dotenv, own, expands):
     for p in r.starts if expands else [0]:   # a word NAME=value with a secret-looking NAME (export's, declare's,
         # env's too; an argv's word is one word): all its value, to the word's end (past code in it: `T="a$(x)b"`),
         # each run of a quoted or unquoted part apart, its quotes and blanks kept as bash splits them (`T="a b"c'd e'`)
-        if not ((m := _NAME_RUN_EQ.match(cmd, p)) and _SECRET_WORD.search(cmd, p, m.end() - 1)):
+        if not ((m := _NAME_RUN_EQ.match(cmd, p)) and _SECRET_WORD.search(cmd, p, m.end() - 1)) or \
+                _about_secret(cmd[p:m.end() - 1]):   # (MAX_TOKENS=4096: a name about a secret's)
             continue
         runs, k = [], m.end()
         while k < len(cmd):
@@ -1229,6 +1404,9 @@ def _marks(cmd, r, dotenv, own, expands):
             k = _past(cmd, end + 2, ")", "(")   # (a substitution in the word: its code stays in view)
         if sum(b - a for a, b in runs) >= 4:   # (as ASSIGNMENT's value: four characters at least)
             found += [(a, x, "assignment") for a, b in runs if (x := bounded(a, b))]
+    found += [(a, b, "assignment") for a, b in secrets]   # (an option's value, as the policy parser read the program)
+    for a, e in _blocks(cmd):   # a YAML block scalar's lines, each run of them as the shell reads it
+        found += [(w.start(), x, "assignment") for w in _RUN.finditer(cmd, a, e) if (x := bounded(w.start(), w.end()))]
     for v, e, name in _secret_spans(cmd):
         if e := e if name == "private_key" else bounded(v, e):   # a private key whole: every line of it
             found.append((v, e, name))
@@ -1265,13 +1443,14 @@ def _clean(s, r, marks, crossed, facts):
     hides only a clean value, which an approver may see a copy without: on a line the parser reads whole (_Facts.sure);
     not where the parser read a program or code it can't place in the line (a git alias's value, a variable's program:
     its `within`, None the whole line), nor in a program's or a script file's word it places; in one place
-    (_Reading.ctx) and holding nothing _SEEN there; not in an interpreter's program, nor where the reader is unsure; in
-    quotes, and when it starts a word of its own (`crossed`: `KEY: x`) anywhere, data: in a word a program of
-    DATA_READERS gets or an option of _DATA_OPTIONS takes, a herestring or a heredoc such a program reads, a value
-    assigned where no program runs (`K='a b'`) or to a name of _DATA_ENV; quoted or not, not a runner option's value
-    (_runner_args) nor a value given any other name before a program (LD_PRELOAD); on a line that runs a file
-    (_Facts.runs_file), not in what it writes to a file or a pipe (a word of a command whose output goes there, a
-    herestring or a heredoc), which may be that file."""
+    (_Reading.ctx) and holding nothing _SEEN there (a blank aside in a credential in its quotes, _Facts.quoted: the
+    shell gives it to its program as one word, and nothing joins it into a line again); not in an interpreter's
+    program, nor where the reader is unsure; in quotes, and when it starts a word of its own (`crossed`: `KEY: x`)
+    anywhere, data: in a word a program of DATA_READERS gets or an option of _DATA_OPTIONS takes, a herestring or a
+    heredoc such a program reads, a value assigned where no program runs (`K='a b'`) or to a name of _DATA_ENV; quoted
+    or not, not a runner option's value (_runner_args) nor a value given any other name before a program (LD_PRELOAD);
+    on a line that runs a file (_Facts.runs_file), not in what it writes to a file or a pipe (a word of a command whose
+    output goes there, a herestring or a heredoc), which may be that file."""
     if not facts.sure:
         return False
     program, data, runner, written, loose = bytearray(len(s) + 1), bytearray(r.data), bytearray(len(s) + 1), \
@@ -1308,9 +1487,12 @@ def _clean(s, r, marks, crossed, facts):
                     _mark(runner, a, b)
     for v, e, _ in marks:   # (one that leaves its quotes, body or comment holds what ends them, which _SEEN finds)
         c = r.ctx[v]
+        seen = s[v:e] if c == CODE else _QUERY.sub("", s[v:e])
+        if (v, e) in facts.quoted:
+            seen = seen.replace(" ", "")
         if v in crossed and data.count(1, v, e) < e - v or r.unsure.find(1, v, e) >= 0 or \
                 r.interp.find(1, v, e) >= 0 or runner.find(1, v, e) >= 0 or written.find(1, v, e) >= 0 or \
-                program.find(1, v, e) >= 0 or _SEEN[c].search(s[v:e] if c == CODE else _QUERY.sub("", s[v:e])) or \
+                program.find(1, v, e) >= 0 or _SEEN[c].search(seen) or \
                 any(w is None or w[0] < e and v < w[1] for w in loose) or \
                 c in (SQ, DQ, ANSI) and data.count(1, v, e) < e - v:
             return False
@@ -1332,13 +1514,13 @@ def redact_command(cmd, dotenv=False, own=True, how="line", unclean=None, budget
     r = _read_shell(cmd) if how == "line" else _Reading(cmd)
     marks, crossed = _marks(cmd, r, dotenv, own, how == "line")
     facts = None
-    if how == "line" and (marks or _kw_hits(cmd)):
+    if how == "line" and (marks or _kw_hits(cmd) or _SECRET_PROGRAMS.search(cmd) and _SECRET_FLAGS.search(cmd)):
         # what the parser reads as code, read as such (sh -c's script, a heredoc bash reads: a value ends at its `;`,
         # an assignment there is a word), whether a caller screens the copy or not: the marks are the same
         facts = _Facts.of(cmd, budget=budget)
-        if facts.sure and facts.placed:
-            r = _read_shell(cmd, facts)
-            marks, crossed = _marks(cmd, r, dotenv, own, True)
+        if facts.sure and facts.placed or facts.secrets:
+            r = _read_shell(cmd, facts) if facts.sure and facts.placed else r
+            marks, crossed = _marks(cmd, r, dotenv, own, True, facts.secrets)
     if unclean is not None and marks:
         if how != "line":
             dirty = how != "word" or any(_CODE_LIKE.search(cmd, v, e) or v in crossed for v, e, _ in marks)

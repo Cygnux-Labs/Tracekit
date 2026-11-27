@@ -90,7 +90,7 @@ include = ["tracekit", "tracekit.*"]   # every subpackage; new modules need no e
 version = { attr = "tracekit.__version__" }
 
 [tool.setuptools.package-data]
-tracekit = ["schema/*.json", "policy/*.yaml", "policy2/packs/*.yaml", "ui/*.html", "pcm/tools.json"]
+tracekit = ["schema/*.json", "policy/*.yaml", "policy2/packs/*.yaml", "policy2/grammars/*.json", "ui/*.html", "pcm/tools.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

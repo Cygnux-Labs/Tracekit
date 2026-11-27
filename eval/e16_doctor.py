@@ -27,6 +27,7 @@ from tracekit import crypto, doctor, install  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
 
 AGENT = types.SimpleNamespace(pw_name="e16-agent", pw_uid=54321, pw_gid=54321, pw_dir="/nonexistent")
+REVIEWER_UID = 54322   # the AI reviewer, a user of its own (docs/approvals.md#the-ai-approver)
 IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 SIZE = 7
 
@@ -57,7 +58,8 @@ class Layout:
         self.queue({self.wname: {"records": {"size": SIZE, "since": None}}})
         self.yaml = {"data_dir": p("data"), "socket": self.sock, "durability": "ack-on-fsync",
                      "policy": p("etc/policy.json"), "witnesses": [{"url": "https://w.example", "vkey": self.wvkey,
-                                                                     "class": "customer"}]}
+                                                                     "class": "customer"}],
+                     "approvals": {"agents": [f"uid:{REVIEWER_UID}"]}}
         self.signer_yaml()
         self.write("unit/tracekit-signer.service", install.V2_UNIT_TEXT.format(
             user="tracekit-signer", python=self.python, config=p("etc/signer.yaml"), unit="tracekit-signer",
@@ -66,6 +68,7 @@ class Layout:
         self.hooks()
         self.kw = dict(agent=AGENT, settings=self.settings, signer=self.sock, opt=p("opt"),
                        unit=p("unit/tracekit-signer.service"), client_json=p("etc/client.json"))
+        self.up = True   # whether the signer at self.sock answers (doctor._signer_answers): no signer runs in the temp root
 
     def write(self, rel, data, mode=0o644):
         path = self.path(rel)
@@ -104,7 +107,7 @@ class Layout:
             json.dump(s, f)
 
     def run(self):
-        return doctor.v2_checks(self.path("etc/signer.yaml"), **self.kw)
+        return doctor._signer_answers(self.sock) + doctor.v2_checks(self.path("etc/signer.yaml"), **self.kw)
 
 
 def trusted_under(top, me):
@@ -189,11 +192,22 @@ def _mounts(kind):
     return lambda L: L.patches.append(mock.patch.object(doctor, "_mounts", return_value=[(L.top, kind)]))
 
 
+def _approver_without_agents(L):
+    """A policy with the AI approver (the laptop default extended, as docs/approvals.md shows) and no approvals.agents:
+    the signer refuses to start (as re-running an init that dropped signer.yaml's sub-keys left it)."""
+    os.symlink(os.path.join(ROOT, "tracekit", "policy2", "packs"), L.path("etc/packs"))
+    L.write("etc/policy.yaml", b"extends: packs/dev.yaml\napproval_agent:\n  mode: enforce\n  rules: [TK-A062]\n"
+                               b"  run: {clean: [untrusted_content, secrets_access]}\n")
+    L.signer_yaml(policy=L.path("etc/policy.yaml"), approvals={})
+
+
 CASES = [
     ("signer.yaml does not load", "D-CONFIG", lambda L: L.signer_yaml(bogus=1)),
     ("signer.yaml world-writable", "D-CONFIG", _chmod("etc/signer.yaml", 0o666)),
     ("agent is root", "D-AGENT-PRIV", lambda L: L.kw.update(agent=types.SimpleNamespace(**dict(vars(AGENT), pw_uid=0)))),
     ("agent may sign findings", "D-ANALYZER-AGENT", lambda L: L.signer_yaml(analyzers=[f"uid:{AGENT.pw_uid}"])),
+    ("the agent's user is an approver", "D-APPROVER-AGENT",
+     lambda L: L.signer_yaml(approvals={**L.yaml["approvals"], "approvers": [f"uid:{AGENT.pw_uid}"]})),
     ("keys readable by the agent", "D-AGENT-PROBE", _probe_keys),
     ("client.json writable by the agent", "D-AGENT-PROBE", _chmod("etc/client.json", 0o666)),
     ("policy writable by others", "D-POLICY-TRUST", _chmod("etc/policy.json", 0o666)),
@@ -235,6 +249,11 @@ CASES = [
     ("data dir on FUSE", "D-DATA-FS", _mounts("fuse.sshfs")),
     ("data dir owned by the agent", "D-PROCESS-BOUNDARY",
      lambda L: os.chown(L.path("data"), AGENT.pw_uid, AGENT.pw_gid)),
+    ("the AI reviewer runs as the signer's user", "D-REVIEWER-USER",
+     lambda L: L.signer_yaml(approvals={"agents": [f"uid:{os.stat(L.path('data')).st_uid}"]})),
+    ("a key every user may read, with an AI reviewer", "D-REVIEWER-USER", _chmod("data/keys/log.key", 0o604)),
+    ("the signer doesn't answer", "D-SIGNER-ANSWERS", lambda L: setattr(L, "up", False)),
+    ("an AI approver in the policy, none in approvals.agents", "D-AGENT-APPROVERS", _approver_without_agents),
 ]
 ROOT_ONLY = {"data dir owned by the agent"}
 
@@ -257,7 +276,11 @@ def run_case(mutate):
         L.patches = []
         me = os.geteuid()
         L.patches += [mock.patch.object(doctor, "trusted_file", trusted_under(top, me)),
-                      mock.patch.object(install, "_root_only", root_only_under(me))]
+                      mock.patch.object(install, "_root_only", root_only_under(me)),
+                      # a signer that answers stands in for one; else doctor asks the socket, where none listens
+                      mock.patch.object(doctor, "_signer_answers", lambda s, asks=doctor._signer_answers: [
+                          doctor.result("D-SIGNER-ANSWERS", "ok", f"the signer at {s} answers (Tracekit e16)")]
+                          if L.up else asks(s))]
         if not IS_ROOT:
             L.patches.append(mock.patch.object(doctor, "agent_access", other_access(top)))
         if mutate:
@@ -265,7 +288,7 @@ def run_case(mutate):
         for p in L.patches:
             p.start()
         try:
-            return stable(L.run(), top, tmp)
+            return stable(L.run(), top, tmp, f"uid:{me}")   # the signer's uid too: this machine's
         finally:
             for p in L.patches:
                 p.stop()

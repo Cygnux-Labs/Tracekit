@@ -423,7 +423,7 @@ class ExportWithoutSigner(unittest.TestCase):
         self.assertEqual([json.loads(stdout)[k] for k in ("verifier_min_version", "raised_by",
                                                          "verifier_min_version_full")],
                          ["1.0.0", [], "1.0.0"])
-        # a policy goes in only when cited_policies names it: an agent approval's decision or a run's incident (none)
+        # a policy goes in when a decision names it (cited_policies): these records hold none
         with zipfile.ZipFile(out) as z:
             self.assertFalse([n for n in z.namelist() if n.startswith("policies/")])
 

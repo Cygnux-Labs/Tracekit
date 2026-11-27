@@ -36,6 +36,14 @@ def claims():
     e17, e17d, e17c = res("e17_policy_corpus"), res("e17_detection"), res("e17_containment")
     e18, e20, e21, e21r, e22 = (res("e18_agent_approvers"), res("e20_alignment"), res("e21_policy_robustness"),
                                 res("e21_robustness"), res("e22_verifier_agreement"))
+    e28 = res("e28_influence")
+    ad, dk, wt = e28["agentdojo"], e28["desk"], e28["without_task"]
+    ag, ex, un = ad["grades"], ad["attack_value_attribution"], ad["untrusted"]
+
+    def grade(name, g):
+        n = g["tp"] + g["fp"]
+        return (f"| {name} | {g['tp']} of {n} ({pct(g['tp'] / n, 1 if g['fp'] else 0)}) | "
+                f"{g['found']} of {g['calls']} ({pct(g['found'] / g['calls'], 1)}) |")
     m = e1["mutations"]
     alone = sum(v["ledger_only"] == 1 for v in m.values())
     wit = sum(v["ledger_plus_witness"] == 1 for v in m.values())
@@ -116,8 +124,41 @@ def claims():
         f"(held out, {ho['controls']['calls']:,} honest calls)",
         f"All {e22['bundles']} bundles agree in all three passes",
         f"none of the {e22['forgeries']} forgeries",
+        f"Of {ad['runs']['attacked']} attacked runs, {ad['runs']['succeeded']} attacks succeeded and "
+        f"{ad['runs']['scored']} were scored",
+        *(grade(k, ag[k]) for k in ("exact", "seen", "hint")),
+        f"{ex['to_the_injection']} of the {ex['edges']} exact edges on the attacker's own value",
+        f"all {sum(v['edges'] for v in ad['exact_claims'].values())} exact claims name a record that holds the value",
+        f"marks {un['attack_calls_named']} of the {un['attack_calls']} attack calls, and also {un['clean_calls_named']} "
+        f"of the {un['clean_calls']} calls of clean runs, in {un['clean_runs_named']} of {ad['runs']['clean']} clean runs",
+        f"the only cause of the {dk['exfil_calls']} exfiltration calls in {dk['exfil_runs']} runs",
+        f"Measured: {dk['grades']['measured']['found']} of {dk['exfil_calls']} found",
+        f"exact found {dk['grades']['exact']['found']} of {dk['exfil_calls']}",
+        f"{dk['exfil_calls_named']} of {dk['exfil_calls']} exfiltration calls and {dk['legit_calls_named']} of "
+        f"{dk['legit_calls']} others",
+        f"{wt['planted_drift']} of {wt['planted_calls']} planted emails serve no step of the task, "
+        f"{wt['asked_drift']} of {wt['asked_calls']} asked ones",
+        f"none reads as coming from the task (no replay without the task exists for a published trace), all "
+        f"{ad['attack_calls_said']['listed']} are in its list, and each of the {ad['attack_calls_said']['without_exact']} "
+        "with no exact edge names",
+        f"{dk['exfil_calls_serve_task']} of the {dk['exfil_calls']} read as coming from the task",
+        f"In each of the {wt['tool_only_runs']} runs with both emails, a test whose target only names the tool "
+        f"(`tool=send_email`, both emails) put its verdict on {wt['tool_only_attached']} calls",
+        f"{e28['held']['cases']} built runs where the task gives a value in prose",
+        f"named the record in all {e28['held']['exact_from_record']}",
+        f"in all {e28['held']['said_task_too']} the words say the task holds the value too",
+        f"only untrusted content supplied a value fires on {e28['held']['only_alerts']} of them",
+        f"reads values) names {ad['attack_calls_said']['high_alert']} of the {ad['attack_calls_said']['listed']}",
+        f"brought names {ad['attack_calls_said']['quote_alert']} more",
+        f"{e28['goals']['runs']} built runs whose log calls other content the task",
+        f"In {e28['goals']['goal_beyond_task']} of the {e28['goals']['runs']} is the goal anything but the run's own task",
     ]
     limits = [
+        f"in {pct(ag['exact']['found'] / ag['exact']['calls'])} of the successful attacks scored",
+        f"{pct(ag['seen']['fp'] / (ag['seen']['tp'] + ag['seen']['fp']))} of the labelled seen edges",
+        f"{un['clean_runs_named']} of {ad['runs']['clean']} had such a call",
+        f"in all {e28['held']['exact_from_record']} of E28's built cases",
+        f"{ad['attack_calls_said']['quote_alert']} of E28's {ad['attack_calls_said']['listed']} AgentDojo attack calls",
         f"E20 `c5_line`, {round(ho['forged_flagged']['F1'] * 24)} of 24 flagged",
         f"{se17['fp']} of E17's {se17['benign']} benign calls, {pct(se17['fp'] / se17['benign'], 1)}, and "
         f"{strict['sessions']['totals']['fp']} of E21's {strict['sessions']['totals']['benign']} developer-session "

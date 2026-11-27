@@ -26,6 +26,8 @@ from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RESPONSES, RPCError, validate
 from tracekit.verify import v2
 
+from factories import rewrite_bundle   # noqa: E402  (tests/ is on the path, as for test_ts_verifier)
+
 AGENT = CallerIdentity("token", "reviewer", True)
 ALICE = CallerIdentity("uid", "990001", True)
 OPS = CallerIdentity("token", "ops", True)
@@ -590,7 +592,9 @@ class TestVetoAndRevoke(Case):
         self.assertEqual(head, f"[tracekit] HELD, nothing ran: {aid} ({', '.join(d['rule_ids'])}) is approved by an "
                                "agent approver; people may still revoke it, so wait 60 s, then make the identical call "
                                "again.")
-        self.assertEqual((why, person), (f"Why: {d['reason']}", f"Person: look with `! tracekit approvals show {aid}`."))
+        self.assertEqual((why, person), (f"Why: {d['reason']}", f"Person: look with `! tracekit approvals show {aid}`; "
+                                                                f"take it back before it runs with `! tracekit approvals "
+                                                                f"revoke {aid}`."))
         self.assertTrue(agent.startswith("Agent: wait as the first line says, then make the identical call again"),
                         agent)
 
@@ -749,6 +753,9 @@ class TestDetection(Case):
 
         def lines(path, policy_dir):
             export(self.s.log.storage, "default", self.run["run_id"], note, path, policy_dir=policy_dir)
+            return verified(path)
+
+        def verified(path):
             rep, code = v2.verify(path, trust)
             if not tv.SKIP:
                 ts = tv.ts_verify(path, trust)
@@ -763,13 +770,13 @@ class TestDetection(Case):
         self.assertEqual((code, got["approvals by agents"]["status"], got["incidents"]["status"]), (0, "pass", "pass"))
         self.assertTrue(got["incidents"]["detail"].startswith("1 incident(s): 1 checked against the bundle"))
         self.assertNotIn("incident policies", got)
-        code, got = lines(os.path.join(self.dir, "none.tkb"), None)
+        code, got = lines(os.path.join(self.dir, "none.tkb"), os.path.join(self.dir, "none"))
         self.assertEqual((code, got["approvals by agents"]["status"], got["incident policies"]["status"]),
                          (0, "warn", "warn"))
-        for name in os.listdir(pol):
-            with open(os.path.join(pol, name), "ab") as f:
-                f.write(b" ")
-        code, got = lines(os.path.join(self.dir, "edited.tkb"), pol)
+        edited = os.path.join(self.dir, "edited.tkb")   # a snapshot whose bytes no longer hash to its name
+        rewrite_bundle(path, edited, lambda files, manifest: files.update(
+            {n: b + b" " for n, b in files.items() if n.startswith("policies/")}))
+        code, got = verified(edited)
         self.assertEqual((code, got["policy snapshot"]["status"], got["approvals by agents"]["status"],
                           got["incident policies"]["status"]), (1, "fail", "warn", "warn"))
 

@@ -198,11 +198,12 @@ class TracedMessages:
         if tool_use_id not in self._tool_uses:
             raise KeyError(f"unknown tool_use_id {tool_use_id!r}")
         name, args, dec = self._tool_uses[tool_use_id]
+        untrusted = name in self.untrusted_tools and not (check is not None and check.blocked)
         act = self.agent.record_action(name, args if isinstance(args, dict) else {"input": args}, result,
                                        decision=dec, duration_ms=duration_ms,
-                                       sensitive=self._sensitive(name, sensitive), check=check)
+                                       sensitive=self._sensitive(name, sensitive), check=check, untrusted=untrusted)
         ref = act
-        if name in self.untrusted_tools and not (check is not None and check.blocked):
+        if untrusted:
             # same content -> the graph links action -> input with a same-content edge
             ref = self.agent.observe(result, source=f"tool:{name}", trust="untrusted")
         self._results[tool_use_id] = ref

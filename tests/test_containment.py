@@ -27,6 +27,7 @@ from tracekit.verify import v2
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
+from factories import rewrite_bundle   # noqa: E402
 _spec = importlib.util.spec_from_file_location("e17_containment", os.path.join(ROOT, "eval", "e17_containment.py"))
 e17c = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(e17c)
@@ -488,17 +489,15 @@ class TestVerifier(Case):
         s.hold(run)
         path, trust = bundle(s, run)
         note = s.s.log.storage.checkpoint_latest()[1]
-        export(s.s.log.storage, "default", run["run_id"], note, path)
+        export(s.s.log.storage, "default", run["run_id"], note, path, policy_dir=os.path.join(s.dir, "none"))
         code, line = self.check(path, trust)
         self.assertEqual(line["status"], "pass", line)
         self.assertIn("0 checked against the bundle, 1 signer-asserted", line["detail"])
         rep, _ = v2.verify(path, trust)
         self.assertEqual([c["status"] for c in rep.checks if c["check"] == "incident policies"], ["warn"])
-        pol = os.path.join(s.dir, "policies")
-        for name in os.listdir(pol):
-            with open(os.path.join(pol, name), "ab") as f:
-                f.write(b" ")
-        export(s.s.log.storage, "default", run["run_id"], note, path, policy_dir=pol)
+        export(s.s.log.storage, "default", run["run_id"], note, path, policy_dir=os.path.join(s.dir, "policies"))
+        rewrite_bundle(path, path, lambda files, manifest: files.update(
+            {n: b + b" " for n, b in files.items() if n.startswith("policies/")}))
         code, line = self.check(path, trust)   # bytes that don't hash to the name: no snapshot either check reads
         rep, _ = v2.verify(path, trust)
         self.assertEqual((code, [c["status"] for c in rep.checks if c["check"] == "policy snapshot"]), (1, ["fail"]))

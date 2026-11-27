@@ -680,6 +680,32 @@ class SignedRuntime(unittest.TestCase):
         self.assertEqual(quiet("verify", merged.path, "--salts", salts)[0], 2)
         self.assertEqual(quiet("verify", merged.path, "--salts", os.path.join(out, "missing"))[0], 2)
 
+    def test_a_held_call_a_person_rejected_reads_rejected(self):
+        """A person rejected the held call while the runtime waited, and INFLUENCE still said it was held (the I
+        preview): the runtime records the answer as the approval's state, which only an import's decision was read
+        from."""
+        from tracekit.why.influence import call_influence
+        rt = Runtime(SYSTEM.models, SYSTEM.tools, task="t", signer=self.client, approval_wait_s=10,
+                     out_dir=tempfile.mkdtemp(dir=self.dir), run_id="rejected")
+        a = rt.agent("a")
+
+        def reject():   # the person, in another terminal
+            run_id = wait_for(lambda: "a" in rt._tk_runs) and rt._tk("a").run_id
+            pending = wait_for(lambda: [x for x in self.client.approval_list({"run_id": run_id})["approvals"]
+                                        if x["state"] == "requested"])
+            self.client.approval_decide({"approval_id": pending[0]["approval_id"], "decision": "reject"})
+        person = threading.Thread(target=reject)
+        person.start()
+        self.assertIn("a person rejected it", a.act("Bash", {"command": 'echo "held'}).value["error"])
+        person.join()
+        run = rt.finish()
+        call = run.of_type("action")[-1]
+        self.assertEqual(call["policy"]["approval"]["state"], "rejected")
+        inf = call_influence(run, build_graph(run), "ev:" + call["id"])
+        self.assertEqual(inf["ended"], "rejected")
+        self.assertTrue(inf["words"].startswith("Bash (a, rejected)"), inf["words"])
+        self.assertIn("Bash was held for approval and rejected", [x["title"] for x in alerts(run, build_graph(run))])
+
     def test_a_held_call_retried_runs_once_approved(self):
         rt = Runtime(SYSTEM.models, SYSTEM.tools, task="t", signer=self.client, approval_wait_s=0.2,
                      out_dir=tempfile.mkdtemp(dir=self.dir), run_id="held")
@@ -769,7 +795,8 @@ class SignedRuntime(unittest.TestCase):
         self.assertEqual(list(import_v2.bundle_records(out, trust)[0]), [self.tk_run])
         parts = os.path.join(self.dir, "parts.tkb")   # the run in parts: the same records, its parts read as one
         with mock.patch.object(v2, "MAX_ENTRY", max(len(b) for n, b in v2.read_zip(out).items()
-                                                    if n.startswith("runs/")) - 1):
+                                                    if n.startswith("runs/")) - 1), \
+                mock.patch("tracekit.bundle_v2.cited_policies", lambda events: set()):   # its policy is over the limit
             export_final(os.path.join(self.dir, "data", "store"), self.tk_run, self.witness, parts)
         self.assertEqual(import_v2.bundle_records(parts, trust)[0], import_v2.bundle_records(out, trust)[0])
         tamper(out, bad)
@@ -872,11 +899,11 @@ class ImportWithoutWhyLog(unittest.TestCase):
     def test_committed_arguments_trace_to_nothing(self):
         """The why view of a signed run grew with the square of its calls: each call's committed arguments (the same
         placeholder text and a commitment) were traced as values to every earlier result. They are no values."""
-        from tracekit.why.analysis import _texts, arg_provenance
-        g, texts = build_graph(self.imported), _texts(self.imported)
-        self.assertEqual({str(arg_provenance(self.imported, g, e, texts)) for e in self.imported.of_type("action")},
+        from tracekit.why.analysis import _index, arg_provenance
+        g, memo = build_graph(self.imported), {}
+        self.assertEqual({str(arg_provenance(self.imported, g, e, memo)) for e in self.imported.of_type("action")},
                          {"[]"})
-        self.assertEqual({t for _, t, _, _ in texts}, {""})
+        self.assertEqual({r[3] for r in _index(self.imported, memo).reads}, {""})
 
     def test_a_held_call_nobody_approved_is_held_not_blocked(self):
         titles = [a["title"] for a in alerts(self.imported, build_graph(self.imported))]

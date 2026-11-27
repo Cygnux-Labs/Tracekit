@@ -21,11 +21,12 @@ import urllib.error
 import urllib.request
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
 SCHEMA = "tracekit.why.event.v1"
 GENESIS = "0" * 64
 COMMITTED = "content committed, not in the log"   # a signed run's content: only its commitment is known
+OWNER = "ingest-owner"   # in a run folder: the digest of the ingest token that created the run
 
 TRUST_LEVELS = ("trusted", "untrusted")
 EVENT_TYPES = ("run.start", "agent.start", "input", "decision", "action", "message", "run.end")
@@ -110,6 +111,20 @@ class Run:
     blobs: Dict[str, Any]
     path: Optional[str] = None
     tests: List[Dict[str, Any]] = field(default_factory=list)
+    # the exact influence edges (call, field, kind, record, source) the code holding this Run checked against the
+    # signer's records (influence.signed_edges); never read from the run's own files, which its agent can write
+    signed: FrozenSet[Tuple[str, Any, Any, Any, str]] = frozenset()
+    # of those calls, the ones whose arguments in the log were checked against the arguments their signed decision kept
+    bound: FrozenSet[str] = frozenset()
+    # what that check of the log against the signer's records found wrong (import_v2.check's alerts), as a merge puts
+    # them on an import
+    join_alerts: List[Dict[str, Any]] = field(default_factory=list)
+    # the chain_hash of each test whose replays the code holding this Run vouches for: replays it ran itself, or signed
+    # replay runs (`replay_of`) it verified; never read from the run's own files, whose tests.jsonl its agent can write.
+    # Only these are measured influence (influence.graded); any other test is the log's claim.
+    # lean: tracekit view vouches for none yet (it joins no signed why.finding to a why run), so its INFLUENCE shows a
+    # log's replays as claimed; join the findings whose replay runs it verified when signed attribution reaches it
+    replayed: FrozenSet[str] = frozenset()
 
     @property
     def start(self) -> Dict[str, Any]:
@@ -736,6 +751,9 @@ class Agent:
             if mode != "blocked":
                 gate["tracekit"] = self._complete(gate["tracekit"], ids, status, result, stub=mode == "stub")
             extra.update(gate)
+        untrusted = mode != "blocked" and (untrusted if untrusted is not None else tool in rt.untrusted_tools)
+        if untrusted:   # the call's own entry says so, whatever other calls returning the same content do
+            extra["trust"] = "untrusted"
         ev = rt._emit(self.name, "action", tool=tool, args_ref=args_ref, result_ref=res_ref,
                       decision=decision.event_id if decision else None, status=status, mode=mode,
                       sensitive=is_sensitive, duration_ms=round((time.perf_counter() - t0) * 1000, 3), **extra)
@@ -743,7 +761,7 @@ class Agent:
             check.notify(rt, ev)
         trust = decision.trust if decision else "trusted"
         ref = Ref(res_ref, result, "result", self.name, tool, trust, ev["id"])
-        if mode != "blocked" and (untrusted if untrusted is not None else tool in rt.untrusted_tools):
+        if untrusted:
             # same content as the action's result, so the graph links action -> input (same-content)
             ref = rt._input(self.name, result, source=f"tool:{tool}", trust="untrusted")
         return ref
@@ -854,11 +872,13 @@ class Agent:
 
     def record_action(self, tool: str, args: Optional[dict], result: Any, *, decision: Optional[Ref] = None,
                       sensitive: Optional[bool] = None, duration_ms: Optional[float] = None,
-                      status: Optional[str] = None, check: Any = None) -> Ref:
+                      status: Optional[str] = None, check: Any = None, untrusted: bool = False) -> Ref:
         """Record a tool call your own code executed (adapters use this). Pass the `check` you got
         from check() so the guard's verdict is stored with the action; a blocked check records the
-        call as blocked. In a replay the call your code ran was real: it is recorded as live (an off-tape action),
-        with a warning; run tools through act() (or TracedMessages.run_tool) for the tape to serve them."""
+        call as blocked. `untrusted=True`: its result is untrusted content (the call's entry says so, as act() writes
+        it; observe the result as `tool:<name>` after it). In a replay the call your code ran was real: it is
+        recorded as live (an off-tape action), with a warning; run tools through act() (or TracedMessages.run_tool) for
+        the tape to serve them."""
         rt = self.rt
         if rt.tape is not None or not rt.live_tools:
             warnings.warn(f"tracekit why: {tool} ran for real during a replay (your code ran it and recorded it with "
@@ -869,6 +889,8 @@ class Agent:
         if status is None:
             status = "blocked" if blocked else _status(result)
         extra = {"guard": check.record()} if check is not None and check.alerts else {}
+        if untrusted and not blocked:
+            extra["trust"] = "untrusted"
         ev = rt._emit(self.name, "action", tool=tool, args_ref=args_ref, result_ref=res_ref,
                       decision=decision.event_id if decision else None, status=status,
                       mode="blocked" if blocked else "live",

@@ -44,6 +44,16 @@
         "fix": "remove the agent's uid from analyzers in signer.yaml; run tracekit analyze --v2 as an operator identity"
       }
     },
+    "the agent's user is an approver": {
+      "expect": "D-APPROVER-AGENT",
+      "flagged": true,
+      "result": {
+        "id": "D-APPROVER-AGENT",
+        "status": "fail",
+        "detail": "approvals.approvers list uid:54321, the agent's user e16-agent, whose sessions register the runs: it answers approvals as a person (the signer refuses its changes to the AI reviewer and its take-backs, and records its answers as no precedent, as an identity an agent session ran as)",
+        "fix": "list a person's own user in approvals.approvers, another than the agent's (init's --approver), and take the agent's uid out"
+      }
+    },
     "keys readable by the agent": {
       "expect": "D-AGENT-PROBE",
       "flagged": true,
@@ -250,7 +260,7 @@
       "result": {
         "id": "D-FAIL-MODES",
         "status": "warn",
-        "detail": "fail-open: read",
+        "detail": "fail-open: read (the coding-agent hooks still block secrets, deploys, payments and pushes to main; the SDK and framework integrations fail open by class alone)",
         "fix": "set fail_modes to closed in signer.yaml (and fail_mode in client.json) unless an outage must not stop the agent"
       }
     },
@@ -260,7 +270,7 @@
       "result": {
         "id": "D-FAIL-MODES",
         "status": "warn",
-        "detail": "fail-open: <run>/etc/client.json fail_mode",
+        "detail": "fail-open: <run>/etc/client.json fail_mode (the coding-agent hooks still block secrets, deploys, payments and pushes to main; the SDK and framework integrations fail open by class alone)",
         "fix": "set fail_modes to closed in signer.yaml (and fail_mode in client.json) unless an outage must not stop the agent"
       }
     },
@@ -332,6 +342,46 @@
         "status": "fail",
         "detail": "<run>/data is on fuse.sshfs: file locking and fsync can't be trusted there",
         "fix": "put data_dir on a local disk"
+      }
+    },
+    "the AI reviewer runs as the signer's user": {
+      "expect": "D-REVIEWER-USER",
+      "flagged": true,
+      "result": {
+        "id": "D-REVIEWER-USER",
+        "status": "fail",
+        "detail": "approvals.agents: <run> is the signer's own user, which can read its keys: run the reviewer as a user of its own (docs/approvals.md#the-ai-approver)",
+        "fix": "run the reviewer as a user of its own, listed as uid:<its uid> in approvals.agents, and keep the keys readable by the signer's user alone (docs/approvals.md#the-ai-approver)"
+      }
+    },
+    "a key every user may read, with an AI reviewer": {
+      "expect": "D-REVIEWER-USER",
+      "flagged": true,
+      "result": {
+        "id": "D-REVIEWER-USER",
+        "status": "fail",
+        "detail": "approvals.agents: uid:54322 can open <run>/data/keys/log.key: make the signer's data dir its user's alone (chmod -R go-rwx on it, owned by the signer's user), and run the reviewer as a user of its own",
+        "fix": "run the reviewer as a user of its own, listed as uid:<its uid> in approvals.agents, and keep the keys readable by the signer's user alone (docs/approvals.md#the-ai-approver)"
+      }
+    },
+    "the signer doesn't answer": {
+      "expect": "D-SIGNER-ANSWERS",
+      "flagged": true,
+      "result": {
+        "id": "D-SIGNER-ANSWERS",
+        "status": "fail",
+        "detail": "the signer does not answer on <run>/run/signer.sock: no signer answering at <run>/run/signer.sock: [Errno 2] No such file or directory",
+        "fix": "read what the signer says: sudo launchctl print system/dev.tracekit.signer; sudo tail /var/lib/tracekit-signer/signer.log; fix it and start it again (re-running init keeps what you added to signer.yaml where it can, and rewrites the service file)"
+      }
+    },
+    "an AI approver in the policy, none in approvals.agents": {
+      "expect": "D-AGENT-APPROVERS",
+      "flagged": true,
+      "result": {
+        "id": "D-AGENT-APPROVERS",
+        "status": "fail",
+        "detail": "<run>/etc/policy.yaml lets agent approvers answer (approval_agent or a rule's approval.agent), but signer.yaml's approvals.agents names none: the signer refuses to start",
+        "fix": "add the reviewer's identity to approvals.agents in signer.yaml, merged into init's approvals section (docs/approvals.md#the-ai-approver), or take approval_agent out of the policy; then restart the signer"
       }
     },
     "data dir owned by the agent": {

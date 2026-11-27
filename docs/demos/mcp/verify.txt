@@ -1,13 +1,15 @@
 $ tracekit verify run.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
-[PASS] checkpoint — tracekit.local/ebb0b6b597eed7759608183128f84fcc at tree size 12, signed by its pinned log key
+[PASS] checkpoint — tracekit.local/k2e3adb2c12cbcd06fc22ec5538d7359da91eb8267f9197ba0d804f310aca8c0c at tree size 12, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required
 [PASS] keys — 1 record key(s) from 1 key record(s)
 [PASS] signatures — 11 record(s), keys valid at their position
-[PASS] run chain — run 'b77928774c4f6f3ae887e17f9d68c29c' of tenant 'default', contiguous from run_seq 0
+[PASS] run chain — run '30f4ea4caf4c151e70ce13e53670db1c' of tenant 'default', contiguous from run_seq 0
 [PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 12
+[PASS] policy snapshot — policies/672fe9868ad5b26a147b3c8beee6625d825879a66eded50be294fac827387a17.json
 [PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
 [PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] run labels — 1 run(s) replayed under their policies, 0 signer-asserted (under a policy not in the bundle)
 [PASS] tiers — 3 tool call(s): T1 0, T2 0, T3 0, untiered 3
 [PASS] args source — 3 record(s): raw 0, parsed 3, coerced 0
 [PASS] isolation — signer-reported: same-user 1 run(s)
@@ -16,4 +18,4 @@ $ tracekit verify run.tkb --trust trust.json --detail
 [PASS] approval decision — 1 record(s) name a policy.decision of their run, call id and attempt before them
 
 Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/ebb0b6b597eed7759608183128f84fcc); no witness cosignature; approvals: self; key retirements not proven complete.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/k2e3adb2c12cbcd06fc22ec5538d7359da91eb8267f9197ba0d804f310aca8c0c); no witness cosignature; approvals: self; key retirements not proven complete.

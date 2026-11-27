@@ -54,6 +54,44 @@ class E16(unittest.TestCase):
                 got = {r["id"]: r["status"] for r in e16.run_case(mutate)}
                 self.assertIn(got.get(want), ("warn", "fail"), name)
 
+    def test_whether_the_system_signer_answers(self):
+        """The acceptance test: after a re-init left the policy's AI approver without approvals.agents, the signer
+        refused to start and doctor said every row was ok. D-SIGNER-ANSWERS asks the signer itself (E16 stands in for it)."""
+        from tracekit.signer import service as svc
+        d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # a socket path short enough for macOS
+        self.addCleanup(shutil.rmtree, d, True)
+        sock = os.path.join(d, "s.sock")
+        (row,) = doctor._signer_answers(sock)
+        self.assertEqual(row["status"], "fail")
+        self.assertTrue(row["detail"].startswith(f"the signer does not answer on {sock}: "), row["detail"])
+        self.assertRegex(row["fix"], r"systemctl status|launchctl print")
+        cfg = {"data_dir": os.path.join(d, "data"), "socket": sock}
+        signer = svc.open_service(cfg)
+        servers = svc.serve(cfg, signer)
+        self.addCleanup(signer.close)
+        for srv in servers:
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        (row,) = doctor._signer_answers(sock)
+        self.assertEqual((row["status"], row["detail"]), ("ok", f"the signer at {sock} answers (Tracekit {__version__})"))
+
+    def test_a_signer_that_answers_otherwise_is_said_as_it_is(self):
+        """Review: a signer that answered another protocol, or refused doctor's identity, was said not to answer, with
+        a fix to start it."""
+        from tracekit.sdk import client as sdk
+        from tracekit.signer.rpc_schema import RPCError
+        for raised, said, fix in (
+                (sdk.Incompatible("speaks 28", older=True), "an older signer still runs at /s.sock, from before the "
+                 "upgrade (speaks 28)", "restart it (Linux: sudo systemctl restart tracekit-signer"),
+                (sdk.Incompatible("speaks 30"), "the signer at /s.sock runs a newer Tracekit than this doctor (speaks 30)",
+                 f"upgrade {install.OPT} to the signer's release"),
+                (RPCError("forbidden", "uid:7 may not call status"), "the signer at /s.sock answers, but refused this "
+                 "identity's status call (forbidden: uid:7 may not call status)", "run doctor as root")):
+            with self.subTest(said), mock.patch.object(sdk.Client, "status", side_effect=raised):
+                (row,) = doctor._signer_answers("/s.sock")
+                self.assertEqual((row["status"], row["detail"]), ("fail", said))
+                self.assertTrue(row["fix"].startswith(fix), row["fix"])
+
     def test_malformed_agent_settings_are_results_not_crashes(self):
         def bad(shape):
             def mutate(L):
@@ -89,6 +127,24 @@ class E16(unittest.TestCase):
             L.kw["agent"] = types.SimpleNamespace(**dict(vars(e16.AGENT), pw_uid=os.getuid()))
         got = {r["id"]: r for r in e16.run_case(agent_is_me)}
         self.assertEqual(got["D-PROCESS-BOUNDARY"]["status"], "fail")
+
+    def test_the_reviewer_is_probed_as_its_own_uid(self):
+        """Where doctor can act as the reviewer (root), it tries the keys as that uid: what the modes and ACLs it reads
+        don't show (here, a probe that can read one key) fails D-REVIEWER-USER."""
+        import pwd
+        real, uid = pwd.getpwuid, e16.REVIEWER_UID
+        reviewer = types.SimpleNamespace(pw_uid=uid, pw_name="e16-reviewer", pw_gid=uid, pw_dir="/nonexistent")
+
+        def as_the_reviewer(L):
+            reads = lambda pw, targets: [t for t in targets if pw.pw_uid == uid and t[0].endswith("log.key")]
+            L.patches = [p for p in L.patches if getattr(p, "attribute", None) != "agent_access"] + [
+                mock.patch.object(doctor, "agent_access", reads),
+                mock.patch("pwd.getpwuid", lambda n: reviewer if n == uid else real(n))]
+        got = {r["id"]: r for r in e16.run_case(as_the_reviewer)}["D-REVIEWER-USER"]
+        self.assertEqual((got["status"], got["detail"]), ("fail", f"approvals.agents: uid:{uid} can read "
+                                                                    "<run>/data/keys/log.key"))
+        got = {r["id"]: r for r in e16.run_case(None)}["D-REVIEWER-USER"]   # no such user here: nothing to probe
+        self.assertEqual(got["status"], "ok")
 
 
 class CodingAgentHooks(unittest.TestCase):
@@ -711,6 +767,21 @@ class ClaudeHooksDecideEveryCall(unittest.TestCase):
                                                plugin=(self.local, install.PLUGIN), sandbox_settings=[self.local])
                    if r["id"] == "D-HOOKS-EVENT")
         self.assertEqual(got["status"], "warn")
+
+    def test_dev_mode_names_a_settings_env_that_moves_the_hook(self):
+        """The 1.8 parsing review: Claude Code gives the hooks its settings' env, and in dev mode doctor read none of
+        it, so a settings file that set HOME, XDG_DATA_HOME, TRACEKIT_PYTHON or TRACEKIT_SIGNER (sending the hook's
+        calls to another signer or Python) passed."""
+        def env_row(local):
+            self.row(local=local)
+            return next(r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=self.settings,
+                                                    sandbox_settings=[self.settings, self.local]) if r["id"] == "D-HOOK-ENV")
+        self.assertEqual(env_row(None)["status"], "ok")
+        self.assertEqual(env_row({"env": {"NODE_OPTIONS": "x"}})["status"], "ok")
+        for name in ("HOME", "XDG_DATA_HOME", "TRACEKIT_PYTHON", "TRACEKIT_SIGNER"):
+            got = env_row({"env": {name: "/tmp/elsewhere"}})
+            self.assertEqual(got["status"], "warn", name)
+            self.assertIn(f"{self.local} sets {name}", got["detail"])
 
     def test_dev_mode_reads_disable_all_hooks_in_the_file_init_recorded(self):
         """The dev layers left out the hooks' own file (init's record of another CLAUDE_CONFIG_DIR), so a
@@ -1650,7 +1721,7 @@ class FirstDay(unittest.TestCase):
             with self.subTest(engine=engine_name, wheel_expected=wheel_expected), \
                     mock.patch.object(
                         service, "load_policy",
-                        return_value=types.SimpleNamespace(engine=engine_name)
+                        return_value=types.SimpleNamespace(engine=engine_name, policy={}, rules=[])
                     ), \
                     mock.patch.object(
                         doctor, "_google_re2_wheel_expected", return_value=wheel_expected
@@ -2072,8 +2143,10 @@ class Report(unittest.TestCase):
         with mock.patch.object(doctor, "main", return_value=2) as main:
             self.assertEqual(cli.main(["doctor", "--json", "--config", "/etc/x.yaml"]), 2)
             cli.main(["doctor", "--k8s", "--manifests", "/m", "--issuer-key", "alias/ca"])
-        self.assertEqual(main.call_args_list, [mock.call("/etc/x.yaml", True, False, None, None),
-                                               mock.call(None, False, True, "/m", "alias/ca")])
+            cli.main(["doctor", "--reviewer", "/r/reviewer.yaml"])
+        self.assertEqual(main.call_args_list, [mock.call("/etc/x.yaml", True, False, None, None, None),
+                                               mock.call(None, False, True, "/m", "alias/ca", None),
+                                               mock.call(None, False, False, None, None, "/r/reviewer.yaml")])
 
 
 class Detect(unittest.TestCase):
@@ -2103,7 +2176,7 @@ class Detect(unittest.TestCase):
         with mock.patch("tracekit.sdk.client.Client") as c:
             c.return_value.status.side_effect = RPCError("forbidden", "not yours")
             (row,) = doctor._signer_answers("/s")
-        self.assertIn("refused a status call", row["detail"])
+        self.assertIn("refused this identity's status call", row["detail"])
         self.assertNotIn("does not answer", row["detail"])
         with mock.patch.object(doctor.sys, "platform", "darwin"), mock.patch("tracekit.sdk.client.Client") as c:
             c.return_value.status.side_effect = OSError("gone")

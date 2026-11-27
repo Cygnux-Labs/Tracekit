@@ -93,7 +93,7 @@ class Translate(unittest.TestCase):
         self.assertEqual(call["policy"], {"decision": "deny", "reasons": ["TK-N001", "TK-S001", "TK-NEW"], "flags": []})
         self.assertEqual(call["v2"], {"type": "policy.decision", "run_seq": 2, "tool_use_id": "c3", "decision": "deny",
                                       "args_commitment": "hmac-sha256:ab", "policy_hash": SERVER_HASH,
-                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 5, "flag": 3},
+                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 5, "flag": 6},
                                       "secs": {"TK-N001": "deny", "TK-S001": "deny"}, "rules": [
                                           {"id": "TK-N001", "reason": "request to an internal address"},
                                           {"id": "TK-S001", "reason": "cloud metadata service",
@@ -283,7 +283,45 @@ class Translate(unittest.TestCase):
                          ("APPROVE", "APPROVAL CONSUMED · create_refund", "c6"))
         self.assertNotIn("{", "".join(r.get("text", "") for r in rows))   # no record JSON in place of words
 
-    def test_live_constraints_are_rows_and_head_the_run_review(self):
+    def test_run_labels_are_rows_in_words(self):
+        rows = self.feed(v2rec(1, "run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                                                "source": 0}),
+                         v2rec(2, "run.label", {"label": "secrets_access", "action": "clear", "by": "person",
+                                                "identity": "uid:7", "person": "alice", "reason": "test values"}),
+                         v2rec(3, "run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                                                "inherited": {"run_id": "r0", "run_seq": 4}}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"]) for r in rows],
+                         [("HOLD", "med", "RUN LABEL · secrets_access"),
+                          ("HOLD", "info", "RUN LABEL CLEARED · secrets_access"),
+                          ("HOLD", "med", "RUN LABEL · secrets_access")])
+        self.assertEqual([r["text"] for r in rows], [
+            "set by this run's record 0: a later call a run condition reads it for is held for a person (recorded "
+            "only, under a rule in shadow)",
+            'by alice · "test values"',
+            "inherited from run r0, of the same requester: a later call a run condition reads it for is held for a "
+            "person (recorded only, under a rule in shadow)"])
+
+    def test_a_self_cleared_label_is_a_warning(self):
+        # a dev signer's own user cleared it: whom the agent runs as, so it may have been the agent
+        rows = self.feed(v2rec(1, "run.label", {"label": "secrets_access", "action": "clear", "by": "person",
+                                                "identity": "uid:501", "person": "uid:501", "self_cleared": True}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"]) for r in rows],
+                         [("HOLD", "med", "RUN LABEL SELF-CLEARED · secrets_access")])
+        self.assertIn("the run's own user on a dev signer", rows[0]["text"])
+
+    def test_a_run_writer_is_a_row_in_words(self):
+        rows = self.feed(v2rec(1, "run.writer", {"identity": "uid:990777", "stream": "s2", "gateway": True}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"], r["text"]) for r in rows],
+                         [("SIGNER", "info", "RUN WRITER · uid:990777",
+                           "writes stream s2 through a gateway: the labels this run carries are its as well")])
+
+    def test_a_rule_in_shadow_reads_as_the_hook_says_it(self):
+        # the page and tracekit report: noted, nothing blocked (labels.noted's words), for a rule in shadow only
+        dev = policy_compile.build(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "dev.yaml"))[0]
+        reasons = view.policy_reasons()[policy_compile.policy_hash(dev)]
+        self.assertEqual(reasons["TK-Q001"]["reason"], "noted: this sends data off the machine after the session read a "
+                         "secret. Nothing is blocked in 1.8; it's in the record.")
+        self.assertEqual(reasons["TK-F013"]["reason"], "egress")
         recs = [v2rec(1, "constraint.added", {"kind": "keep_away", "salt_id": "a" * 32,
                                               "object_commitment": "hmac-sha256:" + "b" * 64}),
                 v2rec(2, "constraint.added", {"kind": "no_push"}),
@@ -1926,6 +1964,22 @@ class View(unittest.TestCase):
         self.assertEqual(store.root, other)
         self.assertIn("start with --allow-program", out)
 
+    def test_a_block_is_one_alert_not_the_signed_record_and_the_why_import_of_it(self):
+        """ALERTS read "6 high" for 3 blocked calls: each block was the signer's BLOCKED row and the why import's "was
+        blocked by Tracekit policy" alert of the same call."""
+        run_id = self.finished_run()
+        why_dir = ts.tmpdir(self)
+        feed = store_feed(self, {"data_dir": self.d}, on_run=functools.partial(view.mirror_run, why_dir))
+        self.report(feed, run_id)
+        wait_for(lambda: len(os.listdir(why_dir)) == 1, 15)
+        store = Store(why_dir, out=feed)
+        self.assertTrue([r for r in self.rows(feed, run_id) if r.get("v2", {}).get("decision") == "deny"])
+        self.assertEqual([a["title"] for a in store.workspace()["alerts"] if "blocked" in a["title"]], [])
+        with feed.lock:   # a deny the live view no longer holds is shown by the why alert alone
+            feed.records[:] = [r for r in feed.records if r.get("v2", {}).get("decision") != "deny"]
+        self.assertEqual([a["title"] for a in store.workspace()["alerts"] if "blocked" in a["title"]],
+                         ["rm was blocked by Tracekit policy"])
+
     def test_a_store_with_no_why_logs_still_gets_a_graph_of_each_run_with_its_decisions(self):
         run_id = self.finished_run()
         why_dir = ts.tmpdir(self)
@@ -2716,9 +2770,9 @@ class LiveRuns(unittest.TestCase):
         """A StoreFeed the test refreshes itself (no watch thread); `verdicts(run_id)`: each check's answer."""
         self.checks, real = [], view.check
 
-        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None, policy_dir=None):
             if reader is not self.fake:
-                return real(reader, tenant, run_id, note, trust, out, memo, kept)
+                return real(reader, tenant, run_id, note, trust, out, memo, kept, policy_dir)
             self.checks.append(run_id)
             self.now[0] += 2   # each check takes 2 s
             rep, code, text = verdicts(run_id)
@@ -2907,7 +2961,7 @@ class LiveRuns(unittest.TestCase):
                      for i, r in enumerate("abc")}   # c the newest: checked first
         feed, fake, given = self.feed(lambda run_id: VERIFIED), view.check, []
 
-        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None, policy_dir=None):
             given.append((run_id, dict(kept)))
             got = fake(reader, tenant, run_id, note, trust, out, memo)
             kept.update(data=b"x" * 40)   # what it verified
@@ -2927,7 +2981,7 @@ class LiveRuns(unittest.TestCase):
                      for i, r in enumerate("ab")}   # b the newest: checked first, then a
         feed, fake = self.feed(lambda run_id: VERIFIED), view.check
 
-        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None, policy_dir=None):
             got = fake(reader, tenant, run_id, note, trust, out, memo)
             kept.update(data=b"x" * (400 if run_id == "a" else 40))   # a alone is past the cap
             return got
@@ -3109,6 +3163,7 @@ class LiveRuns(unittest.TestCase):
         self.assertTrue(wait_for(lambda: set(os.listdir(why)) == live, 10), (sorted(os.listdir(why)), sorted(live)))
         store.scan(announce=False)
         self.assertEqual(set(store._cache), {os.path.join(why, n) for n in live})
+        self.assertEqual(set(feed.signed_runs), set(feed.latest))   # the join's records: the runs on the live view
 
     def test_a_clock_stepped_back_still_checks_a_run_again(self):
         """RECHECK_S and BACKOFF were timed by the wall clock: after it stepped back (an NTP step, a manual change), an
@@ -3135,6 +3190,7 @@ class LiveRuns(unittest.TestCase):
         feed = self.feed(lambda run_id: verdicts.pop(0))
         self.refresh(feed)
         rows = len(feed.records)
+        self.assertEqual({k[1]: len(v) for k, v in feed.signed_runs.items()}, {"r1": len(self.recs["r1"])})
         self.now[0] += view.RECHECK_S
         self.refresh(feed)
         self.assertEqual(self.checks, ["r1"])   # its bytes unchanged: not checked again
@@ -3155,6 +3211,7 @@ class LiveRuns(unittest.TestCase):
         with feed.lock:
             self.assertEqual(feed.records[-1]["review"]["verdict"], "failed")
             self.assertTrue(all(r is observe.RETRACTED for r in feed.records[:-1]))   # every row of it taken back
+            self.assertEqual(feed.signed_runs, {})   # and the why server's join of it
 
     def test_a_run_whose_check_raises_says_not_checked_and_every_other_run_is_still_checked(self):
         """An error checking one run escaped the watch thread and ended it: no run was checked again. That run gets a

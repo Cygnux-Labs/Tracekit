@@ -34,6 +34,7 @@ from factories import rewrite_bundle  # noqa: E402
 from tracekit import crypto  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.format import checkpoint, registry  # noqa: E402
+from tracekit.policy2 import compile as pc  # noqa: E402
 from tracekit.storage.base import registry_tree  # noqa: E402
 
 TSALT = registry.tenant_salt(b"\x01" * 32, "acme")
@@ -298,6 +299,18 @@ EVERY_TYPE = [
     ("constraint.added", {"kind": "no_push"}),
 ]
 
+# a compiled policy with a run condition (docs/policy-v2.md#run-conditions), as a signer's policies/ keeps it
+LABELLED_BYTES = json.dumps({"tools": {"read_file": "fs"},
+                             "flag": [{"id": "SECRET", "class": "fs", "pattern": "\\.env", "label": "secrets_access"},
+                                      {"id": "EGRESS", "field": "target", "pattern": "://", "label": "egress"}],
+                             "ask": [{"id": "SEND", "field": "labels", "pattern": "(?:^| )egress(?: |$)",
+                                      "when": {"run_has": ["secrets_access"]}}]},
+                            sort_keys=True, separators=(",", ":")).encode()
+LABELLED_HASH = "sha256:" + hashlib.sha256(LABELLED_BYTES).hexdigest()
+# the same rules under another policy_hash (a signer restarted with another label_inherit_s)
+LABELLED2_BYTES = json.dumps({**json.loads(LABELLED_BYTES), "label_inherit_s": 60}, sort_keys=True,
+                             separators=(",", ":")).encode()
+LABELLED2_HASH = "sha256:" + hashlib.sha256(LABELLED2_BYTES).hexdigest()
 V = "§11 step 11"
 VECTOR_CASES = []
 
@@ -396,6 +409,96 @@ def vectors():
         "incident_id": "i1", "trigger": "sequence", "rule_ids": [], "scope": {"kind": "run", "id": "run-a"},
         "cites": [], "mode": "shadow", "actions": [], "would": []}, {})), t, 0, "VERIFIED", "witnessed",
          addon="containment", decided_by="§3 (containment), §11 step 9")
+    # run labels (format 1.8): replayed under the run's policy when the bundle carries it, signer-asserted without
+    secret = ("policy.decision", {"tool_use_id": "t1", "decision": "flag", "rule_ids": ["SECRET"], "tool": "read_file",
+                                  "policy_hash": LABELLED_HASH}, {"tool_call_id": "t1"})
+    added = ("run.label", {"label": "secrets_access", "action": "add", "by": "signer", "source": 1}, {})
+    case("a run label, its policy not in the bundle", closed("run-label", secret, added), t, 0, "VERIFIED",
+         "witnessed", addon="run labels", needs="1.8.0", decided_by="§3 (run labels), §11 step 9")
+    policies = os.path.join(VECTORS, ".stores", "policies")
+    os.makedirs(policies)
+    for h, text in ((LABELLED_HASH, LABELLED_BYTES), (LABELLED2_HASH, LABELLED2_BYTES)):
+        with open(os.path.join(policies, h.removeprefix("sha256:") + ".json"), "wb") as f:
+            f.write(text)
+    case("a run label its cited record doesn't set", closed(
+        "run-label-unset", (secret[0], {**secret[1], "rule_ids": []}, secret[2]), added, policy_dir=policies), t, 1,
+         "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a record sets the labels of a call it lets run), §11 step 9")
+    sent = ("policy.decision", {"tool_use_id": "t2", "decision": "ask", "rule_ids": ["EGRESS", "SEND"],
+                                "tool": "read_file", "policy_hash": LABELLED_HASH, "run_labels": ["secrets_access"]},
+            {"tool_call_id": "t2"})
+    case("a label its record sets, no run.label adds", closed("run-label-omitted", secret, sent, policy_dir=policies),
+         t, 1, "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: added before the run's next decision), §11 step 9")
+    case("a label left out, its policy only in the trust config", closed("run-label-omitted-trusted", secret, sent),
+         trust("policy", policies=[LABELLED_BYTES.decode()]), 1, "FAILED", failed_check=["run labels"],
+         addon="run labels", needs="1.8.0",
+         decided_by="§10 (a trust config's policies: known by their hash), §11 step 9")
+    inherited = ("run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                               "inherited": {"run_id": "run-z", "run_seq": 2}}, {})
+    case("a label inherited from another run of the requester", closed("run-label-inherited", inherited, sent,
+                                                                       policy_dir=policies),
+         t, 0, "VERIFIED", "witnessed", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a requester's, signer-asserted), §11 step 9")
+    untracked = ("run.label", {**inherited[1], "label": "untrusted_content"}, {})
+    plain = ("policy.decision", {"tool_use_id": "t3", "decision": "allow", "rule_ids": [], "tool": "read_file",
+                                 "policy_hash": LABELLED_HASH}, {"tool_call_id": "t3"})
+    case("an inherited label no run condition reads", closed("run-label-inherited-untracked", untracked, plain,
+                                                             policy_dir=policies),
+         t, 1, "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: only those the policy reads), §11 step 9")
+    cleared = ("run.label", {"label": "secrets_access", "action": "clear", "by": "person", "identity": "token:svc",
+                             "person": "token:svc"}, {})
+    case("a label its run's own owner cleared on a dev signer", closed(
+        "run-label-self-cleared", secret, added, (cleared[0], {**cleared[1], "self_cleared": True}, {}),
+        policy_dir=policies), t, 0, "VERIFIED", "dev", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a dev signer's self_cleared, assurance dev), §11 step 9")
+    case("a label its run's own owner cleared, not self_cleared", closed(
+        "run-label-owner-cleared", secret, added, cleared, policy_dir=policies), t, 1, "FAILED",
+         failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: never the run's owner, but a dev signer's self_cleared), §11 step 9")
+    first = ("policy.decision", {"tool_use_id": "t0", "decision": "allow", "rule_ids": [], "tool": "read_file",
+                                 "policy_hash": LABELLED_HASH}, {"tool_call_id": "t0"})
+    after = lambda r: (r[0], {**r[1], "policy_hash": LABELLED2_HASH}, r[2])   # noqa: E731
+    case("a run decided under two policies, its labels added", closed(
+        "run-label-two-policies", first, after(secret), (added[0], {**added[1], "source": 2}, {}), after(sent),
+        policy_dir=policies), t, 0, "VERIFIED", "witnessed", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels), §11 step 9 (each record under the policy its decision names)")
+    gap = ("capture.gap", {"kind": "tailer_lost", "reason": "x"}, {})
+    case("a label a lost call sets, and the send after it", closed("run-label-lost", gap, added, sent,
+                                                                   policy_dir=policies),
+         t, 0, "VERIFIED", "witnessed", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a call the signer never decided sets every label the policy reads), §11 step 9")
+    unsent = (sent[0], {**{k: v for k, v in sent[1].items() if k != "run_labels"}, "decision": "flag",
+                        "rule_ids": ["EGRESS"]}, sent[2])
+    case("a send after a lost call that doesn't name its run condition", closed(
+        "run-label-lost-unnamed", gap, added, unsent, policy_dir=policies), t, 1, "FAILED", failed_check=["run labels"],
+         addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels), §11 step 9 (a run condition on the labels field, replayed from the rule ids)")
+    via = (secret[0], {**secret[1], "via": "token:gw", "caller": "token:cli"}, secret[2])
+    case("a label a gateway's caller cleared", closed(
+        "run-label-caller-cleared", via, added, (cleared[0], {**cleared[1], "identity": "token:cli",
+                                                              "person": "token:cli"}, {}), policy_dir=policies),
+         t, 1, "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: never a requester of the run, but a dev signer's self_cleared), §11 step 9")
+    case("a clear of an ended run's label, in another run", closed(
+        "run-label-ended-cleared", plain, (cleared[0], {**cleared[1], "identity": "token:ops", "person": "token:ops",
+                                                        "run_id": "run-z"}, {}), policy_dir=policies), t, 0, "VERIFIED",
+         "witnessed", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a clear of a run that has ended names it, run_id, in its tenant's signer run)")
+    writer = ("run.writer", {"identity": "token:cli", "stream": "s2"}, {})
+    added2 = (added[0], {**added[1], "source": 2}, {})   # the secret read after the writer's record
+    case("a run's writer, recorded", closed("run-writer", writer, secret, added2, policy_dir=policies), t, 0,
+         "VERIFIED", "witnessed", addon="run labels", needs="1.8.0", decided_by="§3 (run labels: a run's requesters)")
+    case("a label a run's writer cleared", closed(
+        "run-label-writer-cleared", writer, secret, added2, (cleared[0], {**cleared[1], "identity": "token:cli",
+                                                                         "person": "token:cli"}, {}),
+        policy_dir=policies), t, 1, "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: never a requester of the run, but a dev signer's self_cleared), §11 step 9")
+    case("a label left out in a run decided under two policies", closed(
+        "run-label-two-policies-omitted", first, after(secret), after(sent), policy_dir=policies), t, 1, "FAILED",
+         failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels), §11 step 9 (each record under the policy its decision names)")
     case("an agent's approval", closed(
         "agent-approval",
         ("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["PAY"], "decision_id": "d1",
@@ -408,6 +511,160 @@ def vectors():
                       "approver_identity": {"scheme": "token", "subject": "approver", "attested": True}},
          {"tool_call_id": "t1"})), t, 0, "VERIFIED", "witnessed", addon="agent approvals",
          decided_by="§11 step 9 (approvals by agents: without the policy snapshot, a warning)")
+    # the AI approver (format 1.8.0): a person's answer, then an AI yes that names it as its precedent
+    def ai_run(name, answers=2, other_kind=False, listed=None, labels=(), person=None, rejected=False, recorded=None,
+               cited=None, run_null=False):
+        """`listed`: bundle a policy snapshot whose approval_agent lists these rules (None: no snapshot), its
+        approval_agent.run null with `run_null`; `labels`: the run's labels the AI's answer relied on; `person`: fields of the person's
+        answer a0 (and its record's `ts`); `rejected`: a person's rejection of a call like it (a2), named by no
+        precedent list, before the AI's yes; `recorded`: a signed run.label add of secrets_access its answer left out,
+        before the yes ("yes"; "cleared": and a person's clear after it) or after it and before the yes's consume
+        ("consume"); `cited`: the policy hash the yes
+        cites, when not the request's."""
+        pol = {"tools": {"Bash": "shell"}, "ask": [{"id": "TK-A025", "class": "shell", "field": "package_index",
+                                                   "pattern": "^"}],
+               "approval_agent": {"mode": "enforce", "rules": listed or [],
+                                  "run": None if run_null else {"clean": ["secrets_access"]}}}
+        ph = H if listed is None else pc.policy_hash(pol)
+        kw = {}
+        if listed is not None:
+            pdir = os.path.join(VECTORS, ".stores", "policies-" + name)
+            os.makedirs(pdir)
+            with open(os.path.join(pdir, ph.removeprefix("sha256:") + ".json"), "w", encoding="utf-8") as f:
+                f.write(pc.canonical(pol))
+            kw["policy_dir"] = pdir
+        key = {"rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": ["pip --index-url https://pypi.internal/…"]},
+               "project": "api (17978b62)"}
+        ai = {"key": key, "digest": "hmac-sha256:" + "5" * 64, "labels": [], "clean": True,
+              "precedents": {"approve": [], "reject": []}}
+        asked = [{**ASKED, "approval_id": aid, "decision_id": did, "rule_ids": ["TK-A025"], "policy_hash": ph,
+                  "binding": {**ASKED["binding"], "approval_id": aid, "tool_call_id": tc, "tool": "Bash",
+                              "policy_hash": ph}}
+                 for aid, did, tc in (("a0", "d0", "t0"), ("a1", "d1", "t1"), ("a2", "d2", "t2"))]
+        person = dict(person or {})
+        when = {"ts": person.pop("ts")} if "ts" in person else {}
+        no = [("policy.decision", {"tool_use_id": "t2", "decision": "ask", "rule_ids": ["TK-A025"],
+                                   "decision_id": "d2", "policy_hash": ph}, {"tool_call_id": "t2"}),
+              ("approval.request", {**asked[2], "ai": ai}, {"tool_call_id": "t2"}),
+              ("approval", {"tool_use_id": "t2", "approval_id": "a2", "decision": "reject", "approver": "uid:502",
+                            "channel": "rpc", "run_clean": True}, {"tool_call_id": "t2"})] if rejected else []
+        if rejected == "revoked":
+            no.append(("precedent.revoked", {"approval_id": "a2", "by": "uid:502", "reason": "the index is ours"}, {}))
+        label = ("run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                               "inherited": {"run_id": "run-z", "run_seq": 2}}, {})
+        then = [label, ("approval.consumed", {"approval_id": "a1"}, {"tool_call_id": "t1"})] if recorded == "consume" \
+            else []
+        return closed(
+            name,
+            ("policy.decision", {"tool_use_id": "t0", "decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d0",
+                                 "policy_hash": ph}, {"tool_call_id": "t0"}),
+            ("approval.request", {**asked[0], "ai": dict(ai, digest="hmac-sha256:" + "6" * 64) if other_kind else ai},
+             {"tool_call_id": "t0"}),
+            ("approval", {"tool_use_id": "t0", "approval_id": "a0", "decision": "approve", "approver": "uid:502",
+                          "channel": "rpc", "run_clean": True, **person}, {"tool_call_id": "t0", **when}),
+            *no,
+            ("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d1",
+                                 "policy_hash": ph}, {"tool_call_id": "t1"}),
+            *[label] * (recorded in ("yes", "cleared")),
+            *[("run.label", {"label": "secrets_access", "action": "clear", "by": "person", "identity": "token:ops",
+                             "person": "token:ops"}, {})] * (recorded == "cleared"),
+            ("approval.request", {**asked[1], "agent": {"eligible": True, "reason": "x", "rules": ["TK-A025"],
+                                                        "conditions_hash": H, "args_key": "hmac-sha256:" + "2" * 64},
+                                  "ai": dict(ai, precedents={"approve": ["a0"], "reject": []})},
+             {"tool_call_id": "t1"}),
+            ("approval", {"tool_use_id": "t1", "approval_id": "a1", "decision": "approve", "approver": "uid:299",
+                          "channel": "rpc", "approver_kind": "agent",
+                          "approver_identity": {"scheme": "uid", "subject": "299", "attested": True},
+                          "relied_on": {"precedents": {"approve": ["a0"], "reject": []},
+                                        "playbook": {"version": 0, "digest": H}, "policy_hash": cited or ph,
+                                        "labels": list(labels), "view": "hmac-sha256:" + "7" * 64, "mode": "enforce",
+                                        "answers": [{"model": "m", "decision": "approve"}] * answers}},
+             {"tool_call_id": "t1"}), *then, **kw)
+    case("an AI approver's yes on a person's precedent in the run", ai_run("ai-approval"), t, 0, "VERIFIED",
+         "witnessed", addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: an AI yes carries two answers that approve and a person's precedent)")
+    case("an AI approver's yes with one answer", ai_run("ai-approval-one-key", answers=1), t, 1, "FAILED",
+         failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a yes needs two answers that approve)")
+    case("an AI approver's yes on a precedent of another kind of call", ai_run("ai-approval-other-kind",
+                                                                              other_kind=True), t, 1, "FAILED",
+         failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a precedent is a person's approval of a request with the same digest)")
+    case("an AI approver's yes, its rule listed in the policy snapshot", ai_run("ai-approval-listed",
+                                                                               listed=["TK-A025"]), t, 0, "VERIFIED",
+         "witnessed", addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0), §11 step 9 (a rule the snapshot's approval_agent lists permits agents)")
+    case("an AI approver's yes, its rule not listed in the policy snapshot", ai_run("ai-approval-unlisted",
+                                                                                   listed=["TK-A062"]), t, 1, "FAILED",
+         failed_check=["approvals by agents"], addon="AI approvals", needs="1.8.0",
+         decided_by="§11 step 9 (a rule neither with approval.agent nor listed by approval_agent doesn't permit agents)")
+    case("an AI approver's yes in a run carrying a label of the snapshot's run bound", ai_run(
+        "ai-approval-run-bound", listed=["TK-A025"], labels=["secrets_access"]), t, 1, "FAILED",
+         failed_check=["AI run bound"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: none of an AI yes's run labels is one the policy's run bound names)")
+    case("an AI approver's yes in a labelled run, its policy snapshot left out of the bundle", ai_run(
+        "ai-approval-run-bound-no-snapshot", labels=["secrets_access"]), t, 1, "FAILED",
+         failed_check=["AI run bound"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: an AI yes in a labelled run needs the snapshot of the policy it cites)")
+    case("a person's switch of the AI approver", closed("ai-approver-switched", (
+        "approver.switched", {"on": True, "rules": ["TK-A025"], "by": "uid:502", "reason": "the mirror is vetted"}, {}),
+        ("approver.switched", {"on": False, "by": "uid:502"}, {})), t, 0, "VERIFIED", "witnessed", addon="AI approvals",
+         needs="1.8.0", decided_by="§9 (version table, 1.8.0: approver.switched, a person's switch)")
+    index = "pip --index-url https://pypi.internal/…"
+    lesson = {"id": "L-" + "4" * 32, "text": f"don't approve {index} (TK-A025) without a person: alice rejected one on "
+              "11-23 that the AI would have approved", "key": {
+                  "rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": [index]}, "project": "api (17978b62)"},
+              "decision": "reject", "digest": "hmac-sha256:" + "5" * 64,
+              "evidence": ["7" * 32, "8" * 32], "by": "uid:502"}
+    case("a lesson drafted from a disagreement, accepted, and another dropped", closed("ai-approver-lessons", (
+        "playbook.entry", {"action": "accept", **lesson}, {}), ("playbook.entry", {
+            "action": "drop", **lesson, "id": "L-" + "6" * 32}, {})), t, 0, "VERIFIED", "witnessed",
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: playbook.entry accepts or drops a lesson L-, with its evidence)")
+    case("an AI approver's yes after a signed label of the run bound it left out", ai_run(
+        "ai-approval-recorded-label", listed=["TK-A025"], recorded="yes"), t, 1, "FAILED", failed_check=["AI run bound"],
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: the labels an AI yes's run records hold at the yes, replayed)")
+    case("an AI approver's yes after a label of the run bound a person cleared", ai_run(
+        "ai-approval-label-cleared", listed=["TK-A025"], recorded="cleared"), t, 0, "VERIFIED", "witnessed",
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: the run's run.label records replayed in order, a clear ends a label)")
+    case("an AI approver's yes consumed after a signed label of the run bound", ai_run(
+        "ai-approval-label-before-consume", listed=["TK-A025"], recorded="consume"), t, 1, "FAILED",
+         failed_check=["AI run bound"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: and at its consume)")
+    case("an AI approver's yes citing another policy than its request's", ai_run(
+        "ai-approval-other-policy", listed=["TK-A025"], cited="sha256:" + "8" * 64), t, 1, "FAILED",
+         failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: relied_on.policy_hash is its request's)")
+    case("an AI approver's yes in a labelled run, its policy's approval_agent.run null", ai_run(
+        "ai-approval-run-null", listed=["TK-A025"], labels=["untrusted_content"], run_null=True), t, 1, "FAILED",
+         failed_check=["AI run bound"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a snapshot whose run bound can't be read fails the line)")
+    case("an AI approver's yes on a precedent more than 30 days older", ai_run(
+        "ai-approval-old-precedent", person={"ts": "2026-09-09T11:59:59.000000Z"}), t, 1, "FAILED",
+         failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a precedent is at most 30 days older than the answer)")
+    case("an AI approver's yes on a precedent exactly 30 days older", ai_run(
+        "ai-approval-30-day-precedent", person={"ts": "2026-09-09T12:00:00.000000Z"}), t, 0, "VERIFIED", "witnessed",
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a precedent is at most 30 days older than the answer)")
+    case("an AI approver's yes on a break-glass answer", ai_run("ai-approval-break-glass", person={
+        "break_glass": True, "reason": "on call"}), t, 1, "FAILED", failed_check=["AI approvals"],
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a break-glass answer is no precedent)")
+    case("an AI approver's yes on an answer made once the run wasn't clean", ai_run(
+        "ai-approval-answered-unclean", person={"run_clean": False}), t, 1, "FAILED", failed_check=["AI approvals"],
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a precedent is an answer made in a run clean when it was answered)")
+    case("an AI approver's yes with a person's rejection of a call like it in the bundle", ai_run(
+        "ai-approval-unnamed-rejection", rejected=True), t, 1, "FAILED", failed_check=["AI approvals"],
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: no rejection of a call like it counts when the AI says yes)")
+    case("an AI approver's yes after a person's rejection of a call like it was revoked as a precedent", ai_run(
+        "ai-approval-revoked-rejection", rejected="revoked"), t, 0, "VERIFIED", "witnessed", addon="AI approvals",
+         needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a precedent revoked before the answer doesn't count, a rejection too)")
     case("a signed finding outside a findings run", closed("review-outside-findings-run", (
         "review", {"reviewer": "x", "verdict": {"kind": "finding", "rule": "TK-X200", "severity": "info"},
                    "cites": [{"run_seq": 0, "hash": "sha256:" + "0" * 64}]}, {})), t, 1, "FAILED",

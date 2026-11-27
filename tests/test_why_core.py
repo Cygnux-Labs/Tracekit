@@ -18,7 +18,7 @@ import pytest
 from tracekit.why import System, build_graph, counterfactual, load_run, taint, target_hits, verify
 from tracekit.why.analysis import LINEAGE_CHAINS, _ended, influence_graph, investigation, lineage
 from tracekit.why.cli import main as cli
-from tracekit.why.core import GENESIS, Ref, Runtime, Tape, ablation_matches, event_hash, referenced_refs
+from tracekit.why.core import GENESIS, Ref, Runtime, Tape, ablation_matches, chain_hash, event_hash, referenced_refs
 from tracekit.why import server
 from tracekit.why.server import IngestError, Store
 from tracekit.why.view import run_detail
@@ -255,6 +255,7 @@ class LongRuns(Tmp):
         run = rt.finish()
         run.add_test({"intervention": "input:notes[[]1].md", "target": "tool=t", "effect": 1.0, "ci": [0.5, 1.0],
                       "verdict": "causal", "n": 10})
+        run.replayed = frozenset({chain_hash(run.tests[0])})   # vouched for: a replay the test ran itself
         (edge,) = influence_graph([(run, build_graph(run, infer=False))])["edges"]
         self.assertTrue(edge["confirmed"])
 
@@ -294,9 +295,15 @@ class LongRuns(Tmp):
                          ["UserPromptSubmit"] * 2 + ["session-message"] * 3 + ["web:page"] * 2)
 
     def test_a_reached_call_is_marked_by_how_it_ended(self):
+        """A held call a person rejected read as held; the runtime records the answer as the approval's state, an import
+        as its decision."""
         cases = [({"policy": {"decision": "deny"}}, "blocked"), ({"status": "blocked"}, "blocked"),
                  ({"status": "blocked", "policy": {"decision": "ask"}}, "held"),
-                 ({"status": "blocked", "policy": {"decision": "ask", "approval": {"decision": "reject"}}}, "held"),
+                 ({"status": "blocked", "policy": {"decision": "ask", "approval": {"decision": "reject"}}}, "rejected"),
+                 ({"status": "blocked", "policy": {"decision": "ask", "approval": {"state": "rejected"}}}, "rejected"),
+                 ({"status": "blocked", "policy": {"decision": "ask", "approval": {"state": "requested"}}}, "held"),
+                 ({"status": "blocked", "policy": {"decision": "ask", "approval": {"state": "expired"}}}, "held"),
+                 ({"policy": {"decision": "ask", "approval": {"state": "approved"}}}, None),
                  ({"policy": {"decision": "ask", "approval": {"decision": "approve"}}}, None),
                  ({"policy": {"decision": "flag"}}, "flagged"), ({"status": "ok", "policy": {"decision": "allow"}}, None)]
         self.assertEqual([_ended(ev) for ev, _ in cases], [want for _, want in cases])
@@ -347,12 +354,12 @@ class StoreRequests(Tmp):
         def replaced(back):   # the first rename lands mid-analysis, the second before the store looks again or after
             first = []
 
-            def analyse(p):
+            def analyse(p, verify=None):
                 if first:
-                    return real(p)
+                    return real(p, verify)
                 first.append(p)
                 os.rename(p, aside)
-                a = real(p)
+                a = real(p, verify)
                 if back:
                     os.rename(aside, p)
                     grew()

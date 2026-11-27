@@ -415,3 +415,4 @@
 {"args": {"command": "minikube kubectl -- get pods -A"}, "expect": "allow", "note": "#981 twin: listing pods through minikube reads no secret", "tool": "Bash"}
 {"args": {"command": "kubectl -o wide get secrets"}, "expect": "allow", "note": "#981 twin: an output that prints sizes, given before get", "tool": "Bash"}
 {"args": {"command": "vault token capabilities secret/db"}, "expect": "allow", "note": "#981 twin: capabilities names no value and prints no token", "tool": "Bash"}
+{"tool": "Bash", "args": {"command": "pass ls"}, "expect": "allow", "note": "a bare pass ls lists entry names only (TK-A021 twin)"}

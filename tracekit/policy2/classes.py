@@ -15,11 +15,16 @@ from tracekit.format.canon import canonical, event_hash
 
 SHELL_KEYS = ("command", "cmd", "commands")
 # a shell tool's own working directory, in any case: Gemini CLI's and Qwen Code's dir_path (directory in older
-# releases), Cursor's working_directory, Codex's and OpenCode's workdir, agy's Cwd, Crush's working_dir
-WORKDIR_KEYS = ("dir_path", "directory", "working_directory", "workdir", "cwd", "working_dir")
+# releases), Cursor's working_directory, Codex's and OpenCode's workdir, agy's Cwd, Crush's working_dir, and the
+# spellings MCP shell servers use (workingDirectory, dir, cd)
+WORKDIR_KEYS = ("dir_path", "directory", "working_directory", "workdir", "cwd", "working_dir", "workingdirectory", "dir",
+                "cd")
+# a shell tool's own environment for its command, in any case (OpenAI Agents' LocalShellTool and Codex's exec: `env`)
+ENV_KEYS = ("env",)
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-UNREAD = object()   # workdir's and in_workdir's: a working directory no one reading places
+UNREAD = object()   # workdir's, environment's and in_workdir's: a working directory or environment no one reading places
 
 
 def workdir(args):
@@ -31,17 +36,35 @@ def workdir(args):
     return named[0] if len(named) == 1 and isinstance(named[0], str) else UNREAD
 
 
+def environment(args):
+    """The line a shell call's own environment (ENV_KEYS, in any case) makes before its command: `export NAME=value
+    …; `, so the line is read with what it sets (BASH_ENV, HOME, PATH, LD_PRELOAD); None for none (or an empty one);
+    UNREAD for more than one, or one that isn't a mapping of variable names to text (a name bash can't export, such as
+    a function's BASH_FUNC_x%%, among them)."""
+    named = [v for k, v in args.items() if isinstance(k, str) and k.casefold() in ENV_KEYS and v is not None]
+    if not named or named == [{}]:
+        return None
+    if len(named) > 1 or not isinstance(named[0], dict) or not all(
+            isinstance(k, str) and _ENV_NAME.fullmatch(k) and isinstance(v, str) for k, v in named[0].items()):
+        return UNREAD
+    return "export " + " ".join(f"{k}={shlex.quote(v)}" for k, v in named[0].items()) + "; "
+
+
 def in_workdir(args):
-    """A shell call's arguments as run in the working directory they name (workdir), each reading of it: the command
-    as `cd <dir> && <command>` (an argv as the line it is), so a relative path it names is read in that folder; a
-    `commands` list both as one shell runs it there (`cd <dir> && ` before its lines joined, where a `cd` in one moves
-    the next) and as each entry run in a shell of its own (`cd <dir> && <entry>` each). The command field is the one
-    the engine reads: the first that isn't None. None for a call that names no working directory, or has no command;
-    UNREAD for one whose working directory workdir can't place."""
-    if (d := workdir(args)) is None or d is UNREAD:
-        return d
+    """A shell call's arguments as run in the working directory and environment they name (workdir, environment),
+    each reading of it: the command as `export NAME=value …; cd <dir> && <command>` (an argv as the line it is), so a
+    relative path it names is read in that folder and the line with what the environment sets; a `commands` list both
+    as one shell runs it there (the prefix before its lines joined, where a `cd` in one moves the next) and as each
+    entry run in a shell of its own (the prefix before each). The command field is the one the engine reads: the
+    first that isn't None. None for a call that names neither, or has no command; UNREAD for one whose working
+    directory or environment can't be placed."""
+    d, env = workdir(args), environment(args)
+    if d is UNREAD or env is UNREAD:
+        return UNREAD
+    if d is None and env is None:
+        return None
     key = next((k for k in SHELL_KEYS if args.get(k) is not None), None)
-    command, cd = args.get(key), f"cd {shlex.quote(d)} && "
+    command, cd = args.get(key), (env or "") + ("" if d is None else f"cd {shlex.quote(d)} && ")
     rest = {k: v for k, v in args.items() if k != key}
     if isinstance(command, list) and command and all(isinstance(w, str) for w in command):
         return [{**rest, "command": cd + "\n".join(command)}, {**rest, "commands": [cd + w for w in command]}] \
@@ -49,7 +72,7 @@ def in_workdir(args):
     return [{**rest, "command": cd + command}] if isinstance(command, str) else None
 
 
-PATH_KEYS = ("file_path", "notebook_path", "path")
+PATH_KEYS = ("file_path", "notebook_path", "path", "relative_path", "pathInProject")   # serena's, JetBrains'
 BODY_KEYS = ("body", "data", "json", "files", "form", "content")   # an http call with one of these sends data
 # Browser Use actions that send data to the page they run on
 TYPING = ("input", "upload_file", "send_keys", "select_dropdown")

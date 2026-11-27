@@ -85,7 +85,8 @@ def _private(d, create):
         os.makedirs(d, 0o700, exist_ok=True)
     st = os.lstat(d)
     if not stat.S_ISDIR(st.st_mode) or os.name == "posix" and (st.st_uid != os.getuid() or st.st_mode & 0o077):
-        raise SignerUnavailable(f"{d} must be a directory owned by you with mode 0700")
+        raise SignerUnavailable(f"{d} must be a directory owned by you with mode 0700 (chmod 700 {d}, or point "
+                                "TRACEKIT_RUNTIME_DIR at a folder you own)")
     return d
 
 
