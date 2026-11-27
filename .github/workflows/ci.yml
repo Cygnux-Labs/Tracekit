@@ -791,6 +791,7 @@ jobs:
                       | map(.detection.F1[], .detection.F1o[]) | all(. == 1))' $R/e20_alignment.json
           # E21: policy decisions stay fast relative to the runner (p99 within 15x its reference time; CI saw 7-10x before
           # 1.7.3, whose safer shell and approver-copy reading put it at 9.4-12.5x; p99 stays near 1 ms, every call under 10 ms)
+          # 1.8's dev pack on the fallback regex engine measured 12.5-14.2x; back to 14 once #683's faster rule matching lands
           jq -e '[.latency[] | .p99_ref <= 15 and .max_us <= 10000] | all' $R/e21_policy_robustness.json
           # nothing skipped that should have run (-s: with several files, -e alone checks only the last)
           jq -e -s 'map(.skipped == {}) | all' $R/e11_l1_tampering.json $R/e12_cross_tenant.json $R/e14_outage.json
