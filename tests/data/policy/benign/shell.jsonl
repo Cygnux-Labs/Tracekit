@@ -416,3 +416,7 @@
 {"args": {"command": "kubectl -o wide get secrets"}, "expect": "allow", "note": "#981 twin: an output that prints sizes, given before get", "tool": "Bash"}
 {"args": {"command": "vault token capabilities secret/db"}, "expect": "allow", "note": "#981 twin: capabilities names no value and prints no token", "tool": "Bash"}
 {"tool": "Bash", "args": {"command": "pass ls"}, "expect": "allow", "note": "a bare pass ls lists entry names only (TK-A021 twin)"}
+{"tool": "Bash", "args": {"command": "tracekit tips"}, "expect": "allow", "note": "reading lessons is the agent's own work (TK-D012 twin)"}
+{"tool": "Bash", "args": {"command": "tracekit tips --for-agent"}, "expect": "allow", "note": "the agent's own lesson block answers nothing (TK-D012 twin)"}
+{"tool": "Bash", "args": {"command": "tracekit approvals list"}, "expect": "allow", "note": "listing approvals answers none of them (TK-D012 twin)"}
+{"tool": "Bash", "args": {"command": "tracekit tips --help"}, "expect": "allow", "note": "help answers nothing (TK-D012 twin)"}

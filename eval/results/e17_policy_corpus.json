@@ -2,7 +2,7 @@
   "policy_hash": "sha256:b6671b30bf3bfbfa6582c261c755eb2b2d75b8c33ae0e0d9755771ad87b90849",
   "engines": [
     "re2@1.1.20251105",
-    "regex@2026.11.19"
+    "regex@2026.11.15"
   ],
   "classes": {
     "browser": {
@@ -60,9 +60,9 @@
       "fp": 0
     },
     "shell": {
-      "deny": 617,
-      "caught": 617,
-      "benign": 418,
+      "deny": 624,
+      "caught": 624,
+      "benign": 422,
       "fp": 0
     },
     "sql": {
@@ -74,9 +74,9 @@
   },
   "packs": {
     "server": {
-      "deny": 1116,
-      "caught": 1116,
-      "benign": 1041,
+      "deny": 1123,
+      "caught": 1123,
+      "benign": 1045,
       "fp": 1
     },
     "dev": {
@@ -1163,6 +1163,13 @@
     "deny/shell:615": "ask TK-A053",
     "deny/shell:616": "ask TK-A021",
     "deny/shell:617": "ask TK-A021",
+    "deny/shell:618": "deny TK-D012",
+    "deny/shell:619": "deny TK-D012",
+    "deny/shell:620": "deny TK-D012",
+    "deny/shell:621": "deny TK-D012",
+    "deny/shell:622": "deny TK-D012",
+    "deny/shell:623": "deny TK-D012",
+    "deny/shell:624": "deny TK-D012",
     "deny/sql:1": "deny TK-DB001 TK-A041",
     "deny/sql:2": "deny TK-DB001 TK-A041",
     "deny/sql:3": "deny TK-DB001 TK-A041",
@@ -2160,6 +2167,10 @@
     "benign/shell:416": "allow",
     "benign/shell:417": "allow",
     "benign/shell:418": "allow",
+    "benign/shell:419": "allow",
+    "benign/shell:420": "allow",
+    "benign/shell:421": "allow",
+    "benign/shell:422": "allow",
     "benign/sql:1": "allow",
     "benign/sql:2": "allow",
     "benign/sql:3": "allow",
@@ -2285,6 +2296,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0009523809523809524,
+  "benign_fp_rate": 0.0009487666034155598,
   "ok": true
 }

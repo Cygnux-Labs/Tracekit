@@ -2443,27 +2443,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0009606147934678194,
+        "fp_rate": 0.0009569377990430622,
         "totals": {
-          "benign": 1041,
+          "benign": 1045,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 1041,
+              "benign": 1045,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 1041,
+              "benign": 1045,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 1041,
+              "benign": 1045,
               "fp": 1
             }
           }
@@ -5139,27 +5139,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.049951969260326606,
+        "fp_rate": 0.049760765550239235,
         "totals": {
-          "benign": 1041,
+          "benign": 1045,
           "fp": 52
         },
         "by": {
           "category": {
             "none": {
-              "benign": 1041,
+              "benign": 1045,
               "fp": 52
             }
           },
           "severity": {
             "none": {
-              "benign": 1041,
+              "benign": 1045,
               "fp": 52
             }
           },
           "evasion": {
             "none": {
-              "benign": 1041,
+              "benign": 1045,
               "fp": 52
             }
           }

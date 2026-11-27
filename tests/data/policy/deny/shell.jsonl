@@ -615,3 +615,10 @@
 {"args": {"command": "vault token lookup"}, "expect": "ask", "note": "#981: token lookup prints the token's own id (TK-A053)", "tool": "Bash"}
 {"tool": "Bash", "args": {"command": "pass ls github"}, "expect": "ask", "note": "password-store runs ls as show: with an entry it prints the password (TK-A021)"}
 {"tool": "Bash", "args": {"command": "pass list email/github"}, "expect": "ask", "note": "list is show too (TK-A021)"}
+{"tool": "Bash", "args": {"command": "tracekit approvals approve apr-1"}, "expect": "deny", "note": "an agent answering its own held call turns every ask into an allow (TK-D012)"}
+{"tool": "Bash", "args": {"command": "tracekit tips approve L-0123abcd"}, "expect": "deny", "note": "a lesson changes what every later session reads; a person answers it (TK-D012)"}
+{"tool": "Bash", "args": {"command": "tracekit tips retire L-1"}, "expect": "deny", "note": "retiring a lesson is the same answer (TK-D012)"}
+{"tool": "Bash", "args": {"command": "tracekit grant add --run r --tool t --payee x --total '1 USDC'"}, "expect": "deny", "note": "a grant the agent writes itself is no person's intent (TK-D012)"}
+{"tool": "Bash", "args": {"command": "python3 -m tracekit tips approve L-1"}, "expect": "deny", "note": "the module form of the same answer (TK-D012)"}
+{"tool": "Bash", "args": {"command": "sh -c 'tracekit tips approve L-1'"}, "expect": "deny", "note": "the answer inside a nested shell (TK-D012)"}
+{"tool": "Bash", "args": {"command": "tracekit grant list"}, "expect": "deny", "note": "every tracekit grant the agent runs is denied, list included (TK-D012)"}
