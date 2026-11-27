@@ -136,11 +136,11 @@ def exchange(port, data, half_close=False):
         s.sendall(data)
         if half_close:
             s.shutdown(socket.SHUT_WR)
-        s.settimeout(1)   # an open connection with nothing more to answer
         out, closed = b"", True
         try:
-            while chunk := s.recv(65536):
+            while chunk := s.recv(65536):   # the first answer within 5 s: a busy runner took over 1
                 out += chunk
+                s.settimeout(1)   # then an open connection with nothing more to answer
         except socket.timeout:
             closed = False
         except ConnectionResetError:
