@@ -61,8 +61,9 @@ if ($parts.Count -ge 4 -and $parts[-4] -eq 'cache' -and $parts[-3] -and $parts[-
 $share = if ($env:XDG_DATA_HOME) { $env:XDG_DATA_HOME } else { Join-Path $HOME '.local\share' }
 $roaming = if ($env:APPDATA) { $env:APPDATA } else { Join-Path $HOME 'AppData\Roaming' }
 $localData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME 'AppData\Local' }
-$uvTools = if ($env:UV_TOOL_DIR) { @($env:UV_TOOL_DIR) } else {
-    @((Join-Path $share 'uv\tools'), (Join-Path $roaming 'uv\tools'), (Join-Path $roaming 'uv\data\tools')) }
+# @() around the whole if: an if returns one folder as a string, and string + array below would join them as text
+$uvTools = @(if ($env:UV_TOOL_DIR) { $env:UV_TOOL_DIR } else {
+    (Join-Path $share 'uv\tools'), (Join-Path $roaming 'uv\tools'), (Join-Path $roaming 'uv\data\tools') })
 $pipxHomes = if ($env:PIPX_HOME) { @($env:PIPX_HOME) } else { @((Join-Path $share 'pipx'), (Join-Path $localData 'pipx\pipx')) }
 $venvs = $uvTools + @($pipxHomes | ForEach-Object { Join-Path $_ 'venvs' }) + @((Join-Path $HOME '.local\pipx\venvs'),
            (Join-Path $HOME 'Library\Application Support\pipx\venvs'), (Join-Path $HOME 'pipx\venvs'))
