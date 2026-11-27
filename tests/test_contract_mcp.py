@@ -328,7 +328,7 @@ class SignerFailures(unittest.TestCase):
                     (out.contents[0].text, session.calls),
                     ("body of note://inbox", 1),
                 )
-                self.assertIn(expected, str(cm.warning))
+                self.assertEqual(str(cm.warning), f"tracekit: MCP resource {expected}: down")
 
     def test_a_resource_over_half_a_frame_is_recorded_as_its_digest(self):
         from mcp.types import ReadResourceResult, TextResourceContents
@@ -856,22 +856,26 @@ class InputRequiredRounds(unittest.TestCase):
     def test_round_whose_observe_fails_warns_when_fail_open(self):
         from tracekit import autowire
         from tracekit.sdk.client import SignerUnavailable
-        server, _ = self._make_server()
-        signer = _Signer(observe=SignerUnavailable("down"))
-        run = mock.Mock(client=signer, registered={**self.RUN, "fail_modes": {"mcp": "open"}})
-        autowire._mcp(run)
+        for recorded, wording in ((False, "not recorded"), (None, "may not have been recorded")):
+            with self.subTest(recorded=recorded):
+                server, _ = self._make_server()
+                error = SignerUnavailable("down")
+                error.recorded = recorded
+                signer = _Signer(observe=error)
+                run = mock.Mock(client=signer, registered={**self.RUN, "fail_modes": {"mcp": "open"}})
+                autowire._mcp(run)
 
-        async def run_call():
-            async with MCPClient(server) as c:
-                return await c.session.call_tool("ask_input", {"k": "v"}, allow_input_required=True)
+                async def run_call():
+                    async with MCPClient(server) as c:
+                        return await c.session.call_tool("ask_input", {"k": "v"}, allow_input_required=True)
 
-        with self.assertWarns(UserWarning) as cm:
-            out = asyncio.run(run_call())
+                with self.assertWarns(UserWarning) as cm:
+                    out = asyncio.run(run_call())
 
-        self.assertEqual(out.result_type, "input_required")
-        self.assertIn("MCP input_required not recorded: down", str(cm.warning))
-        completes = [r for m, r in signer.requests if m == "complete"]
-        self.assertEqual(len(completes), 0)
+                self.assertEqual(out.result_type, "input_required")
+                self.assertEqual(str(cm.warning), f"tracekit: MCP input_required {wording}: down")
+                completes = [r for m, r in signer.requests if m == "complete"]
+                self.assertEqual(len(completes), 0)
 
     def test_round_without_input_requests_skips_observe(self):
         from mcp.server.lowlevel import Server

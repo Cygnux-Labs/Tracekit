@@ -387,7 +387,7 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
     [2, "UNVERIFIABLE", "UNVERIFIABLE (the trust file can't be used)"]);
   assert.match(untrusted.v.means, /trust file couldn't be used/);
   const config = "trust.json: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, issuers, "
-    + "analyzers)";
+    + "analyzers, policies)";
   assert.equal(untrusted.report.checks[0].detail, config);
   assert.equal(untrusted.steps[0].text, `Fix the trust file, or choose the right one: ${config}. If it isn't the `
     + "sender's, ask for the sender's trust file: a small .json that names their signer's log key (tracekit last writes "
@@ -526,4 +526,16 @@ test("agreement with the reference verifier (tests/test_ts_verifier.py)", { skip
   const r = spawnSync(PY, [join(ROOT, "tests/test_ts_verifier.py")], { env: PY_ENV, encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(r.stderr, /skipped/);
+});
+
+test("label patterns (rx.ts): RE2's reading in linear time, within a budget that ends in Spent, never a hang", async () => {
+  const { Budget, Pattern, PolicyError, Spent } = await import("../dist/verify/rx.js");
+  const slow = new Pattern("(?:a|a)*b");   // a backtracking engine takes hours over 40 a's
+  const budget = new Budget();
+  assert.equal(slow.search("a".repeat(40), budget), false);
+  assert.ok(budget.steps - budget.left < 1000);
+  assert.equal(new Pattern("(?:^| )egress(?: |$)").search("background_spawn egress", new Budget()), true);
+  assert.throws(() => new Pattern("(?:a+)+b"), PolicyError);   // a repeat of a repeat: check_pattern refuses it
+  assert.throws(() => new Pattern("a(?=b)"), PolicyError);
+  assert.throws(() => slow.search("a".repeat(41), new Budget(10)), Spent);
 });

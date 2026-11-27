@@ -146,6 +146,8 @@ KNOWN_GAPS = {
         "warning_checks": {
             "coverage", "tiers", "fail-open classes", "break-glass approvals",   # what the run recorded
             "log tail",   # whether a run-set's registry range ends in log.closed
+            "label policies",   # a policy the run was decided under that the bundle doesn't carry: Go reads no bundle
+                                # with run labels (they need a 1.8 verifier)
         },
         "failed_checks": set(),
     },

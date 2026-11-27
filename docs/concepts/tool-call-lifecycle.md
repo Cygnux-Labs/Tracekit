@@ -120,8 +120,8 @@ What the verifier checks: [verification and assurance](verification.md).
 ## The RPC surface
 
 Clients and services talk to the signer over a Unix socket, loopback TCP (Windows dev mode) or HTTPS, in JSON frames:
-one per line on a socket, one per request over HTTPS. The protocol is versioned: Tracekit 1.4 speaks version 19 and
-its signer serves clients from version 15 up, so older clients keep working. A client refuses a signer that can't
+one per line on a socket, one per request over HTTPS. The protocol is versioned, and the signer serves clients from
+version 15 up, so older clients keep working ([api](../api.md) lists what each version added). A client refuses a signer that can't
 serve its version, so upgrade the signer before its clients ([deploy](../deploy.md#upgrading)).
 
 | Group | Calls |
@@ -130,6 +130,8 @@ serve its version, so upgrade the signer before its clients ([deploy](../deploy.
 | Approvals | `approval_request`, `approval_wait`, `approval_decide`, `approval_decide_on_behalf`, `approval_get`, `approval_consume`, `approval_list`, `approval_abandon`, `approval_review`, `approval_revoke`, `approval_agents`, `passkey_register` |
 | Services | `delegate_run`, `tailer_heartbeat`, `tailer_lost`, `observe_effect`, `decision_import` |
 | Content and findings | `content_get`, `content_erase`, `why_finding`, `review_finding` |
+| Grants and export | `grant_issue`, `grant_list`, `grant_revoke`, `export_run` |
+| PCM (experimental) and channels | `pcm_sign`, `pcm_grant`, `pcm_delegate`, `pcm_evidence`, `channel_open` |
 | Operators | `incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`, `response_pause`, `response_resume`, `suspend`, `unsuspend` |
 
 What the newer versions added: 17 (Tracekit 1.3) the gateway's tool-result digests for

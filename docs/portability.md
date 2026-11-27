@@ -56,6 +56,13 @@ Windows has no peer-credential call that Python exposes. Because the signer shar
 deployment's evidence is only as strong as its witness: point `--witness` at a repository or share the agent's user
 cannot rewrite (docs/witnesses.md).
 
+The Claude Code plugin's hook (`tracekit-hook` in Git Bash, `tracekit-hook.ps1` in PowerShell without it) runs only
+the Python `tracekit init` recorded, and init records one only from a uv tool or pipx install of `tracekit-ai`. On
+Windows those are uv's `%APPDATA%\uv\tools` (`%APPDATA%\uv\data\tools` where `%APPDATA%\uv\data` is, as older uv made
+it) and pipx's `%LOCALAPPDATA%\pipx\pipx\venvs` (or `~\pipx\venvs` where pipx still has it), unless `UV_TOOL_DIR` or
+`PIPX_HOME` moves them. The policy keeps the agent from writing them and the interpreters uv keeps in
+`%APPDATA%\uv\python` (`TK-D007`, `TK-D013`, `TK-A096`; [limits](limits.md)).
+
 Codex, Gemini CLI and Qwen Code (0.15.0 and later, which reads the hook's `"shell"`) run hooks through PowerShell on
 Windows (Codex through cmd.exe when PowerShell isn't found or the session has no single local environment), so
 `tracekit init` writes the interpreter's path in their hook commands bare when it needs no quotes, which both shells

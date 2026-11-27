@@ -83,6 +83,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         typed = agent_hooks.typed_line(harness, p, q) if q is not None and is_pre else None
         if typed and typed[1] != typed[2]:   # also decided as the line a shell there would read it into
             q["tool_input"]["typed_line"] = typed[1]
+        if typed:   # (typed into a terminal: with no signer answering, a fragment doesn't run; claude_code._event)
+            q["typed_text"] = typed[2]
         reason = agent_hooks._blocked(harness, p, raw, typed and typed[1]) if q is not None and is_pre else None
         if q is None:   # an event Tracekit does not record
             code = 0

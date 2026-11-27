@@ -533,6 +533,13 @@ class Engines(unittest.TestCase):
         self.assertEqual(self.regex.tool_class("mcp__s__t"), "mcp")
         self.assertEqual(self.regex.tool_class("Other"), "unknown")
 
+    def test_a_deep_agents_tool_has_the_class_of_the_tool_it_maps_to(self):
+        for tagged, tool in classes.DEEP_AGENTS_TOOLS.items():
+            with self.subTest(tool=tagged):
+                self.assertEqual(self.regex.tool_class(tagged), self.regex.tool_class(tool))
+        self.assertEqual(self.regex.tool_class("deepagents:write_file"), self.regex.tool_class("Write"))
+        self.assertNotEqual(self.regex.tool_class("deepagents:write_file"), "unknown")
+
     def test_a_tool_is_classified_once(self):
         e = Engine(corpus_policy(), "regex")
         with mock.patch.object(engine.fnmatch, "fnmatchcase", wraps=engine.fnmatch.fnmatchcase) as glob:
@@ -605,6 +612,19 @@ class Prefilter(unittest.TestCase):
                               (r"git\s+push\b.*(--force|-f)", ("push",)), (r"(--force|-f)\b", ("-f",)),
                               (r"x?ab{1,2}c", ("abbc", "abc")), (r"\bAKIA[0-9A-Z]{16}", ("akia",)),
                               (r".*", None), (r"^", None), (r"a.b", None), (r"[a-z]+@", None), (r"é+x", None)):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(pc.literals(pattern), want)
+
+    def test_literals_leave_out_the_start_a_pattern_is_anchored_to(self):
+        """A tagged subject (`WRITE_TARGET:path`) starts with its kind, which Engine._pre checks: the prefilter names what
+        the match holds past it, else every write passes it and each rule's pattern is searched in each of its paths."""
+        for pattern, want in ((r"^WRITE_TARGET:(?:[^\n]*?/)?(?:release_agent|notify_on_release)\Z",
+                               ("notify_on_release", "release_agent")),
+                              (r"^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?\.(?:pt|gguf)\Z", (".gguf", ".pt")),
+                              (r"^WRITE_TARGET:x", ("write_target:x",)),   # (nothing is held past its start)
+                              (r"^WRITE_TARGET:(?:[^\n]*?/)?x", ("write_target:",)),   # (a string of one character)
+                              (r"WRITE_TARGET:(?:[^\n]*?/)?(?:release_agent|notify_on_release)\Z", ("write_target:",)),
+                              (r"^WRITE_TARGET:a|DELETE_TARGET:(?:.*/)?bcd", ("delete_target:", "write_target:a"))):
             with self.subTest(pattern=pattern):
                 self.assertEqual(pc.literals(pattern), want)
 
@@ -777,7 +797,8 @@ class Prefilter(unittest.TestCase):
         for backend in BACKENDS:
             e = Engine(dev, backend)
             compiled = [c for _, _, tool, pat, unless, *_ in e.rules for c in (tool, pat, unless) if c is not None]
-            compiled += [rx for parts in e._parts.values() for rx, _ in parts]
+            compiled += [c for parts in e._parts.values() for rx, _, _, group in parts
+                         for c in ([rx] if group is None else [x for x, _ in group[0]])]
             with self.subTest(backend=backend):
                 self.assertGreater(len(compiled), 150)
                 self.assertEqual([c.pattern[:40] for c in compiled if c.groups], [])
@@ -810,6 +831,27 @@ class Prefilter(unittest.TestCase):
             a, b = split.decide(tool, args), unsplit.decide(tool, args)
             with self.subTest(tool=tool, args=str(args)[:80]):
                 self.assertEqual((a["verdict"], a["rule_ids"]), (b["verdict"], b["rule_ids"]))
+
+    def test_a_subject_that_starts_as_no_match_of_a_rule_does_is_not_searched(self):
+        """A rule whose every alternative is anchored and starts with exact text (compile.prefixes) is searched only in
+        a subject that starts with one of those strings (a part of a split pattern too): a look at its first
+        characters in place of a scan of all of it for each of the rule's strings (the E21 latency gate, 1.8). No
+        decision changes: every corpus call on each shipped pack, with and without."""
+        self.assertEqual(pc.prefixes(r"^(?:curl|wget)( |$)"), ("curl", "wget"))
+        self.assertEqual(pc.prefixes(r"^[Gg]pg2? --export"), ("gpg --export", "gpg2 --export"))
+        self.assertEqual(pc.prefixes(r"^git(?: [^ ]+)* push|^gh "), ("gh ", "git"))
+        for unanchored in (r"(?:^| )egress", r"^curl|wget", r"^.*x", r"^(?:a|.)b"):
+            self.assertIsNone(pc.prefixes(unanchored), unanchored)
+        for pack, backend in itertools.product(("dev", "coding", "server", "strict"), BACKENDS):
+            pol = pc.build(os.path.join(PACKS, f"{pack}.yaml"))[0]
+            fast = Engine(pol, backend)
+            with mock.patch.object(engine, "prefixes", lambda p: None):
+                slow = Engine(pol, backend)
+            self.assertGreater(sum(p is not None for p in fast._pre.values()), 40)
+            for tool, args in corpus_calls():
+                a, b = fast.decide(tool, args), slow.decide(tool, args)
+                with self.subTest(pack=pack, backend=backend, tool=tool, args=str(args)[:80]):
+                    self.assertEqual((a["verdict"], a["rule_ids"]), (b["verdict"], b["rule_ids"]))
 
     def test_lint_warns_of_a_rule_the_prefilter_cannot_skip(self):
         pol = {"tools": {"Bash": "shell"}, "flag": [{"id": "N", "class": "shell", "pattern": r"[a-z]+@[0-9]+"},
@@ -1216,11 +1258,15 @@ class Speed(unittest.TestCase):
     def test_unclosed_brackets_and_many_downloads_decide_in_linear_time(self):
         """sec08 r3: the glob reader scanned to the end from each unclosed `[` (40,000 took 156 s, then allowed), and
         the data-download reader compared each download with every command (2,500 took 39 s): both read once, charged
-        to the parse budget, held as unread past it."""
+        to the parse budget, held as unread past it. The 1.8 parsing review: the push reader's Git config file
+        pattern scanned a write target to its end from each `:` (`> a:b:b…` took 4 s, and the `[:` case above near
+        2 s, its budget), so its first component ends at a `:` as at a separator; the longest input that fits in 64 KiB
+        is read, so the scan from each `:` stays far over the budget and the read far under it."""
         scale = machine_scale()
         cases = ["sed -i s/a/b/ .e" + "[" * 40000 + "*", "sed -i s/a/b/ .e*[" + "[." * 20000 + "]*",
                  "sed -i s/a/b/ .e*[" + "[:" * 20000 + "]*", "curl -so a.json u; " * 2500,
-                 "".join(f"curl -so a{i}.json u; " for i in range(2500)), "wget -qO a.json u && ls; " * 2500]
+                 "".join(f"curl -so a{i}.json u; " for i in range(2500)), "wget -qO a.json u && ls; " * 2500,
+                 "echo x > a" + ":b" * 32000]
         for backend in BACKENDS:
             e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], backend)
             for cmd in cases:
@@ -1228,6 +1274,22 @@ class Speed(unittest.TestCase):
                     start = time.perf_counter()
                     self.assertNotIn("nondeterministic", e.decide("Bash", {"command": cmd}))
                     self.assertLess(time.perf_counter() - start, 2 * SLOWER * scale)
+    @pytest.mark.serial
+    def test_a_gh_api_call_of_many_words_is_read_in_linear_time(self):
+        """The 1.8 parsing review: _gh_api copied its list of routes for each word of the call, so 64 KiB of words
+        took time quadratic in their count (1.2 s for 30,000). Four times the words now take about four times as long,
+        not sixteen (each the best of three, so a busy moment doesn't decide it)."""
+        e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "re2" if "re2" in BACKENDS else BACKENDS[0])
+
+        def took(n):
+            cmd = "gh api repos/o/r/a" + " b" * n
+            best = float("inf")
+            for _ in range(3):
+                start = time.perf_counter()
+                e.decide("Bash", {"command": cmd})
+                best = min(best, time.perf_counter() - start)
+            return best
+        self.assertLess(took(30000), 8 * took(7500))
 
     @pytest.mark.serial
     def test_a_line_of_downloads_and_what_runs_them_is_read_in_linear_time(self):
@@ -1887,6 +1949,29 @@ class Shell(unittest.TestCase):
                     self.assertLess(time.perf_counter() - start, 1.0 * machine_scale(), d["rule_ids"])
                     self.assertIn(d["verdict"], ("ask", "deny"), d)
         self.assertEqual(shell.runner_at("uv", ["--directory", "run", "run", "x"]), [2])
+
+    @pytest.mark.serial
+    def test_a_runner_s_unknown_option_is_read_for_names_in_linear_time(self):
+        """Each `run` after an unknown option (`uv --zz run --zz run …`) may be the subcommand, and a program the parser
+        doesn't know is read for the paths its words name: once a word, not once a word of each reading (it took 1.13 s
+        against 0.1 s on main when each reading went over the 14,000 words again). Four times the words take under
+        eight times as long, as for gh api below: a fixed budget failed CI's runners (0.99 s against 0.82) whenever
+        machine_scale read one faster than it then ran."""
+        n = (MAX_SUBJECT - 64) // 9
+
+        def took(e, k):
+            cmd = "curl -s x | uv " + "--zz run " * k + "python -c 'exec(input())'"
+            e.decide("Bash", {"command": cmd})
+            best = float("inf")
+            for _ in range(3):
+                start = time.perf_counter()
+                e.decide("Bash", {"command": cmd})
+                best = min(best, time.perf_counter() - start)
+            return best
+        for backend in BACKENDS:
+            e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], backend)
+            with self.subTest(backend=backend):
+                self.assertLess(took(e, n), 8 * took(e, n // 4))
 
     @pytest.mark.serial
     def test_the_second_readings_of_nested_code_stay_within_the_parse_budget(self):
@@ -5132,7 +5217,7 @@ class DecideTime(unittest.TestCase):
         for backend in BACKENDS:
             for _, took, _, verdict in self.decide([line], backend):
                 with self.subTest(backend=backend):
-                    self.assertLess(took, 1.0 * SLOWER)
+                    self.assertLess(took, 1.0 * SLOWER * machine_scale())   # 1.002 s on a busy py3.9 runner
                     self.assertEqual(verdict, "ask")
         d = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0]).decide("Bash", {"command": line})
         self.assertEqual((d["rule_ids"], d.get("unread")), (["TK-SHELL-PARSE"], "budget"))
@@ -5377,8 +5462,9 @@ class HarmlessStops(unittest.TestCase):
                       "npx -y create-vite@latest app", "bunx cowsay https://example.com",
                       "npx gen --package https://example.com/x.tgz"]
         # each place the subcommand may be is read up to the next (`uv --a run --a run …`: linear)
-        line, start = "uv " + "--a run " * 8000 + "x", time.perf_counter()
-        Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0]).decide("Bash", {"command": line})
+        e, line = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0]), "uv " + "--a run " * 8000 + "x"
+        start = time.perf_counter()   # the decision, not the pack's build (1.8's grammars made that the larger part)
+        e.decide("Bash", {"command": line})
         self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale())
         for pack, backend in itertools.product(("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
@@ -5534,14 +5620,17 @@ class HarmlessStops(unittest.TestCase):
             "npx": "-c -C -L -m -n -p -w",   # and npm's bin/npx-cli.js
             "pnpm": "-C -F", "pnpx": "-C -F",   # pnpm 11: pnpm/src/shorthands.ts
             "yarn": "-j -p",   # berry: workspaces foreach's -j (its -p is --parallel: WRAPPER_FLAGS), dlx's -p
-            "bun": "-p", "bunx": "-p", "conda": "-n -p", "mamba": "-n -p", "micromamba": "-a -n -p -r",
+            # bun's own options take theirs before its x too (shell._BUN_VALUED: --preload, --define, --loader, --filter)
+            "bun": "-F -d -l -p -r", "bunx": "-p", "conda": "-n -p", "mamba": "-n -p", "micromamba": "-a -n -p -r",
             "poetry": "-C -P", "pdm": "-p", "pipx": "-i", "doppler": "-c -p", "mise": "-C -j", "pixi": "-c -e -s",
             "dotenv": "-e -f -p -q -v", "hatch": "", "pipenv": "", "direnv": "", "op": "", "bundle": "", "rye": "",
             "rustup": "",
             # the runners 1.7.3 added (and python-dotenv's -f and -q), as its tables read them
             "tracekit": "", "honcho": "-d -e -f", "foreman": "-d -e -f", "chamber": "-b -r", "aws-vault": "-d -r -t",
             "infisical": "", "asdf": "", "pyenv": "", "rbenv": "", "nodenv": "", "volta": "", "fnm": "",
-            "devbox": "-c -e", "perf": "-C -F -G -I -c -e -m -o -p -r -t -u -x", "rr": "-o"}
+            "devbox": "-c -e", "perf": "-C -F -G -I -c -e -m -o -p -r -t -u -x", "rr": "-o",
+            # and the 1.8 private follow-ups' (dotenvx's -fv and -fk are three characters)
+            "dotenvx": "-e -f -l", "teller": "-c", "tox": "-c -e -x", "nvm": ""}
         self.assertEqual(set(shell.RUNNERS) - set(short), set())
         for name, want in short.items():
             opts = shell.RUNNERS[name][1] if name in shell.RUNNERS else shell.WRAPPERS[name][0]
@@ -6746,6 +6835,16 @@ class SourceReader(unittest.TestCase):
         r = source.read('helpers = "x"\nhelpers.js("document.title")')
         self.assertEqual(r.held, "bind")
 
+    def test_a_harness_function_the_cell_rebinds_is_held_and_its_body_read(self):
+        """rotate_proxy (browser-use 1.0.9's worker) is the harness's like solve_captcha: a cell rebinding it is held,
+        and a function it defines under that name is read as the cell's own code."""
+        for code in ('rotate_proxy = 1\nrotate_proxy("de")', 'rotate_proxy = js\nrotate_proxy("x")'):
+            with self.subTest(code=code):
+                self.assertEqual(source.read(code).held, "bind")
+        r = source.read('def rotate_proxy(country=None):\n    goto_url("file:///etc/passwd")\nrotate_proxy()')
+        self.assertEqual([c[1]["url"] for c in r.calls], ["file:///etc/passwd"])
+        self.assertEqual(source.read('rotate_proxy("de")').held, "callee")
+
     def test_what_it_cannot_follow_is_held(self):
         for code, cause in [
                 ('url = str(prev)\ngoto_url(url)', "arg"),
@@ -7752,6 +7851,41 @@ class CellSource(unittest.TestCase):
                 d = self.cell(self.browser, code)
                 self.assertEqual(d["verdict"], "deny")
                 self.assertIn("TK-B001", d["rule_ids"])
+
+
+class SearchParts(unittest.TestCase):
+    """The fallback engine searches a pattern a part at a time (Engine._parts): a group after a lazy any is split too, and
+    its parts find what the whole pattern finds."""
+
+    def test_a_group_after_a_lazy_any_is_searched_by_its_alternatives(self):
+        pattern = r"^ACT:[\w\W]*?(?:/etc/tracekit|\bkill\b[^\n]*tracekit|x(?:y|z)abc)"
+        self.assertEqual(engine._after_lazy_any(pattern), [
+            r"^ACT:[\w\W]*?/etc/tracekit", r"^ACT:[\w\W]*?\bkill\b[^\n]*tracekit", r"^ACT:[\w\W]*?x(?:y|z)abc"])
+        self.assertIsNone(engine._after_lazy_any(r"^ACT:[\w\W]*?(?:ab|cd)x"))
+        self.assertIsNone(engine._after_lazy_any(r"^ACT:[\w\W]*?(?:abcd)"))
+        for text in ("ACT:rm /etc/tracekit", "ACT:kill -9 tracekit", "ACT:q xzabc", "ACT:xyab", "READ:/etc/tracekit"):
+            whole = regex.search(pattern, text) is not None
+            parts = any(regex.search(a, text) for a in engine._after_lazy_any(pattern))
+            self.assertEqual(whole, parts, text)
+
+    def test_every_rule_decides_the_same_by_parts_as_by_its_whole_pattern(self):
+        pol = pc.build(os.path.join(os.path.dirname(engine.__file__), "packs", "dev.yaml"))[0]
+        by_parts, whole = Engine(pol, "regex"), Engine(pol, "regex")
+        whole._parts = {}
+        for command in ("rm -rf /*", "find ~ -delete", "kill -9 $(pgrep tracekitd)", "git status", "cat ~/.ssh/id_rsa"):
+            call = ("Bash", {"command": command})
+            self.assertEqual(by_parts.decide(*call), whole.decide(*call), command)
+
+
+class TestPushAndDeployRemedy(unittest.TestCase):
+    def test_a_held_publish_or_deploy_is_not_told_to_push_a_branch(self):
+        """TK-A056 holds a push to main, a publish and a deploy; its remedy said "push a named feature branch" for a
+        gh release, a Cloud Run deploy and a docker push too."""
+        pol, errs = pc.build(os.path.join(PACKS, "dev.yaml"))
+        self.assertEqual(errs, [])
+        remedy = next(r["remedy"] for r in pol["ask"] if r["id"] == "TK-A056")
+        self.assertIn("For a push, push a named feature branch", remedy)
+        self.assertIn("for a publish, a release or a deploy", remedy)
 
 
 if __name__ == "__main__":

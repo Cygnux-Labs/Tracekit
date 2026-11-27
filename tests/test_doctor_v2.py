@@ -54,6 +54,44 @@ class E16(unittest.TestCase):
                 got = {r["id"]: r["status"] for r in e16.run_case(mutate)}
                 self.assertIn(got.get(want), ("warn", "fail"), name)
 
+    def test_whether_the_system_signer_answers(self):
+        """The acceptance test: after a re-init left the policy's AI approver without approvals.agents, the signer
+        refused to start and doctor said every row was ok. D-SIGNER-ANSWERS asks the signer itself (E16 stands in for it)."""
+        from tracekit.signer import service as svc
+        d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # a socket path short enough for macOS
+        self.addCleanup(shutil.rmtree, d, True)
+        sock = os.path.join(d, "s.sock")
+        (row,) = doctor._signer_answers(sock)
+        self.assertEqual(row["status"], "fail")
+        self.assertTrue(row["detail"].startswith(f"the signer does not answer on {sock}: "), row["detail"])
+        self.assertRegex(row["fix"], r"systemctl status|launchctl print")
+        cfg = {"data_dir": os.path.join(d, "data"), "socket": sock}
+        signer = svc.open_service(cfg)
+        servers = svc.serve(cfg, signer)
+        self.addCleanup(signer.close)
+        for srv in servers:
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        (row,) = doctor._signer_answers(sock)
+        self.assertEqual((row["status"], row["detail"]), ("ok", f"the signer at {sock} answers (Tracekit {__version__})"))
+
+    def test_a_signer_that_answers_otherwise_is_said_as_it_is(self):
+        """Review: a signer that answered another protocol, or refused doctor's identity, was said not to answer, with
+        a fix to start it."""
+        from tracekit.sdk import client as sdk
+        from tracekit.signer.rpc_schema import RPCError
+        for raised, said, fix in (
+                (sdk.Incompatible("speaks 28", older=True), "an older signer still runs at /s.sock, from before the "
+                 "upgrade (speaks 28)", "restart it (Linux: sudo systemctl restart tracekit-signer"),
+                (sdk.Incompatible("speaks 30"), "the signer at /s.sock runs a newer Tracekit than this doctor (speaks 30)",
+                 f"upgrade {install.OPT} to the signer's release"),
+                (RPCError("forbidden", "uid:7 may not call status"), "the signer at /s.sock answers, but refused this "
+                 "identity's status call (forbidden: uid:7 may not call status)", "run doctor as root")):
+            with self.subTest(said), mock.patch.object(sdk.Client, "status", side_effect=raised):
+                (row,) = doctor._signer_answers("/s.sock")
+                self.assertEqual((row["status"], row["detail"]), ("fail", said))
+                self.assertTrue(row["fix"].startswith(fix), row["fix"])
+
     def test_malformed_agent_settings_are_results_not_crashes(self):
         def bad(shape):
             def mutate(L):
@@ -89,6 +127,70 @@ class E16(unittest.TestCase):
             L.kw["agent"] = types.SimpleNamespace(**dict(vars(e16.AGENT), pw_uid=os.getuid()))
         got = {r["id"]: r for r in e16.run_case(agent_is_me)}
         self.assertEqual(got["D-PROCESS-BOUNDARY"]["status"], "fail")
+
+    def test_the_reviewer_is_probed_as_its_own_uid(self):
+        """Where doctor can act as the reviewer (root), it tries the keys as that uid: what the modes and ACLs it reads
+        don't show (here, a probe that can read one key) fails D-REVIEWER-USER."""
+        import pwd
+        real, uid = pwd.getpwuid, e16.REVIEWER_UID
+        reviewer = types.SimpleNamespace(pw_uid=uid, pw_name="e16-reviewer", pw_gid=uid, pw_dir="/nonexistent")
+
+        def as_the_reviewer(L):
+            reads = lambda pw, targets: [t for t in targets if pw.pw_uid == uid and t[0].endswith("log.key")]
+            L.patches = [p for p in L.patches if getattr(p, "attribute", None) != "agent_access"] + [
+                mock.patch.object(doctor, "agent_access", reads),
+                mock.patch("pwd.getpwuid", lambda n: reviewer if n == uid else real(n))]
+        got = {r["id"]: r for r in e16.run_case(as_the_reviewer)}["D-REVIEWER-USER"]
+        self.assertEqual((got["status"], got["detail"]), ("fail", f"approvals.agents: uid:{uid} can read "
+                                                                    "<run>/data/keys/log.key"))
+        got = {r["id"]: r for r in e16.run_case(None)}["D-REVIEWER-USER"]   # no such user here: nothing to probe
+        self.assertEqual(got["status"], "ok")
+
+
+class BreakGlassStale(unittest.TestCase):
+    ON_CALL = {"approvers": ["uid:502"], "break_glass": ["uid:0", "group:corp/oncall"]}
+
+    def row(self, approvals, replaced=(), profile="system"):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        client_json = os.path.join(d, "client.json")
+        with open(client_json, "w") as f:
+            json.dump({"mode": "system", "replaced_approvers": list(replaced)}, f)
+        got = doctor.v2_checks({"data_dir": d, "approvals": approvals}, profile, settings="none", client_json=client_json)
+        return {r["id"]: r for r in got}.get("D-BREAK-GLASS-STALE")
+
+    def test_a_replaced_approver_that_keeps_break_glass_or_agents_is_named(self):
+        for approvals in ({**self.ON_CALL, "break_glass": ["uid:0", "uid:501"]},
+                          {**self.ON_CALL, "agents": ["uid:501"]}):
+            with self.subTest(approvals=approvals):
+                row = self.row(approvals, ["uid:501"])
+                self.assertEqual(row["status"], "warn")
+                self.assertIn("uid:501", row["detail"])
+                self.assertIn("remove it from approvals.break_glass in signer.yaml, or add it as an approver", row["fix"])
+
+    def test_the_documented_on_call_group_with_no_replaced_approver_is_ok(self):
+        self.assertEqual(self.row(self.ON_CALL)["status"], "ok")
+
+    def test_a_replaced_approver_removed_from_break_glass_or_made_an_approver_again_is_ok(self):
+        self.assertEqual(self.row(self.ON_CALL, ["uid:501"])["status"], "ok")
+        self.assertEqual(self.row({"approvers": ["uid:501"], "break_glass": ["uid:0", "uid:501"]}, ["uid:501"])["status"],
+                         "ok")
+
+    def test_dev_mode_has_no_such_row(self):
+        self.assertIsNone(self.row({"approvers": ["uid:502"], "break_glass": ["uid:501"]}, ["uid:501"], "dev"))
+
+    def test_replaced_approvers_that_arent_a_list_of_names_read_as_none(self):
+        """A number raised TypeError out of doctor, and a string was read a character at a time."""
+        for bad in (5, "uid:501", [["uid:501"]], [None, 7]):
+            with self.subTest(bad=bad):
+                d = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, d, True)
+                client_json = os.path.join(d, "client.json")
+                with open(client_json, "w") as f:
+                    json.dump({"mode": "system", "replaced_approvers": bad}, f)
+                got = doctor.v2_checks({"data_dir": d, "approvals": {**self.ON_CALL, "break_glass": ["uid:0", "uid:501"]}},
+                                       "system", settings="none", client_json=client_json)
+                self.assertEqual({r["id"]: r for r in got}["D-BREAK-GLASS-STALE"]["status"], "ok")
 
 
 class CodingAgentHooks(unittest.TestCase):
@@ -289,6 +391,86 @@ class CodingAgentHooks(unittest.TestCase):
                     doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=doctor.FAIL: got.setdefault(
                         rid, doctor.OK if ok else bad), {harness: path}, False, self.d)
                     self.assertEqual(got["D-HOOKS-TIMEOUT"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
+
+    def test_a_codebuddy_settings_file_that_turns_every_hook_off_is_named(self):
+        """CodeBuddy Code runs no hook while `disableAllHooks` is set. Its bundle (2.183.0, dist/codebuddy.js,
+        `settingsDisableAllHooks`) reads <home>/settings.json, the project's .codebuddy/settings.json and
+        settings.local.json beside it, keeps the last one that sets the key, and returns `true === value`, so a later
+        file's false lifts an earlier true. Doctor read none of them."""
+        home, proj = os.path.join(self.d, "home"), os.path.join(self.d, "proj")
+        user, project = agent_hooks.config_path("codebuddy", home=home), agent_hooks.config_path("codebuddy", proj)
+        local = os.path.join(os.path.dirname(project), "settings.local.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codebuddy", path=user, v2=True)
+
+        def row():
+            # several checks report under D-HOOKS-EVENT, so take the strictest rather than the first
+            rank, worst = {doctor.OK: 0, doctor.INFO: 1, doctor.WARN: 2, doctor.FAIL: 3}, {}
+            with mock.patch("os.getcwd", return_value=proj):
+                doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=doctor.FAIL: worst.__setitem__(
+                    rid, max(worst.get(rid, (doctor.OK, "")), (doctor.OK if ok else bad, detail),
+                             key=lambda r: rank[r[0]])), {"codebuddy": user}, False, home)
+            return worst["D-HOOKS-EVENT"]
+
+        self.assertEqual(row()[0], doctor.OK, "nothing turns them off yet")
+        os.makedirs(os.path.dirname(project), exist_ok=True)
+        for f, value, want in ((project, True, doctor.WARN), (local, True, doctor.WARN), (local, False, doctor.OK)):
+            with open(f, "w") as out:
+                json.dump({"disableAllHooks": value}, out)
+            with self.subTest(file=os.path.basename(f), value=value):
+                status, detail = row()
+                self.assertEqual(status, want, detail)
+                if want == doctor.WARN:
+                    self.assertIn(f, detail)
+        # system mode fails rather than warns, as Claude Code's row does
+        with open(local, "w") as out:
+            json.dump({"disableAllHooks": True}, out)
+        with mock.patch("os.getcwd", return_value=proj):
+            prod = {}
+            rank = {doctor.OK: 0, doctor.INFO: 1, doctor.WARN: 2, doctor.FAIL: 3}
+            doctor._harness_hook_checks(
+                lambda rid, ok, detail, fix, bad=doctor.FAIL: prod.__setitem__(
+                    rid, max(prod.get(rid, doctor.OK), doctor.OK if ok else bad, key=lambda s: rank[s])),
+                {"codebuddy": user}, True, home)
+        self.assertEqual(prod["D-HOOKS-EVENT"], doctor.FAIL, "system mode: FAIL, not WARN")
+        # the reader returns true only for a literal true, and a later null does not lift an earlier true
+        for value, want in (("false", doctor.OK), (1, doctor.OK), ([], doctor.OK), ({}, doctor.OK),
+                            (None, doctor.WARN)):
+            with open(local, "w") as out:
+                json.dump({"disableAllHooks": value if value is not None else True}, out)
+            if value is None:   # a later null: the earlier file's true stands
+                with open(project, "w") as out:
+                    json.dump({"disableAllHooks": True}, out)
+                with open(local, "w") as out:
+                    json.dump({"disableAllHooks": None}, out)
+            with self.subTest(value=value):
+                self.assertEqual(row()[0], want, f"disableAllHooks: {value!r}")
+
+    def test_a_codebuddy_config_dir_naming_another_folder_is_named(self):
+        """Init writes the file `$CODEBUDDY_CONFIG_DIR` names when it runs; a CodeBuddy Code that starts with another
+        value reads another file, so Tracekit's hooks don't run and nothing says so. Doctor reads the variable in its
+        own environment, so it compares the folder holding the hooks with the one the variable names."""
+        home, proj = os.path.join(self.d, "home"), os.path.join(self.d, "proj")
+        user = agent_hooks.config_path("codebuddy", home=home)
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codebuddy", path=user, v2=True)
+
+        def said():
+            rows = []
+            with mock.patch("os.getcwd", return_value=proj):
+                doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append(detail),
+                                            {"codebuddy": user}, False, home)
+            return [d for d in rows if "CODEBUDDY_CONFIG_DIR" in d]
+
+        self.assertEqual(said(), [], "unset: nothing to compare")
+        elsewhere = os.path.join(self.d, "elsewhere")
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": elsewhere}):
+            got = said()
+        self.assertEqual(len(got), 1, got)
+        self.assertIn(elsewhere, got[0])
+        self.assertIn(user, got[0])
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": os.path.dirname(user)}):
+            self.assertEqual(said(), [], "the folder holding the hooks is not a mismatch")
 
     def test_a_codebuddy_pre_tool_hook_that_runs_after_tracekits_is_named(self):
         """#761's review: CodeBuddy Code runs the user's settings' PreToolUse hooks, then the project's
@@ -631,6 +813,21 @@ class ClaudeHooksDecideEveryCall(unittest.TestCase):
                                                plugin=(self.local, install.PLUGIN), sandbox_settings=[self.local])
                    if r["id"] == "D-HOOKS-EVENT")
         self.assertEqual(got["status"], "warn")
+
+    def test_dev_mode_names_a_settings_env_that_moves_the_hook(self):
+        """The 1.8 parsing review: Claude Code gives the hooks its settings' env, and in dev mode doctor read none of
+        it, so a settings file that set HOME, XDG_DATA_HOME, TRACEKIT_PYTHON or TRACEKIT_SIGNER (sending the hook's
+        calls to another signer or Python) passed."""
+        def env_row(local):
+            self.row(local=local)
+            return next(r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=self.settings,
+                                                    sandbox_settings=[self.settings, self.local]) if r["id"] == "D-HOOK-ENV")
+        self.assertEqual(env_row(None)["status"], "ok")
+        self.assertEqual(env_row({"env": {"NODE_OPTIONS": "x"}})["status"], "ok")
+        for name in ("HOME", "XDG_DATA_HOME", "TRACEKIT_PYTHON", "TRACEKIT_SIGNER"):
+            got = env_row({"env": {name: "/tmp/elsewhere"}})
+            self.assertEqual(got["status"], "warn", name)
+            self.assertIn(f"{self.local} sets {name}", got["detail"])
 
     def test_dev_mode_reads_disable_all_hooks_in_the_file_init_recorded(self):
         """The dev layers left out the hooks' own file (init's record of another CLAUDE_CONFIG_DIR), so a
@@ -1570,7 +1767,7 @@ class FirstDay(unittest.TestCase):
             with self.subTest(engine=engine_name, wheel_expected=wheel_expected), \
                     mock.patch.object(
                         service, "load_policy",
-                        return_value=types.SimpleNamespace(engine=engine_name)
+                        return_value=types.SimpleNamespace(engine=engine_name, policy={}, rules=[])
                     ), \
                     mock.patch.object(
                         doctor, "_google_re2_wheel_expected", return_value=wheel_expected
@@ -1992,16 +2189,70 @@ class Report(unittest.TestCase):
         with mock.patch.object(doctor, "main", return_value=2) as main:
             self.assertEqual(cli.main(["doctor", "--json", "--config", "/etc/x.yaml"]), 2)
             cli.main(["doctor", "--k8s", "--manifests", "/m", "--issuer-key", "alias/ca"])
-        self.assertEqual(main.call_args_list, [mock.call("/etc/x.yaml", True, False, None, None),
-                                               mock.call(None, False, True, "/m", "alias/ca")])
+            cli.main(["doctor", "--reviewer", "/r/reviewer.yaml"])
+        self.assertEqual(main.call_args_list, [mock.call("/etc/x.yaml", True, False, None, None, None),
+                                               mock.call(None, False, True, "/m", "alias/ca", None),
+                                               mock.call(None, False, False, None, None, "/r/reviewer.yaml")])
 
 
 class Detect(unittest.TestCase):
     def collect(self, sc, config=None):
         with mock.patch.object(doctor.client, "system_config", return_value=sc), \
                 mock.patch.object(install, "v1_results", return_value=[doctor.result("D-V1-X", "ok", "v1")]), \
+                mock.patch.object(doctor, "_signer_answers", return_value=[]), \
                 mock.patch.object(doctor, "v2_checks", return_value=[doctor.result("D-V2", "ok", "v2")]) as v2:
             return [r["id"] for r in doctor.collect(config)], v2
+
+    def test_collect_adds_the_signer_answers_row_in_system_mode(self):
+        """The wiring: collect() runs _signer_answers with the socket client.json names."""
+        row = doctor.result("D-SIGNER-ANSWERS", "fail", "no answer", "look")
+        with mock.patch.object(doctor.client, "system_config", return_value={
+                "signer": "/run/tracekit-signer/signer.sock", "hooks": {"user": "nobody-e16"}}), \
+                mock.patch.object(install, "v1_results", return_value=[]), \
+                mock.patch.object(doctor, "v2_checks", return_value=[]), \
+                mock.patch.object(doctor, "_signer_answers", return_value=[row]) as asked:
+            self.assertEqual([r["id"] for r in doctor.collect()], ["D-SIGNER-ANSWERS"])
+        asked.assert_called_once_with("/run/tracekit-signer/signer.sock")
+
+    def test_the_signer_check_closes_its_client_reads_a_refusal_as_one_and_gives_up_on_a_stall(self):
+        from tracekit.signer.rpc_schema import RPCError
+        with mock.patch("tracekit.sdk.client.Client") as c:
+            doctor._signer_answers("/s")
+        c.return_value.close.assert_called_once_with()
+        with mock.patch("tracekit.sdk.client.Client") as c:
+            c.return_value.status.side_effect = RPCError("forbidden", "not yours")
+            (row,) = doctor._signer_answers("/s")
+        self.assertIn("refused this identity's status call", row["detail"])
+        self.assertNotIn("does not answer", row["detail"])
+        with mock.patch.object(doctor.sys, "platform", "darwin"), mock.patch("tracekit.sdk.client.Client") as c:
+            c.return_value.status.side_effect = OSError("gone")
+            (row,) = doctor._signer_answers("/s")
+        self.assertIn("sudo launchctl print", row["fix"])
+        self.assertIn("sudo tail", row["fix"])
+        d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "s.sock")
+        import socket as socketlib
+        srv = socketlib.socket(socketlib.AF_UNIX)
+        srv.bind(path)
+        srv.listen(4)   # accepts into its backlog and never answers
+        self.addCleanup(srv.close)
+        (row,) = doctor._signer_answers(path, wait=0.5)
+        self.assertEqual(row["status"], "fail")
+        self.assertIn("did not answer within 0.5 s", row["detail"])
+
+    def test_a_signer_that_does_not_answer_fails_with_where_to_look(self):
+        """System mode had no check that the signer runs: a crashed one (the re-init crash) left doctor green."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        (row,) = doctor._signer_answers(os.path.join(d, "signer.sock"))
+        self.assertEqual((row["id"], row["status"]), ("D-SIGNER-ANSWERS", "fail"))
+        self.assertIn("does not answer", row["detail"])
+        self.assertRegex(row["fix"], r"systemctl status|launchctl print")
+        self.assertEqual(doctor._signer_answers(None), [])
+        with mock.patch("tracekit.sdk.client.Client") as c:
+            self.assertEqual(doctor._signer_answers("/s")[0]["status"], "ok")
+        c.return_value.status.assert_called_once_with({})
 
     def test_v1_system_mode(self):
         self.assertEqual(self.collect({"socket": "/var/lib/tracekit/tracekitd.sock"})[0], ["D-V1-X"])
@@ -2223,7 +2474,7 @@ class CodexSandbox(unittest.TestCase):
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_a_config_too_deep_to_parse_is_unreadable_not_a_crash(self):
-        got = self.check("a = " + "[" * 5000 + "]" * 5000)
+        got = self.check("a = " + TOO_DEEP_JSON)
         self.assertEqual(got["status"], "info")
         self.assertIn("can't check Codex's approval settings", got["detail"])
 
@@ -2540,7 +2791,7 @@ class HostileSettings(unittest.TestCase):
                 gemini_settings=[fifo, dev], harnesses={"codex": os.path.join(d, "hooks.json"),
                                                         "gemini": fifo})), daemon=True)
             t.start()
-            t.join(5)
+            t.join(30)   # a read of the FIFO never returns; doctor's first run takes 2 s on a laptop, over 5 on CI's runners
         self.assertFalse(t.is_alive(), "doctor blocked on the FIFO")
         got = {r["id"]: r for r in out}
         self.assertEqual(got["D-HOOKS-PRESENT"]["status"], "warn")
@@ -2570,6 +2821,15 @@ class CodingAgentReasoning(unittest.TestCase):
             self.assertIn("tracekit init --dev --v2 --agent codex", got["fix"])
         self.assertEqual(self.check("codex", {"config.toml": 'model_reasoning_summary = "auto"\n'})["status"], "ok")
         self.assertEqual(self.check("codex", {}, vault=False)["status"], "ok")
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_codex_config_that_wont_parse_is_not_called_unset(self):
+        for text in ("a = [\n", "a = " + TOO_DEEP_JSON):
+            with self.subTest(text=text[:8]):
+                got = self.check("codex", {"config.toml": text})
+                self.assertEqual(got["status"], "info")
+                self.assertIn("can't check Codex's reasoning summaries", got["detail"])
+                self.assertNotIn("unset", got["detail"])
 
     def test_gemini_thoughts_turned_off_in_model_configs_warn(self):
         off = {"modelConfigs": {"overrides": [{"match": {"model": "gemini-3-pro"}, "modelConfig": {
@@ -2933,6 +3193,34 @@ class DevProfile(unittest.TestCase):
         self.assertEqual(got["D-HOOKS-PRESENT"], "warn")
         self.assertEqual(got["D-DURABILITY"], "ok")
         self.assertNotIn("D-AGENT-PRIV", got)
+
+    def test_an_sdk_only_dev_setup_is_not_warned_about_missing_hooks(self):
+        """tracekit.instrument() needs no hooks; D-HOOKS-PRESENT warned with `tracekit init --dev --v2` anyway when
+        init never ran. Once init ran (and left no hooks), it is the warning again."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.chmod(d, 0o700)
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/local/bin/claude"):
+            for init_run, status in ((False, "info"), (True, "warn")):
+                got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev", settings=os.path.join(d, "none"),
+                                                            init_run=init_run)}
+                self.assertEqual(got["D-HOOKS-PRESENT"]["status"], status)
+                if not init_run:
+                    self.assertIn("only SDK agents", got["D-HOOKS-PRESENT"]["detail"])
+                    self.assertIn("tracekit init --dev --v2", got["D-HOOKS-PRESENT"]["fix"])
+
+    def test_laptop_system_mode_without_a_deployed_public_witness_is_a_warning_with_the_reason(self):
+        """A fresh system install failed D-WITNESS-CONFIGURED (exit 1) though init says the public witness isn't
+        deployed, and the dev doctor said info. A server's doctor (no system client config) still fails."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.chmod(d, 0o700)
+        with mock.patch.object(public_witness, "configured", return_value=False):
+            system = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, client_json=client.SYSTEM_CONFIG)}
+            server = {r["id"]: r for r in doctor.v2_checks({"data_dir": d})}
+        self.assertEqual(system["D-WITNESS-CONFIGURED"]["status"], "warn")
+        self.assertIn("isn't deployed yet", system["D-WITNESS-CONFIGURED"]["fix"])
+        self.assertEqual(server["D-WITNESS-CONFIGURED"]["status"], "fail")
 
     def test_a_data_dir_not_made_yet_is_checked_where_it_will_be(self):
         """#515: doctor no longer makes the dev data dir, so its file system is the nearest existing parent's."""

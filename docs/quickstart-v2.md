@@ -68,7 +68,10 @@ With none of them installed it warns and records nothing: record your agent's ca
 Each tool call is decided before it runs (`allow`, `deny` or `ask`) and recorded after. A denied call reaches the model
 as a refusal and the agent goes on. A held call (`ask`) waits for a person: run `tracekit approvals list` in another
 terminal to see it, and `tracekit approvals approve <id>` to let it run once ([approve from another
-terminal](#approve-from-another-terminal)). While it waits, an SDK agent prints nothing: it just seems to stop.
+terminal](#approve-from-another-terminal)). While it waits, most SDK agents print nothing: they just seem to stop. The
+OpenAI Agents SDK doesn't wait: `Runner.run_sync` returns at once with `final_output` None and `result.interruptions`, and
+at exit the process prints each held approval's id with its approve and reject commands. Resume it once a person has
+decided: [the OpenAI Agents quickstart](quickstarts/openai-agents.md#resume-a-held-call-under-instrument).
 
 Claude Code: `tracekit init --dev --v2` instead ([the Claude Code quickstart](quickstarts/claude-code.md)).
 TypeScript: `const tk = await instrument()` from `@cygnuxlabs/tracekit`, then pass `tk.ai` (Vercel AI SDK) or
@@ -204,7 +207,8 @@ data dir, one per `HOME`. It listens on a Unix socket in a private runtime dir; 
 dir (macOS's `/tmp` fallback for a long `HOME`, Linux's `$XDG_RUNTIME_DIR`), each gets its own signer, the second in a
 sibling dir named after its data dir. `TRACEKIT_RUNTIME_DIR` sets that dir; one too long for a socket path (macOS caps
 them at 104 bytes) gives way to a short private dir of its own, `/tmp/tk-<uid>.<12 hex>`, which `tracekit status`
-names. On Windows it listens on a loopback TCP port instead,
+names. The dir must be yours with mode 0700: `tracekit init --dev --v2` refuses one that isn't (`chmod 700 <dir>`)
+before it writes hooks, as every hook would block its calls. On Windows it listens on a loopback TCP port instead,
 and publishes the port and a token in `%LOCALAPPDATA%\tracekit\run\endpoint.json`, which only you can read. Each side
 proves it holds the token before any request is answered.
 

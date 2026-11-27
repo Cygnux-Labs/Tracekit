@@ -93,7 +93,7 @@ class Translate(unittest.TestCase):
         self.assertEqual(call["policy"], {"decision": "deny", "reasons": ["TK-N001", "TK-S001", "TK-NEW"], "flags": []})
         self.assertEqual(call["v2"], {"type": "policy.decision", "run_seq": 2, "tool_use_id": "c3", "decision": "deny",
                                       "args_commitment": "hmac-sha256:ab", "policy_hash": SERVER_HASH,
-                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 5, "flag": 3},
+                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 5, "flag": 6},
                                       "secs": {"TK-N001": "deny", "TK-S001": "deny"}, "rules": [
                                           {"id": "TK-N001", "reason": "request to an internal address"},
                                           {"id": "TK-S001", "reason": "cloud metadata service",
@@ -231,6 +231,27 @@ class Translate(unittest.TestCase):
                          {"bytes_out": 128, "bytes_in": 256, "connections": 1,
                           "first_ts": "2026-10-10T17:00:03.000000Z", "last_ts": "2026-10-10T17:00:05.000000Z"})
 
+    def test_a_model_turn_carries_the_time_its_request_was_signed_only_when_the_gateway_signed_both(self):
+        """The LLM gateway signs a request and its response under one exchange id (source "gateway", which only the signer stamps, for a gateways
+        identity): the turn's start is recorded. A client can sign a model_event under any id, so its request says nothing of when the model was asked."""
+        usage = {"input_tokens": 5, "output_tokens": 2}
+
+        def turn(request_source, response_source):
+            request = v2rec(1, "model.exchange", {"phase": "request", "exchange_id": "x1", "model": "m"}, source=request_source)
+            request["event"]["ts"] = "2026-01-01T00:00:01.000000Z"
+            later = v2rec(2, "model.exchange", {"phase": "response", "exchange_id": "x1", "model": "m", "usage": usage}, source=response_source)
+            later["event"]["ts"] = "2026-01-01T00:00:03.500000Z"
+            tr = view.Translator(SERVER)
+            self.assertEqual(tr.feed(request), [])
+            [row] = [r for r in tr.feed(later) if r["event"] == "tk_model"]
+            return row
+        row = turn("gateway", "gateway")
+        self.assertEqual(row["ts"] - row["started"], 2.5)
+        for sources in (("sdk", "sdk"), ("sdk", "gateway"), ("gateway", "sdk"), ("hook", "hook")):   # an agent's request, or its response, is not the gateway's
+            self.assertNotIn("started", turn(*sources), sources)
+        later = v2rec(2, "model.exchange", {"phase": "response", "exchange_id": "x1", "model": "m", "usage": usage}, source="gateway")
+        self.assertNotIn("started", [r for r in view.Translator(SERVER).feed(later) if r["event"] == "tk_model"][0])   # no request seen
+
     def test_holds_and_approvals_are_their_own_rows_in_words(self):
         rows = self.feed(
             v2rec(1, "policy.decision", {"tool_use_id": "c6", "tool": "create_refund", "decision": "ask",
@@ -262,7 +283,45 @@ class Translate(unittest.TestCase):
                          ("APPROVE", "APPROVAL CONSUMED · create_refund", "c6"))
         self.assertNotIn("{", "".join(r.get("text", "") for r in rows))   # no record JSON in place of words
 
-    def test_live_constraints_are_rows_and_head_the_run_review(self):
+    def test_run_labels_are_rows_in_words(self):
+        rows = self.feed(v2rec(1, "run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                                                "source": 0}),
+                         v2rec(2, "run.label", {"label": "secrets_access", "action": "clear", "by": "person",
+                                                "identity": "uid:7", "person": "alice", "reason": "test values"}),
+                         v2rec(3, "run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                                                "inherited": {"run_id": "r0", "run_seq": 4}}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"]) for r in rows],
+                         [("HOLD", "med", "RUN LABEL · secrets_access"),
+                          ("HOLD", "info", "RUN LABEL CLEARED · secrets_access"),
+                          ("HOLD", "med", "RUN LABEL · secrets_access")])
+        self.assertEqual([r["text"] for r in rows], [
+            "set by this run's record 0: a later call a run condition reads it for is held for a person (recorded "
+            "only, under a rule in shadow)",
+            'by alice · "test values"',
+            "inherited from run r0, of the same requester: a later call a run condition reads it for is held for a "
+            "person (recorded only, under a rule in shadow)"])
+
+    def test_a_self_cleared_label_is_a_warning(self):
+        # a dev signer's own user cleared it: whom the agent runs as, so it may have been the agent
+        rows = self.feed(v2rec(1, "run.label", {"label": "secrets_access", "action": "clear", "by": "person",
+                                                "identity": "uid:501", "person": "uid:501", "self_cleared": True}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"]) for r in rows],
+                         [("HOLD", "med", "RUN LABEL SELF-CLEARED · secrets_access")])
+        self.assertIn("the run's own user on a dev signer", rows[0]["text"])
+
+    def test_a_run_writer_is_a_row_in_words(self):
+        rows = self.feed(v2rec(1, "run.writer", {"identity": "uid:990777", "stream": "s2", "gateway": True}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"], r["text"]) for r in rows],
+                         [("SIGNER", "info", "RUN WRITER · uid:990777",
+                           "writes stream s2 through a gateway: the labels this run carries are its as well")])
+
+    def test_a_rule_in_shadow_reads_as_the_hook_says_it(self):
+        # the page and tracekit report: noted, nothing blocked (labels.noted's words), for a rule in shadow only
+        dev = policy_compile.build(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "dev.yaml"))[0]
+        reasons = view.policy_reasons()[policy_compile.policy_hash(dev)]
+        self.assertEqual(reasons["TK-Q001"]["reason"], "noted: this sends data off the machine after the session read a "
+                         "secret. Nothing is blocked in 1.8; it's in the record.")
+        self.assertEqual(reasons["TK-F013"]["reason"], "egress")
         recs = [v2rec(1, "constraint.added", {"kind": "keep_away", "salt_id": "a" * 32,
                                               "object_commitment": "hmac-sha256:" + "b" * 64}),
                 v2rec(2, "constraint.added", {"kind": "no_push"}),
@@ -1905,6 +1964,22 @@ class View(unittest.TestCase):
         self.assertEqual(store.root, other)
         self.assertIn("start with --allow-program", out)
 
+    def test_a_block_is_one_alert_not_the_signed_record_and_the_why_import_of_it(self):
+        """ALERTS read "6 high" for 3 blocked calls: each block was the signer's BLOCKED row and the why import's "was
+        blocked by Tracekit policy" alert of the same call."""
+        run_id = self.finished_run()
+        why_dir = ts.tmpdir(self)
+        feed = store_feed(self, {"data_dir": self.d}, on_run=functools.partial(view.mirror_run, why_dir))
+        self.report(feed, run_id)
+        wait_for(lambda: len(os.listdir(why_dir)) == 1, 15)
+        store = Store(why_dir, out=feed)
+        self.assertTrue([r for r in self.rows(feed, run_id) if r.get("v2", {}).get("decision") == "deny"])
+        self.assertEqual([a["title"] for a in store.workspace()["alerts"] if "blocked" in a["title"]], [])
+        with feed.lock:   # a deny the live view no longer holds is shown by the why alert alone
+            feed.records[:] = [r for r in feed.records if r.get("v2", {}).get("decision") != "deny"]
+        self.assertEqual([a["title"] for a in store.workspace()["alerts"] if "blocked" in a["title"]],
+                         ["rm was blocked by Tracekit policy"])
+
     def test_a_store_with_no_why_logs_still_gets_a_graph_of_each_run_with_its_decisions(self):
         run_id = self.finished_run()
         why_dir = ts.tmpdir(self)
@@ -2407,13 +2482,37 @@ class WhyLive(WhyServer):
         self.assertEqual([r["tool_name"] for r in rows if r["event"] == "PreToolUse"],
                          [a["tool"] for a in run.of_type("action")])   # each event on the tape once
 
+    def test_a_run_written_once_watch_returns_is_announced_however_slow_the_first_scan(self):
+        """watch() indexes the runs there already are silently: a run written after it returns is announced, with its
+        alerts, even when that first scan was slow (a loaded CI runner)."""
+        store = Store(os.path.join(self.tmp, "late"))
+        scan = store.scan
+
+        def slow_first(announce=True, quiet=()):
+            if not store._stat:
+                time.sleep(0.5)
+            scan(announce, quiet)
+        with mock.patch.object(store, "scan", slow_first):
+            store.watch()
+            self.addCleanup(store.stop)
+            SYSTEM.run(seed=0, out_dir=store.root, run_id="late-0")
+            self.assertTrue(wait_for(lambda: any(r["why"].get("finished") for r in store.out.records)))
+        highs = [a for r in store.out.records for a in r["why"]["alerts"] if a["severity"] == "high"]
+        self.assertEqual(len(highs), 1)
+
     def test_stream_announces_ingested_runs(self):
         msgs, _, t = self.stream()
-        SYSTEM.run(seed=0, run_id="remote-live", sink=HttpSink(self.base, TOKEN))
+
+        class FirstAnnounced(HttpSink):   # the rest of the run waits until its first batch is announced
+            def flush(self):
+                super().flush()
+                wait_for(lambda: msgs)
+
+        SYSTEM.run(seed=0, run_id="remote-live", sink=FirstAnnounced(self.base, TOKEN))
         t.join(10)
         self.assertEqual(msgs[0]["run_id"], "remote-live")
         # announced while the run is live, not only at its end: a scan takes every batch that arrived since the last
-        # one, so how many messages a run gets depends on timing (3 or more alone, 2 under a parallel suite's load)
+        # one, so on a loaded runner one scan could take the whole run; the sink above makes the first scan see part
         self.assertFalse(msgs[0]["finished"])
         self.assertTrue(msgs[-1]["finished"])
         highs = [a for m in msgs for a in m["alerts"] if a["severity"] == "high"]
@@ -2641,7 +2740,7 @@ class Pages(unittest.TestCase):
         for row in ('data-run="" tabindex="0"', 'data-run="${esc(r.id)}" tabindex="0"',
                     'data-i="${esc(row.i)}" tabindex="0"', 'data-al="${esc(al.i)}" tabindex="0"'):
             self.assertIn(row, page)
-        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],'
+        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-wf][tabindex],[data-wfl][tabindex],'
                       '[data-al][tabindex],[data-grp][tabindex],[data-orun][tabindex],[data-ingrp][tabindex]")) e.target.click();', page)
 
 
@@ -2677,9 +2776,9 @@ class LiveRuns(unittest.TestCase):
         """A StoreFeed the test refreshes itself (no watch thread); `verdicts(run_id)`: each check's answer."""
         self.checks, real = [], view.check
 
-        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None, policy_dir=None):
             if reader is not self.fake:
-                return real(reader, tenant, run_id, note, trust, out, memo, kept)
+                return real(reader, tenant, run_id, note, trust, out, memo, kept, policy_dir)
             self.checks.append(run_id)
             self.now[0] += 2   # each check takes 2 s
             rep, code, text = verdicts(run_id)
@@ -2868,7 +2967,7 @@ class LiveRuns(unittest.TestCase):
                      for i, r in enumerate("abc")}   # c the newest: checked first
         feed, fake, given = self.feed(lambda run_id: VERIFIED), view.check, []
 
-        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None, policy_dir=None):
             given.append((run_id, dict(kept)))
             got = fake(reader, tenant, run_id, note, trust, out, memo)
             kept.update(data=b"x" * 40)   # what it verified
@@ -2888,7 +2987,7 @@ class LiveRuns(unittest.TestCase):
                      for i, r in enumerate("ab")}   # b the newest: checked first, then a
         feed, fake = self.feed(lambda run_id: VERIFIED), view.check
 
-        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None, policy_dir=None):
             got = fake(reader, tenant, run_id, note, trust, out, memo)
             kept.update(data=b"x" * (400 if run_id == "a" else 40))   # a alone is past the cap
             return got
@@ -3070,6 +3169,7 @@ class LiveRuns(unittest.TestCase):
         self.assertTrue(wait_for(lambda: set(os.listdir(why)) == live, 10), (sorted(os.listdir(why)), sorted(live)))
         store.scan(announce=False)
         self.assertEqual(set(store._cache), {os.path.join(why, n) for n in live})
+        self.assertEqual(set(feed.signed_runs), set(feed.latest))   # the join's records: the runs on the live view
 
     def test_a_clock_stepped_back_still_checks_a_run_again(self):
         """RECHECK_S and BACKOFF were timed by the wall clock: after it stepped back (an NTP step, a manual change), an
@@ -3096,6 +3196,7 @@ class LiveRuns(unittest.TestCase):
         feed = self.feed(lambda run_id: verdicts.pop(0))
         self.refresh(feed)
         rows = len(feed.records)
+        self.assertEqual({k[1]: len(v) for k, v in feed.signed_runs.items()}, {"r1": len(self.recs["r1"])})
         self.now[0] += view.RECHECK_S
         self.refresh(feed)
         self.assertEqual(self.checks, ["r1"])   # its bytes unchanged: not checked again
@@ -3116,6 +3217,7 @@ class LiveRuns(unittest.TestCase):
         with feed.lock:
             self.assertEqual(feed.records[-1]["review"]["verdict"], "failed")
             self.assertTrue(all(r is observe.RETRACTED for r in feed.records[:-1]))   # every row of it taken back
+            self.assertEqual(feed.signed_runs, {})   # and the why server's join of it
 
     def test_a_run_whose_check_raises_says_not_checked_and_every_other_run_is_still_checked(self):
         """An error checking one run escaped the watch thread and ended it: no run was checked again. That run gets a

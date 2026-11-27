@@ -120,7 +120,8 @@ def samples(out=SAMPLES):
             run = _run(call, calls=(("read_file", {"path": "invoices/2026-10.csv"}),
                                     ("read_file", {"path": "vendors.json"})),
                        held=("pay", {"vendor": "acme-supplies", "amount_eur": 1200}), approver=alice)
-            export(s.log.storage, "default", run["run_id"], _checkpointed(s), os.path.join(out, "sample.tkb"))
+            export(s.log.storage, "default", run["run_id"], _checkpointed(s), os.path.join(out, "sample.tkb"),
+                   policy_dir=os.path.join(d, "data", "policies"))
             _trust(os.path.join(out, "sample.trust.json"), [s.vkey])
         finally:
             s.close()

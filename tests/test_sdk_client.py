@@ -725,7 +725,7 @@ class Transports(unittest.TestCase):
             conns.append(mock.Mock(sock=None))
             conns[-1].getresponse.return_value.read.side_effect = lambda: next(answers)
             return conns[-1]
-        with mock.patch.object(client.http.client, "HTTPSConnection", connection):
+        with mock.patch("http.client.HTTPSConnection", connection):
             c = Client("https://signer.test:8443", timeout=5)
             c.status()
             t = threading.Thread(target=c.status)

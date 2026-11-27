@@ -25,6 +25,11 @@ tracekit init --dev --v2 --agent interpreter  # ~/.openinterpreter/hooks.json ($
 sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent codex   # system mode: the signer as its own user
 ```
 
+The [Tracekit plugin](https://github.com/Cygnux-Labs/tracekit-plugin) carries the same hooks for Codex, Copilot CLI
+and Cursor. With it installed there, run init with `--no-hooks` (`tracekit init --dev --v2 --agent codex
+--no-hooks`): two sets of hooks decide every call twice, and every call you approve is refused. On native Windows the
+plugin's hooks can't run (they are a POSIX shell script): there, turn them off and run init with its hooks.
+
 These hooks record to the v2 signer ([below](#on-the-v2-signer)), and a v2 hook replaces a v1 one. System mode's init
 runs as root from a root-owned Python and puts no `tracekit` command on root's `PATH`. It writes these agents' hooks
 into the agent user's own config, which that user can edit: `--managed` (hooks in admin-managed settings the agent can't
@@ -34,7 +39,7 @@ edit or turn off) is for Claude Code only, and init refuses it with these agents
 `--v2` and write the same files:
 
 ```bash
-tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush, devin, cline, gptme, openhands, copilot, codebuddy, jcode
+tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush, devin, cline, gptme, openhands, copilot, codebuddy, jcode, kiro, interpreter
 tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
 
@@ -530,7 +535,7 @@ so why none waits by default:
 ### When Tracekit stops a call
 
 The block message tells the agent what to do, but an agent reads its own instructions first. `tracekit init --v2`
-points to these lines; paste them into the agent's `CLAUDE.md` or `AGENTS.md`. The Claude Code plugin ships them as
+points to these lines; paste them into the agent's `CLAUDE.md` or `AGENTS.md`. The Tracekit plugin ships them as
 its `tracekit-holds` skill.
 
 ```markdown
@@ -544,6 +549,7 @@ its `tracekit-holds` skill.
   there is an Instead line, you may do that instead; say you did.
 - Never run `tracekit approvals approve` or `reject` yourself: they are the person's commands. `tracekit approvals
   list` and `show` only read.
+- Never change Tracekit's policy, signer, hooks or files to get a call through: they are the person's too.
 - Never hide what a call runs to get past a hold or a block (encoding it, a variable for the program, a script file,
   another tool or agent): every call is signed and kept. A readable call that does the same thing, as an Instead line
   says, is fine; say you made it.
@@ -568,8 +574,8 @@ The hold says what to check:
 
 ```text
 [tracekit] HELD, nothing ran: apr-… (TK-A043), expires 09:27 UTC.
-Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund)
-Instead: Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier.
+Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund), or a GET to one that curl's config file can turn into a POST (no -q first)
+Instead: Run a GET as `curl -q -G …` (no config file read); check a payment's amount, currency and payee before approving (no amount refunds in full; confirm, capture or pay moves the amount set earlier).
 Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
 Agent: …
 ```
@@ -648,10 +654,10 @@ session. Codex's command names the Python interpreter running the hook (`<python
 relying on `tracekit` being on `PATH`; `-I` keeps the working folder off Python's path, so a `tracekit` package there is
 never imported (on Windows, a path that needs quotes runs through PowerShell's `&`). Elsewhere, run the command from another
 terminal without the `!`, which a shell would read as "not" (`tracekit approvals list` shows every held call). Then
-ask the agent to make the call again; the agent's own `approve` or `reject` is denied (`TK-D012`). When the hook's signer is a named one (system mode,
-`tracekit init --remote --v2` or `TRACEKIT_SIGNER`), the command includes `--signer ADDR`. In system mode, run it from
-the approver's account as `/opt/tracekit/bin/python -I -m tracekit approvals …` (init puts no `tracekit` command on the
-PATH). On your default signer,
+ask the agent to make the call again; the agent's own `approve` or `reject` is denied (`TK-D012`). When the hook's signer is a named one
+(`tracekit init --remote --v2` or `TRACEKIT_SIGNER`), the command includes `--signer ADDR`. In system mode the command
+is `/opt/tracekit/bin/python -I -m tracekit approvals …` (init puts no `tracekit` command on the PATH, and the system
+signer is every account's default, so it names none): run it from the approver's account. On your default signer,
 `tracekit approve apr-…` and `tracekit reject apr-…` work too. `tracekit view --dev` lists
 the run's constraints at the top of its review. The grammar reads instructions, not descriptions: "add a read-only mode
 to client.py", "don't change the public API of client.py, just fix the timeout bug in it", "don't push to main" and

@@ -110,12 +110,18 @@ def hooks(d, n):
     finally:
         p.terminate()
         p.wait(30)
-    seqs, gaps = counters(events(os.path.join(data, "data")), run_b)
+    evs = events(os.path.join(data, "data"))
+    seqs, gaps = counters(evs, run_b)
+    # each call the hook let run while the signer was down is reported once it is back, as an untrusted input
+    # (claude_code's hook-decided observation), then the next call is decided: n + 1 events after the signed gap
+    told = [e for e in evs if e.get("run_id") == run_b and e["type"] == "input.observed"
+            and ":hook-decided:allowed:" in e["data"].get("source", "")]
     problems = fsck(os.path.join(data, "data"))
     a = {"calls_while_down": n, "blocked": closed.count(2), "ok": up[0] == 0 and closed == [2] * n and not problems}
     b = {"calls_while_down": n, "ran": opened.count(0), "client_seqs_recorded": seqs, "client_counter_gaps": gaps,
-         "fsck_problems": problems,
-         "ok": up[1] == back == 0 and opened == [0] * n and seqs == [0, n + 1] and gaps == [n] and not problems}
+         "reported_after_recovery": len(told), "fsck_problems": problems,
+         "ok": up[1] == back == 0 and opened == [0] * n and seqs == [0, *range(n + 1, 2 * n + 2)] and gaps == [n]
+         and len(told) == n and not problems}
     return a, b
 
 
@@ -195,7 +201,7 @@ def partition(d, samples, n):
     token = os.path.join(d, "bearer")
     with open(token, "w") as f:
         f.write(uuid.uuid4().hex * 2)
-    s = svc.SignerService(data, fail_modes=FAIL_MODES, authorize={"token:http": sorted(REQUESTS.keys() - svc.OPERATOR - {"content_get", "export_run"})})
+    s = svc.SignerService(data, fail_modes=FAIL_MODES, authorize={"token:http": sorted(REQUESTS.keys() - svc.OPERATOR - {"content_get", "export_run", svc.ON_BEHALF})})
     _, auths, tls = tk_http.configure({"listen": "127.0.0.1:0", "cert": cert, "key": key, "authenticators": ["token"],
                                        "token_file": token})
     srv = tk_http.HttpServer(("127.0.0.1", 0), auths, tls, answering_hello(s.handle_frame, hello()))

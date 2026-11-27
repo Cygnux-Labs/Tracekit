@@ -103,9 +103,9 @@ To leave the system Python alone, run init from a root-owned clone of the releas
 runs the copy in the current directory, and init builds `/opt/tracekit` from it:
 
 ```bash
-# v1.7.3 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
-sudo git clone --depth 1 --branch v1.7.3 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.7.3
-cd /usr/local/src/tracekit-1.7.3
+# v1.8.0 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
+sudo git clone --depth 1 --branch v1.8.0 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.8.0
+cd /usr/local/src/tracekit-1.8.0
 sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
     [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
 sudo /opt/tracekit/bin/python -I -m tracekit doctor
@@ -140,8 +140,9 @@ What `init --v2` sets up ([system mode](quickstart-v2.md#system-mode-linux-macos
   be set up, init says so and each Claude Code session's run records a `tailer_lost` gap instead.
 
 An agent that runs through the SDK, such as a daemon that calls `tracekit.instrument()`, needs no hook: add
-`--no-hooks`. Another coding agent gets its own hook with `--agent` (`codex`, `cursor`, `gemini`, `opencode`, `goose`,
-`qwen`, `droid`, `antigravity`; [coding agents](coding-agents.md)). The SDK finds the system signer through
+`--no-hooks`. Another coding agent gets its own hook with `--agent` (`codex`, `cursor`, `gemini`, `opencode`, `kilo`,
+`goose`, `qwen`, `droid`, `antigravity`, `crush`, `devin`, `cline`, `gptme`, `openhands`, `copilot`, `codebuddy`,
+`jcode`, `kiro` or `interpreter`; [coding agents](coding-agents.md)). The SDK finds the system signer through
 `/etc/tracekit/client.json`. Init still sets up the tailer's user, ACL and sudo rule, but only the Claude Code hook
 starts the tailer, so the SDK's runs record no `tailer_lost` gap. Doctor's `D-HOOKS-PRESENT` check warns `no hooks
 recorded in client.json`; that is expected.
@@ -450,6 +451,10 @@ as it needs nothing the schema lacks:
   a 1.4 or 1.5 verifier, which reports them `not interpreted`; one with a grant the run's own user issued needs a 1.6
   verifier. A same-user dev signer from 1.5 is replaced by the first 1.6 client that finds it. The store's schema is
   unchanged.
+- **1.7** speaks signer protocol 26. A 1.7 signer serves clients and gateways from protocol 15 up (1.2 to 1.6
+  included), but a 1.7 client or gateway refuses a 1.6 signer: upgrade the signer first, then the agents' Tracekit.
+  Bundles add nothing a 1.6 verifier doesn't read. A same-user dev signer from 1.6 is replaced by the first 1.7
+  client that finds it. The store's schema is unchanged.
 
 Helm (`tracekit-central`): migrate each replica's schema before upgrading the release with `signer.content.retain`
 set. Compose: the stack's init script runs only on an empty database, so on an existing stack run

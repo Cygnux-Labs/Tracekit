@@ -29,7 +29,7 @@ The header holds the pages, the command box, and on a run's page that run's view
 | **APPROVALS** | each held call nobody has answered yet, in every run (approving one lets the agent's retry of the same call run, once): what it binds (the signer's copy of the arguments, when the viewer has it), its rule in words and the `tracekit approvals approve` / `reject` commands to copy; then each held call answered or ended, once, with what came of it (approved, rejected, expired, abandoned, ...: PERMISSIONS' outcome, which `tracekit report` counts too) and the call (its tool and the visible part of its arguments, or "arguments not kept"). The count on the button (`TO ANSWER`) is the number not answered yet. The page answers nothing: the approvals page (with OIDC login, a passkey) or the signer's command does |
 | **PERMISSIONS** | every decision that was not a plain allow, and what came of it: blocked, ran flagged, approved, rejected, expired or not answered, who answered and when |
 | **HORIZON** | where the agents went, around a black hole: the project, this machine and the outside world ([below](#horizon)) |
-| **INFLUENCE** | with why logs: what content reached which tools across every run ([below](#influence)) |
+| **INFLUENCE** | with why logs: what led to each risky call, and what content reached which tools across every run ([below](#influence)) |
 | **TIPS** | what each step of your coding agents cost and how to cut it: three tips, each with its evidence, saving and fix ([below](#tips)) |
 
 ![RUNS: each run with its state, calls, blocked, held, flagged, gaps and verdict, newest first; below, the why log the viewer built for each](viewer/1.5/runs.png)
@@ -239,9 +239,21 @@ candidate cause links to its node and its record, and a run that names a program
 
 ### A run's TIMELINE, EVIDENCE and the inspector
 
-**TIMELINE** (key `3`) shows the run **BY CALL**, one row per call on one time axis (green ran, red blocked, refused or
-failed, cyan flagged, hatched amber while it waited for a person, to the right edge while it still waits; click a row
-for the call), or **BY AGENT**, one lane per agent. **EVIDENCE** (key `7`) walks the run's signed records in order,
+**TIMELINE** (key `3`) shows the run **BY CALL**, or **BY AGENT**, one lane per agent. BY CALL is a table of the run's calls and model
+turns on one time axis: chips (All, LLM, Tools, Held, Denied, Errors, Retries, each with its count) and a search box (the
+same as FIND) over an overview strip of the whole run. Drag across the strip to keep the calls in a window (its words and
+Clear sit in the strip; with the keyboard, focus the strip and use the arrows to move the window, Shift and the arrows
+to resize it, Escape to clear it); the waterfall's axis zooms to it. A row has the call's status dot, tool, arguments,
+badges (DENIED, HELD 2m 14s with who answered, exit codes, RETRY, flags), agent, size, time and a bar: teal ran, violet a
+model turn (from the agent's previous record to the turn, since a turn records no start), red failed, a red marker for a
+denied call that never ran, hatched amber while it waited for a person. Click a row, or reach it with Tab and press
+Enter, for the drawer: Request, Response, Timing (only the phases the records hold: decided, held for a person and
+who answered, ran, result recorded), Decision (each rule with its reason and remedy), Evidence (the records' seqs and
+hashes, and the run's check) and Retries. Escape closes it. A run that verified ends in a Verified seal in place of Live.
+The selected call, its tab and the window are in the URL (`seq=`, `tab=`, `range=` seconds from the run's first
+record), so a link shares them.
+
+**EVIDENCE** (key `7`) walks the run's signed records in order,
 each marked as covered when the viewer's check verified the run, lists the checks of its verifier report, stamps the
 result (VERIFIED, FAILED with the first failing check, PENDING or NOT CHECKED) and gives the export and verify
 commands: that check is the viewer's, operator-side, and the bundle checked with `tracekit verify` from the signed
@@ -252,7 +264,7 @@ it); and **WHOSE WORDS**: where the instruction behind a held or blocked call ca
 RELAYED, another agent's message; TOOL/WEB, a tool result or page), from the signed argument provenance and the run's
 observed inputs, or that the records don't say.
 
-![TIMELINE BY CALL: one row per call on one time axis, the expired push hatched while it waited; the rejected billing.py edit selected, the inspector with why this decision and what the model said before it](viewer/1.5/timeline.png)
+![TIMELINE BY CALL: the chips with their counts, the overview strip with the held calls hatched, and one row per call and model turn (a provider monogram for each model) with its bar, over the footer's counts and the Verified seal](viewer/1.5/timeline.png)
 
 ![EVIDENCE: the run's signed records in order, each covered by the viewer's check, the checks of its verifier report and the VERIFIED stamp](viewer/1.5/evidence.png)
 
@@ -308,7 +320,9 @@ in run order (few or no links between them) wraps them into lines as wide as the
 at full size with FIT too (`scroll ↓` when it is taller). With ACTUAL SIZE another flowchart wider than its panel
 scrolls sideways (`scroll →` in the panel's title), and a clicked node is scrolled into view. A held call's node says how its approval ended
 (**APPROVED**, **REJECTED**, **EXPIRED**). The why views follow the run whose page is open; a run that failed
-verification has no graph, and GRAPH says why.
+verification has no graph, and GRAPH says why. A call held for a person and not answered yet has no result, so
+the why log leaves it out: a run whose only call is held shows an empty log, OVERVIEW and WHY say its held calls are in
+CALLS, and INFLUENCE does not count it.
 
 With why logs (`--why DIR`, or a `why/` folder in the data dir) the viewer imports no signed run, so a run without a
 why log has no graph. GRAPH says so and names what shows it: `tracekit view` without `--why`, or, when the data dir
@@ -327,24 +341,45 @@ matrix fills in as tests run; the critical path is the longest chain of the run.
 
 ![INFLUENCE: sources on the left, tools on the right; thicker lines reached in more runs, red lines confirmed causes with their effect; the sources table below](viewer/1.5/influence.png)
 
-Across every why run, INFLUENCE answers one question: did something your agents read come before a blocked or held
-call? It says "came before": the content was in front of the agent when it decided on the call. Only a replay that
-confirmed it says "caused".
+Across every why run, whichever run is selected, INFLUENCE answers first, per risky call, what led to it, graded by how each link is known
+([why.md](why.md#influence-what-moved-a-call)): exact (the signer's provenance, in records this viewer verified,
+traced an argument to the record), measured (a replay without the source changed the call, one whose replays were
+signed and verified), seen (the source was in the model's context when it decided) and hint (text overlap, never an
+influence). A why log's own provenance, with no verified signed record behind it, is shown as "claimed by the log", and
+a replay test only the log's `tests.jsonl` holds as "claimed (local replay)": the agent can write that file, its chain
+too, so it decides nothing (what the call serves, the chain, the red lines of confirmed causes). The viewer doesn't
+join signed `why.finding`s to a why log yet: a replay shows as claimed here; `tracekit graph` reads signed findings.
 
-- **The answer, first.** In words, the untrusted content that came before the most blocked or held calls (for
-  example "Sub-agents' messages (untrusted) came before 48 blocked Bash calls in 3 runs"), the three worst. A
-  replay-confirmed cause comes first, with its effect. Click a line for its row below. When nothing untrusted came
-  before a blocked or held call, it says exactly that.
-- **The flow.** Each kind of content on the left (its trust, untrusted framed red, and its sources) and the tools
-  called after it on the right. Only the lines that matter are drawn, coloured as the table's chips: red where calls
-  were blocked, amber where held, blue where flagged, bold red with its effect for a confirmed cause, dashed where a
+- **The answer, first: a card per call stopped or flagged.** A call blocked, held, rejected by a person or flagged, one
+  a replay without the task kept, and one the signer or a replay tied to untrusted content each get a card, worst first.
+  Its headline says what happened and why, with the facts, in one line: "Blocked: send_money €98.70 to “GB29 NWBK 6016
+  1331 9268 19”. The account number came from an email that says it's from “billing@acme-ltd.example”, not from your
+  task." Each value the agent's content chose is quoted data, cut to 40 characters with its whole text on hover; an
+  amount shows only as a number, a currency only as a 3-letter code ("an amount" otherwise), and an email is what it
+  says it is. For a value a trusted call's answer gave, which counts as untrusted because untrusted content chose what
+  the call was given: "The account number came from lookup_supplier, looked up with “ACME-7781”, which appeared only in
+  an email …"; for a decoder's, "called with “R0IyOU5X…” (base64 of the IBAN)". Below it, the
+  value's route, its untrusted start marked: email “From: billing@acme-ltd.example” → lookup_supplier(ACME-7781) → IBAN
+  GB29 NWBK … → send_money. A tag says how it is known (exact, measured, claimed or seen; its meaning on hover). Beside
+  the card, the same call that ran with a value trusted content gave, if the runs have one ("Ran: the same payment with
+  crm_lookup's account number."). **WHY** opens the rest: the call's words (only a replay without the task says a call
+  came from the task; otherwise they say no replay has tested it), its chain top to bottom (a thin line per step, a solid
+  line from a step the signer traced an argument to, a double line from one a replay tied to the call), each link's
+  line with a replay's effect and interval and what a replay ruled out, and **OPEN IN ITS RUN**. The other calls are one
+  quiet line ("3 other calls ran without a stop or a flag") that opens to a line each. **show hints** adds the
+  text-overlap hints to WHY, dashed, and the key under the flow.
+- **The flow.** "What the agents read, and the calls that followed. Red lines led to a stopped call." Across runs,
+  each kind of content on the left (its trust, untrusted framed red, and its sources) and the tools called after it on
+  the right. Where a stopped call's value came through a trusted call's answer (an email to lookup_supplier to send_money), that call sits between them, on the value's route. Only the lines that matter are drawn, coloured as the table's chips: red where calls
+  were blocked, amber where held, blue where flagged, bold red marked "caused it" for a confirmed cause (the replay's
+  effect on hover), dashed where a
   replay ruled the link out. A line is thicker the more runs it came before (log scale). The plain lines (calls that
   ran with no flag) are hidden; a note says how many. Point at content or a tool to see all its lines and dim the
   rest. Click a line or content to open its row and mark the tool's chip; click a tool to mark it in every row;
   click empty space to clear. The tools with a marked line come first, then four quiet ones; the rest are one
   **+N more**. Panels narrower than 600 px leave the flow out: the answer and the cards say the same.
 - **The table, the detail.** One row per kind of content and its trust, with how many sources, in how many runs,
-  in front of the agent for how many decisions, and the tools it led to. Blocked, held and confirmed first, then six
+  read before how many decisions, and the tools it led to. Blocked, held and confirmed first, then six
   more (flagged first, then the most runs; **+N more** shows the rest). Click a row for its sources one by one (the
   200 that matter most: a confirmed cause, then those before stopped calls, then the most cited). Each is named by
   where it was read: its run, record and time, with **OPEN** for that record.
@@ -392,7 +427,9 @@ source it mixes, and the page's first line says what it read; the
 tips list sessions from every project under the transcripts folder. Dollars are Anthropic's and OpenAI's list prices, dated in
 `tracekit/tips.py`: a subscription bills none of them, but the same tokens fill its usage limit. The sessions of a model with
 no price are left out, with a note naming it. A tip without enough data says so and why. The page is worked out again at most
-once a minute, and at once on **READ AGAIN**. Like the verdicts, the tips are operator-side, not evidence. Its limits
+once a minute, and at once on **READ AGAIN**. The viewer reads each transcript in full once and keeps what it read in
+memory: from then on a transcript that only grew is read from where the last read stopped, one changed any other way from
+its start (`tracekit tips` reads them all each time). Like the verdicts, the tips are operator-side, not evidence. Its limits
 are in [limits](limits.md#viewer).
 
 #### Lessons
@@ -740,10 +777,13 @@ that citation joins the two.
 - **Views** (a run's page, keys `1` to `7`; the tape's **WHY LOG EVENTS**; the **INFLUENCE** page): **OVERVIEW**,
   **WHY** and the why log's **TIMELINE** (as below), **GRAPH**, the run's data flow (observed edges; tested causes
   in red; inferred links and ruled-out tests hidden until ticked; click a node for what it came from and led to),
-  **AGENTS** (the channels used, the influence matrix, the critical path), **INFLUENCE** (across runs: whether untrusted
-  content came before blocked or held calls, each kind of content and the tools called after it, with tested effects). **DESK** shows every panel at once.
+  **AGENTS** (the channels used, the influence matrix, the critical path), **INFLUENCE** (across runs: what led to each
+  risky call, graded exact, measured or seen, then each kind of content and the tools called after it, with tested
+  effects). **DESK** shows every panel at once.
 - **Alerts**: the why alerts (a sensitive call using a value only untrusted content supplied, a call downstream of
-  untrusted input, evidence alerts) join the alert panel labelled `WHY`; signed records' alerts are labelled `SIGNED`.
+  untrusted input, evidence alerts) join the alert panel labelled `WHY`; signed records' alerts are labelled `SIGNED`. A call the signer blocked is one alert, the `SIGNED` BLOCKED one: its
+  why import's "was blocked by Tracekit policy" alert is left out of the panel (`/api/why/workspace`) while that signed
+  record is on the page's live view; a why log with no signed record keeps its own.
 
 FIND THE CAUSE and RUN TEST replay the run, so they run only for the programs passed with `--allow-program` (the run
 names its program; replay imports it). Otherwise the panel shows the `tracekit why` command to run instead. New runs

@@ -1,5 +1,9 @@
 # Launch checklist for 1.0
 
+History: the states below are as of 1.0. CI on `main` now also runs E9 in full on Linux, E14 (`--quick`; the full
+run nightly), the offline evals against the committed results, the Helm chart in kind and the quickstart on Linux,
+macOS and Windows.
+
 Every M3 exit-gate item and every launch item, with what proves it, how to run it, and its state. States:
 
 - **done**: green in CI on `main` (`.github/workflows/ci.yml`; the Linux `test` job is the merge gate).

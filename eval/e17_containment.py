@@ -36,7 +36,8 @@ PAY = ("pay", {"to": "acct"})
 OPERATOR_CALLS = {"incident_list": {}, "incident_show": {"incident_id": "inc-x"},
                   "incident_resolve": {"incident_id": "inc-x"}, "run_hold": {"run_id": "r"},
                   "run_quarantine": {"run_id": "r"}, "run_resume": {"run_id": "r"}, "response_pause": {},
-                  "response_resume": {}, "suspend": {"identity": "uid:1"}, "unsuspend": {"identity": "uid:1"}}
+                  "response_resume": {}, "suspend": {"identity": "uid:1"}, "unsuspend": {"identity": "uid:1"},
+                  "run_label_clear": {"run_id": "r", "label": "secrets_access"}}
 
 
 class Signer(e17.Signer):

@@ -6,6 +6,7 @@ import io
 import json
 import os
 import plistlib
+import re
 import shlex
 import shutil
 import stat
@@ -19,6 +20,7 @@ from unittest import mock
 from test_system_install import as_root_on_linux
 from tracekit import __version__, agent_hooks, install
 from tracekit.sdk import client as sdk_client
+from tracekit.policy2.engine import Engine
 from tracekit.signer import service
 
 AGENT = types.SimpleNamespace(pw_uid=64101, pw_gid=64101, pw_name="agent", pw_dir="/home/agent")
@@ -53,6 +55,213 @@ class SignerConfig(unittest.TestCase):
         self.assertEqual(install.yamlmini.loads(lines), {
             "content": {"keep": True}, "witnesses": [{"url": "https://w2.example", "class": "operator"}],
             "metrics": {"listen": "127.0.0.1:9464", "note": 'rack 12" A, row 3'}, "contact": "2026-01-01"})
+
+    SOCK = "/run/s.sock"
+    ALICE, BOB = 501, 502
+
+    def merge(self, old, agent=AGENT, approver=BOB):
+        """init's signer.yaml text over `old`, as init_system_v2 builds it: (text, names kept, notes)."""
+        new = install.v2_signer_yaml(agent, approver, POLICY, self.SOCK, 64102)
+        hand, _ = install.hand_keys(old)
+        return install.merge_shared_keys(new + hand, old, agent.pw_uid, approver)
+
+    def earlier(self, approver=ALICE, **sections):
+        """A signer.yaml an earlier init wrote for `approver`, with `sections` (tenants, approvals, authorize) given
+        extra lines under their keys."""
+        text = install.v2_signer_yaml(AGENT, approver, POLICY, self.SOCK, 64102)
+        for key, lines in sections.items():
+            text = text.replace(f"{key}:\n", f"{key}:\n{lines}", 1)
+        return text
+
+    def loads_in_the_signer(self, text):
+        """The text through the signer's own loader and its constructor, as `tracekit signer serve` reads it."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "signer.yaml")
+        with open(path, "w") as f:
+            f.write(text)
+        cfg = service.load_config(path)
+        cfg["data_dir"] = os.path.join(d, "data")
+        cfg.pop("policy", None)
+        s = service.open_service(cfg, policy=Engine({"ask": [{"id": "PAY", "tool": "^pay$", "pattern": "^"}]}))
+        self.addCleanup(s.close)
+        return cfg
+
+    def test_a_rerun_keeps_what_the_operator_added_and_the_signer_loads_it(self):
+        """A re-run dropped `approvals.persons` and the extra tenants and authorize entries without saying so; the
+        merged file is read by the signer's own loader and constructor, not only by init's."""
+        old = self.earlier(approvals='  persons: {"uid:501": "alice"}\n  agents: ["uid:700"]\n  break_glass: ["uid:800"]\n',
+                           tenants='  "uid:1234": "other"\n', authorize='  "uid:555": [status]\n')
+        text, names, notes = self.merge(old, approver=self.ALICE)
+        cfg = self.loads_in_the_signer(text)
+        self.assertEqual(cfg["approvals"], {"self_approval": "deny", "approvers": ["uid:501"],
+                                            "persons": {"uid:501": "alice"}, "agents": ["uid:700"],
+                                            "break_glass": ["uid:800"]})
+        self.assertEqual(cfg["tenants"], {"uid:64101": "agent", "uid:501": "agent", "uid:1234": "other"})
+        self.assertEqual(cfg["authorize"]["uid:555"], ["status"])
+        self.assertEqual(cfg["authorize"]["uid:64102"], install.TAILER_METHODS)
+        self.assertEqual(sorted(names), ["approvals.agents", "approvals.break_glass", "approvals.persons",
+                                         "authorize.uid:555", "tenants.uid:1234"])
+        self.assertEqual(notes, [])
+        again = self.merge(text, approver=self.ALICE)
+        self.assertEqual(again[0], text)   # a second re-run changes nothing
+
+    def test_a_replaced_approver_is_dropped_from_the_tenants_and_listed_where_it_keeps_rights(self):
+        """`--approver alice`, then `--approver bob`: alice stays in break_glass and persons because the operator
+        added them. Init says so by uid, and drops her tenant entry."""
+        old = self.earlier(approvals='  break_glass: ["uid:501"]\n  persons: {"uid:501": "alice"}\n')
+        text, names, notes = self.merge(old, approver=self.BOB)
+        cfg = self.loads_in_the_signer(text)
+        self.assertEqual(cfg["approvals"]["approvers"], ["uid:502"])
+        self.assertNotIn("uid:501", cfg["tenants"])
+        self.assertIn("uid:501 is no longer the approver; it keeps break_glass, persons", notes)
+        self.assertIn("tenants.uid:501: dropped: uid:501 is no longer the approver", notes)
+
+    def test_the_old_approver_made_the_agent_may_not_keep_break_glass(self):
+        """`--user alice --approver bob` after `--approver alice` with break_glass added for her: alice would answer
+        other users' holds from the agent's own identity."""
+        old = self.earlier(approvals='  break_glass: ["uid:501"]\n')
+        alice = types.SimpleNamespace(pw_uid=self.ALICE, pw_gid=self.ALICE, pw_name="alice", pw_dir="/home/alice")
+        with self.assertRaisesRegex(ValueError, r"approvals.break_glass: uid:501 names uid:501, the agent's uid"):
+            self.merge(old, agent=alice, approver=self.BOB)
+        with self.assertRaisesRegex(ValueError, "approvals.break_glass: uid:\\* names uid:64101"):
+            self.merge(self.earlier(approvals='  break_glass: ["uid:*"]\n'))
+        with self.assertRaisesRegex(ValueError, "approvals.agents: uid:64101 names uid:64101"):
+            self.merge(self.earlier(approvals='  agents: ["uid:64101"]\n'))
+
+    def test_an_authorize_grant_that_is_never_a_default_may_not_cover_the_agent(self):
+        """`approval_decide_on_behalf` for the agent's uid, or for a prefix covering it; an entry that only restricts
+        the agent is kept."""
+        run = "register_run, decide, complete, approval_request, approval_decide, close_run, status"
+        for key in ("uid:64101", "uid:*"):
+            old = self.earlier(authorize=f'  "{key}": [{run}, approval_decide_on_behalf]\n')
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, re.escape(f"authorize.{key} covers uid:64101") + ".*approval_decide_on_behalf"):
+                self.merge(old)
+        old = self.earlier(authorize=f'  "uid:64101": [{run}]\n')
+        text, names, _ = self.merge(old)
+        self.loads_in_the_signer(text)
+        self.assertEqual(install.yamlmini.loads(text)["authorize"]["uid:64101"], run.split(", "))
+        self.assertIn("authorize.uid:64101", names)
+
+    def test_init_writes_its_own_identities_exactly_and_says_what_it_dropped(self):
+        """Extra tailer methods (on-behalf among them), an added approver, self_approval allow and a renamed tenant
+        were dropped without a word or, for the tailer, kept as a union."""
+        old = self.earlier(approvals='  persons: {"uid:501": "alice"}\n')
+        old = old.replace('"uid:64102": [', '"uid:64102": [approval_decide_on_behalf, ', 1)
+        old = old.replace('self_approval: "deny"', 'self_approval: "allow"', 1)
+        old = old.replace('    - "uid:501"', '    - "uid:501"\n    - "uid:503"', 1)
+        old = old.replace('"uid:64101": "agent"', '"uid:64101": "team-x"', 1)
+        text, _, notes = self.merge(old, approver=self.ALICE)
+        cfg = self.loads_in_the_signer(text)
+        self.assertEqual(cfg["authorize"]["uid:64102"], install.TAILER_METHODS)
+        self.assertEqual((cfg["approvals"]["self_approval"], cfg["approvals"]["approvers"]), ("deny", ["uid:501"]))
+        self.assertEqual(cfg["tenants"]["uid:64101"], "agent")
+        for want in ("authorize.uid:64102: dropped approval_decide_on_behalf", "approvals.approvers: dropped uid:503",
+                     "approvals.self_approval: 'allow' dropped", "tenants.uid:64101: 'team-x' dropped"):
+            self.assertTrue(any(want in n for n in notes), (want, notes))
+
+    def test_an_approver_that_was_an_agent_approver_is_refused_by_init_not_left_for_the_signer(self):
+        old = self.earlier(approvals='  agents: ["uid:502"]\n  persons: {"uid:501": "alice"}\n')
+        with self.assertRaisesRegex(ValueError, "approvals.agents names uid:502, the approver"):
+            self.merge(old, approver=self.BOB)
+
+    def test_the_signer_refuses_one_identity_that_runs_agents_and_decides_on_someones_behalf(self):
+        with self.assertRaisesRegex(ValueError, "one identity can't both run agents and decide approvals"):
+            service.check_identities({}, {"uid:9": ["register_run", "approval_decide_on_behalf"]})
+        with self.assertRaisesRegex(ValueError, "one identity can't both run agents and decide approvals"):
+            self.loads_in_the_signer('data_dir: "d"\nauthorize:\n  "uid:9": [register_run, approval_decide_on_behalf]\n')
+        service.check_identities({}, {"uid:9": ["approval_decide_on_behalf", "status"]})   # a bridge alone is fine
+
+    def test_the_signer_refuses_a_harness_bound_identity_among_the_approvers(self):
+        for name, approvals in (("approvers", {"approvers": ["uid:501"]}), ("break_glass", {"break_glass": ["uid:501"]}),
+                                ("agents", {"agents": ["uid:501"], "approvers": ["uid:9"],
+                                            "persons": {"uid:9": "ana"}}),
+                                ("approvers", {"approvers": ["uid:*"]})):
+            with self.subTest(name=name, approvals=approvals), self.assertRaisesRegex(
+                    ValueError, f"harness_binding.required: uid:501 is also in approvals.{name}"):
+                service.check_identities(approvals, {}, (), ["uid:501"])
+        service.check_identities({"approvers": ["uid:9"]}, {}, (), ["uid:501"])
+
+    def test_an_authorize_entry_for_the_agent_outside_the_default_grants_is_refused(self):
+        """content_read and otlp_import aren't in NEVER_DEFAULT (that names content_get), yet an agent doesn't get
+        them by default: content_read reads the tenant's vault, the approver's content included."""
+        run = "register_run, decide, complete, status"
+        for extra in ("content_read", "otlp_import", "approval_decide_on_behalf", "export_run"):
+            old = self.earlier(authorize=f'  "uid:64101": [{run}, {extra}]\n')
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, f"grants {extra}"):
+                self.merge(old)
+
+    def test_init_and_the_signer_run_the_same_static_authorize_checks(self):
+        """The replaced approver had export_run, which needs a tenant; her tenant entry is dropped, so the merged file
+        passed init's check and the signer then refused to start."""
+        old = self.earlier(authorize='  "uid:501": [export_run, status, read, approval_get, approval_list]\n')
+        text, _, _ = self.merge(old, approver=self.BOB)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        r = subprocess.run([sys.executable, "-c", install.CHECK_CONFIG], input=text, capture_output=True, text=True, cwd=root)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("authorize grants export_run to uid:501", r.stderr)
+        with self.assertRaisesRegex(ValueError, "authorize grants export_run to uid:501"):
+            service.check_identities({}, {"uid:501": ["export_run", "status"]}, tenants={})
+        service.check_identities({}, {"uid:501": ["export_run", "status"]}, tenants={"uid:501": "t"})
+
+    def test_init_passes_an_export_run_identity_whose_uid_is_mapped_in_tenants(self):
+        text = self.earlier(authorize='  "uid:501": [export_run, status, read, approval_get, approval_list]\n')
+        self.assertEqual(install.yamlmini.loads(text)["tenants"]["uid:501"], "agent")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        r = subprocess.run([sys.executable, "-c", install.CHECK_CONFIG], input=text, capture_output=True, text=True, cwd=root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_an_identity_whose_entries_add_up_to_running_agents_and_deciding_on_behalf_is_refused_at_decision_time(self):
+        """An OIDC identity's grants combine its oidc, person and group entries; the startup check sees each entry
+        alone, so the signer checks the combined grants when it is asked to decide on someone's behalf."""
+        from tracekit.identity.base import CallerIdentity
+        from tracekit.signer.rpc_schema import RPCError
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        run = ["register_run", "decide", "complete", "approval_request", "approval_decide", "status"]
+        s = service.open_service(
+            {"data_dir": os.path.join(d, "data"), "approvals": {"approvers": ["group:corp/approvers"]},
+             "authorize": {"person:alice": run, "group:corp/bridge": ["approval_decide", "approval_decide_on_behalf"]}},
+            policy=Engine({"ask": [{"id": "PAY", "tool": "^pay$", "pattern": "^"}]}))
+        self.addCleanup(s.close)
+        who = CallerIdentity("oidc", "alice-sub", True, {"person": "alice", "groups": ["corp/bridge"]})
+        reg = s.call(who, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
+        r = {"run_id": reg["run_id"], "run_token": reg["run_token"]}
+        s.call(who, "decide", {"request_id": "r2", **r, "stream": "s", "client_seq": 0, "tool_call_id": "tc",
+                               "tool": "pay", "args_source": "parsed", "args": {"to": "x"}})
+        aid = s.call(who, "approval_request", {"request_id": "r3", **r, "tool_call_id": "tc"})["approval_id"]
+        with self.assertRaisesRegex(RPCError, "also granted register_run"):
+            s.call(who, "approval_decide", {"request_id": "r4", "approval_id": aid, "decision": "approve",
+                                            "on_behalf": {"subject": "x", "person": "bob", "groups": ["corp/approvers"]}})
+        with self.assertRaisesRegex(RPCError, "also granted register_run"):
+            s.call(who, "approval_decide_on_behalf", {"request_id": "r5", "approval_id": aid, "decision": "approve",
+                                                      "approver": "slack:T1/U1", "groups": ["slack:T1/G1"]})
+        self.assertEqual(s.log.approvals[aid]["state"], "requested")
+
+    def test_a_signer_loader_that_cannot_run_or_stalls_is_reported_plainly(self):
+        for error, want in ((FileNotFoundError(2, "No such file or directory"), "could not run: No such file"),
+                            (subprocess.TimeoutExpired("x", 60), "did not finish reading it in 60 s")):
+            with self.subTest(error=type(error).__name__), mock.patch.object(install.subprocess, "run", side_effect=error):
+                self.assertIn(want, install._signer_refuses("x"))
+
+    def test_the_signer_loader_check_init_runs_reads_the_file_as_the_signer_does(self):
+        """init pipes the merged text to the signer's own loader in the venv it built (CHECK_CONFIG)."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for text, ok in ((self.earlier(), True),
+                         ('data_dir: "d"\nauthorize:\n  "uid:9": [register_run, approval_decide_on_behalf]\n', False),
+                         ('data_dir: "d"\nnot_a_key: 1\n', False)):
+            r = subprocess.run([sys.executable, "-c", install.CHECK_CONFIG], input=text, capture_output=True, text=True,
+                               cwd=root)
+            with self.subTest(text=text[:40]):
+                self.assertEqual(r.returncode == 0, ok, r.stderr)
+        run = mock.Mock(return_value=mock.Mock(returncode=1, stderr="Traceback\nValueError: boom\n"))
+        with mock.patch.object(install.subprocess, "run", run):
+            self.assertEqual(install._signer_refuses("x"), "ValueError: boom")
+        self.assertEqual(run.call_args.args[0][:2], [install.OPT_PYTHON, "-I"])
+
+    def test_a_shared_section_that_is_not_a_mapping_is_refused(self):
+        with self.assertRaises(ValueError):
+            install.hand_keys('data_dir: "/x"\ntenants: [a, b]\n')
 
     def test_init_own_witness_line_is_not_kept(self):
         """A comment after it doesn't make it a hand list either."""
@@ -226,6 +435,75 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertEqual((cfg["content"], cfg["data_dir"]), ({"retain": True}, install.V2_DATA))
         self.assertIn("kept what you added: content, metrics", out.getvalue())
 
+    def earlier_config(self, **sections):
+        """The signer.yaml an earlier init wrote for the harness's approver, with `sections` extra lines."""
+        text = install.v2_signer_yaml(AGENT, self.me.pw_uid, POLICY, "/run/tracekit-signer/signer.sock", self.me.pw_uid)
+        for key, lines in sections.items():
+            text = text.replace(f"{key}:\n", f"{key}:\n{lines}", 1)
+        with open(install.V2_CONFIG, "w") as f:
+            f.write(text)
+
+    def test_a_rerun_writes_the_merged_sections_and_says_what_it_kept(self):
+        """The wiring: init_system_v2 merges the old file's tenants, approvals and authorize into what it writes."""
+        self.earlier_config(approvals='  persons: {"uid:777": "ana"}\n', tenants='  "uid:1234": "other"\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.init_v2()
+        cfg = install.yamlmini.loads(self.written[install.V2_CONFIG].decode())
+        self.assertEqual(cfg["approvals"]["persons"], {"uid:777": "ana"})
+        self.assertEqual(cfg["tenants"]["uid:1234"], "other")
+        self.assertIn("kept what you added: approvals.persons, tenants.uid:1234", out.getvalue())
+
+    def test_a_rerun_that_replaces_the_approver_records_one_that_keeps_break_glass_or_agents(self):
+        old = install.v2_signer_yaml(AGENT, 777, POLICY, "/run/tracekit-signer/signer.sock", self.me.pw_uid)
+        old = old.replace("approvals:\n", 'approvals:\n  break_glass: ["uid:0", "uid:777"]\n', 1)
+        with open(install.V2_CONFIG, "w") as f:
+            f.write(old)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.init_v2(replaced=["uid:777"])
+
+    def test_replaced_approvers_are_kept_across_inits_until_they_keep_no_rights(self):
+        def text(**approvals):
+            return f"approvals: {json.dumps(approvals)}\n"
+        merged = text(approvers=["uid:502"], break_glass=["uid:0", "uid:777"])
+        old = text(approvers=["uid:501"])
+        self.assertEqual(install.replaced_approvers(old, merged, ["uid:777"], 502), ["uid:777"])
+        self.assertEqual(install.replaced_approvers(old, merged, ["uid:777", "uid:501"], 502), ["uid:777"])
+        self.assertEqual(install.replaced_approvers(old, merged, ["uid:777"], 777), [])
+        self.assertEqual(install.replaced_approvers(old, text(approvers=["uid:502"]), ["uid:777"], 502), [])
+        self.assertEqual(install.replaced_approvers(old, text(agents=["uid:501"]), [], 502), ["uid:501"])
+
+    def test_a_rerun_prints_what_it_dropped_of_the_operators_edits(self):
+        self.earlier_config(approvals='  persons: {"uid:777": "ana"}\n')
+        old = open(install.V2_CONFIG).read().replace('self_approval: "deny"', 'self_approval: "allow"', 1)
+        with open(install.V2_CONFIG, "w") as f:
+            f.write(old)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.init_v2()
+        self.assertIn("approvals.self_approval: 'allow' dropped", out.getvalue())
+
+    def test_a_rerun_refuses_a_break_glass_entry_for_the_agent_and_writes_nothing(self):
+        self.earlier_config(approvals=f'  break_glass: ["uid:{AGENT.pw_uid}"]\n')
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as e:
+            self.init_v2()
+        self.assertIn(f"approvals.break_glass: uid:{AGENT.pw_uid} names uid:{AGENT.pw_uid}, the agent's uid", str(e.exception))
+        self.assertNotIn(install.V2_CONFIG, self.written)
+
+    def test_a_rerun_the_merge_refuses_fails_before_any_user_or_venv_is_made(self):
+        self.earlier_config(approvals=f'  break_glass: ["uid:{AGENT.pw_uid}"]\n')
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            self.init_v2()
+        self.users.assert_not_called()
+
+    def test_a_rerun_writes_nothing_when_the_signer_would_refuse_the_result(self):
+        self.earlier_config(approvals='  persons: {"uid:777": "ana"}\n')
+        with mock.patch.object(install, "_signer_refuses", return_value="ValueError: boom"), \
+                contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as e:
+            self.init_v2()
+        self.assertIn("init wrote nothing, because the signer would refuse the result (ValueError: boom)", str(e.exception))
+        self.assertNotIn(install.V2_CONFIG, self.written)
+
     def test_a_rerun_refuses_a_config_folder_it_cannot_open_safely(self):
         real = os.path.join(self.d, "real-etc")
         os.mkdir(real)
@@ -318,7 +596,7 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertEqual([c.args[0] for c in run.call_args_list],
                          [["launchctl", "bootout", "system", plist], ["launchctl", "bootstrap", "system", plist]])
 
-    def init_v2(self, sudo_why=None, harnesses=(), public_witness=None):
+    def init_v2(self, sudo_why=None, harnesses=(), public_witness=None, replaced=()):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
         v1 = {"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system", "fail_mode": "closed",
               "tailer": {"user": "stale"}}
@@ -343,7 +621,8 @@ class InstallAndUninstall(unittest.TestCase):
         venv.assert_called_once_with(None, "[signer]")
         self.assertEqual(stat.S_IMODE(os.stat(install.V2_DATA).st_mode), 0o700)
         yaml = self.written[install.V2_CONFIG].decode()
-        self.assertIn(f'approvers:\n    - "uid:{self.me.pw_uid}"', yaml)
+        cfg = install.yamlmini.loads(yaml)
+        self.assertEqual(cfg["approvals"]["approvers"], [f"uid:{self.me.pw_uid}"])
         self.assertIn(f'policy: "{POLICY}"', yaml)
         self.assertIn("ExecStart=", self.written[os.path.join(self.d, "tracekit-signer.service")].decode())
         acl.assert_called_once_with(AGENT, self.me.pw_name, False)
@@ -356,8 +635,9 @@ class InstallAndUninstall(unittest.TestCase):
                                                                                       "agent": "claude",
                                                                                       "init_flags": flags},
                                                          tailer={"user": self.me.pw_name, "uid": self.me.pw_uid,
-                                                                 "python": install.OPT_PYTHON}))
-        self.assertIn(f'authorize:\n  "uid:{self.me.pw_uid}": [model_event, state_write, tailer_lost, tailer_heartbeat, status]', yaml)
+                                                                 "python": install.OPT_PYTHON},
+                                                         **({"replaced_approvers": list(replaced)} if replaced else {})))
+        self.assertEqual(cfg["authorize"], {f"uid:{self.me.pw_uid}": install.TAILER_METHODS})
         self.assertEqual(hooks.call_args.kwargs, {"owner": AGENT, "python": install.OPT_PYTHON,
                                                   "module": install.V2_HOOK, "signer": sock, "thinking": True})
         self.assertIn(["systemctl", "restart", "tracekit-signer"], [c.args[0] for c in run.call_args_list])
@@ -1116,6 +1396,7 @@ class CliProject(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
                                           "LOCALAPPDATA": os.path.join(home, "data")}), \
                 mock.patch.object(client, "system_config", return_value=None), \
+                mock.patch.object(install, "plugin_hook_python", return_value="/usr/bin/python3"), \
                 contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-witness", "--project", repo]), 0)
         self.assertIn(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {settings}", out.getvalue())
@@ -1192,6 +1473,23 @@ class CliManaged(unittest.TestCase):
                 for init in (v2, v1, dev):
                     init.assert_not_called()
                 self.assertIn(why, err.getvalue())
+
+
+class InitNeedsNoThirdPartyImports(unittest.TestCase):
+    def test_hand_keys_runs_without_rfc8785_and_cryptography(self):
+        """The clone route runs init on a system Python with no dependencies: a re-init read CONFIG_KEYS from
+        signer.service, which imports both, and crashed once signer.yaml existed."""
+        code = ("import sys\n"
+                "class Block:\n"
+                "    def find_spec(self, name, path=None, target=None):\n"
+                "        if name.split('.')[0] in ('rfc8785', 'cryptography'):\n"
+                "            raise ModuleNotFoundError(name)\n"
+                "sys.meta_path.insert(0, Block())\n"
+                "from tracekit import install\n"
+                "print(install.hand_keys('data_dir: \"/x\"\\ncontent: {\"retain\": true}\\n')[1])\n")
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "['content']"), r.stderr)
 
 
 if __name__ == "__main__":

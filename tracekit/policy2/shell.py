@@ -73,8 +73,16 @@ class _Quoted(str):
 
 class _Expanded(str):
     """A word holding variables this shell expands in it (`names`: not one the line gives a literal), whose values
-    become code where bash parses the word again (_Parser.code)."""
+    become code where bash parses the word again (_Parser.code). `whole`: each of its expansions is double-quoted, none
+    is all of a list ("$@", "${a[@]}") and it has no pattern, so bash neither splits nor globs it: it stays one word,
+    whatever its value (grammar.read)."""
     names = frozenset()
+    whole = False
+
+
+class _Whole(str):
+    """Another reading's text of a `whole` word (_Expanded) that still holds one of its expansions: one word too."""
+    whole = True
 
 
 class _Spliced(_Expanded):
@@ -107,7 +115,7 @@ def _place(text):
 
 def _literal(raw):
     """Whether a word written `raw` holds no expansion outside '...' (\\$ and '$' are text)."""
-    return not re.search(r"[$`]", re.sub(r"\\.|'[^']*'", "", raw))
+    return not ("$" in raw or "`" in raw) or not re.search(r"[$`]", re.sub(r"\\.|'[^']*'", "", raw))
 
 
 MAX_DEPTH = 32
@@ -213,7 +221,11 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
                            "--ignore", "-d", "--debounce", "--delay-run", "-s", "--signal", "--stop-signal",
                            "--stop-timeout", "--shell", "-E", "--env", "--workdir", "--on-busy-update",
                            "--emit-events-to", "--project-origin", "--filter-file", "--ignore-file", "--poll",
-                           "--color", "--log-file", "-j", "--filter-prog", "--fs-events"), 0)}
+                           "--color", "--log-file", "-j", "--filter-prog", "--fs-events"), 0),
+            # npm's environment setters: cross-env's NAME=value words, env-cmd's file of them, envchain's keychain
+            # namespace, before the command they run
+            "cross-env": ((), 0), "env-cmd": (("-f", "--file", "-e", "--environments", "-r", "--rc-file"), 0),
+            "envchain": ((), 1)}
 WRAPPERS["gxargs"] = WRAPPERS["xargs"]   # GNU xargs as Homebrew installs it beside macOS's own
 # wrapper or runner -> options known to take no value (_unwrap reads an option neither table names both ways), a
 # short-option cluster of them too (`caffeinate -dims`, `sudo -Eu root`)
@@ -247,6 +259,13 @@ WRAPPER_FLAGS = {"caffeinate": ("-d", "-i", "-m", "-s", "-u"),
                           "-i", "--interlaced", "-t", "--topological", "--topological-dev", "-n", "--dry-run",
                           "--no-private")}
 WRAPPER_FLAGS["gxargs"] = WRAPPER_FLAGS["xargs"]
+# the options bun must be given a value for, the next word when it isn't joined by `=` (one whose value is optional
+# takes it only joined by `=`: --config, --inspect); before its x as well, so the value of one isn't its subcommand
+_BUN_VALUED = {"--cwd", "-r", "--preload", "--require", "--import", "--conditions", "--main-fields", "--extension-order",
+               "--tsconfig-override", "-d", "--define", "--drop", "-l", "--loader", "--jsx-factory", "--jsx-fragment",
+               "--jsx-import-source", "--jsx-runtime", "--env-file", "--port", "--title", "--console-depth",
+               "--elide-lines", "-F", "--filter", "--shell", "--install", "--unhandled-rejections", "--watch-kill-signal",
+               "--fetch-preconnect", "--max-http-header-size", "--dns-result-order", "--user-agent"}
 WRAPPER_FLAGS["faketime"] = ("-m", "-f", "--exclude-monotonic", "--disable-shm")
 WRAPPER_FLAGS["xvfb-run"] = ("-a", "--auto-servernum", "-l", "--listen-tcp")
 # runner -> (its subcommands that run a command, options that take a value, positional arguments before the command;
@@ -265,7 +284,7 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "npm": (("exec", "x"), _NPM_OPTS, 0),
            "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
            "yarn": (("exec", "dlx"), ("-p", "--package", "-j", "--jobs", "--from", "--include", "--exclude"), 0),
-           "bun": (("x",), ("-p", "--package"), 0),
+           "bun": (("x",), ("-p", "--package", *_BUN_VALUED), 0),
            "bundle": (("exec",), ("--gemfile",), 0), "rye": (("run",), ("--pyproject",), 0),
            "pixi": (("run", "exec"), ("-e", "--environment", "--manifest-path", "-s", "--spec", "-c", "--channel"), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
@@ -288,7 +307,15 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
                                                   "--cpu", "-c", "--count", "-F", "--freq", "-r", "--repeat", "-I",
                                                   "--interval-print", "-G", "--cgroup", "-u", "--uid", "-m",
                                                   "--mmap-pages", "-x", "--field-separator", "--call-graph"), 0),
-           "rr": (("record",), ("-o", "--output-trace-dir"), 0)}
+           "rr": (("record",), ("-o", "--output-trace-dir"), 0),
+           "dotenvx": (("run",), ("-f", "--env-file", "-fv", "--env-vault-file", "-fk", "--env-keys-file", "-e", "--env",
+                                  "--convention", "-l", "--log-level"), 0),
+           "teller": (("run",), ("-c", "--config"), 0), "tox": (("exec",), ("-e", "-c", "--conf", "--root",
+                                                                           "--workdir", "-x", "--override"), "--"),
+           # nvm's exec runs its command with the node version its first word names
+           # lean: `nvm exec CMD`, the version left to .nvmrc, is read as a version and its arguments; read both when
+           # an agent uses it
+           "nvm": (("exec",), (), 1)}
 # a runner whose subcommand that runs a command is more than one word: the words before the one named in RUNNERS
 # (`hatch env run a-command` runs it as `hatch run` does, in a named environment; `hatch env show` runs nothing)
 RUNNER_LEADS = {"hatch": ("env",)}
@@ -1962,20 +1989,41 @@ def _unread_body(name, args):
     return False
 
 
+def target_directories(args, taking="Smog"):
+    """(the directories cp's, ln's, install's or mv's -t options give, the other arguments): GNU's --target-directory
+    (abbreviated as getopt takes it, `--target=D`), and -t in any cluster (`-rt D`, `-tD`) unless a letter before it
+    is one of `taking`, which takes a value (`-St`, `-mt`); a value is the rest of its word, else the next word."""
+    dirs, rest, i = [], [], 0
+    while i < len(args):
+        a, i = args[i], i + 1
+        if a == "--":
+            rest += ["--"] + args[i:]
+            break
+        long = a.startswith("--t") and "--target-directory".startswith(a.partition("=")[0])
+        short = None if long else re.match(r"-[^-%s]*t(.*)" % taking, a, re.S)
+        if not (long or short):
+            rest.append(a)
+            continue
+        value = a.partition("=")[2] if long and "=" in a else short.group(1) if short else ""
+        if not value and i < len(args):
+            value, i = args[i], i + 1
+        dirs += [value] if value else []
+    return dirs, rest
+
+
 def _copy_operands(args):
     """cp's, ln's, install's or mv's possible sources and destinations. Each option is read both ways, with a value
     (GNU's `--sparse X` or `--suf X`, after the operands too) and without (BSD's `install -S`), so a word after one may
-    be either; none with -t (GNU's --target-directory, abbreviated too; not the value of a letter before it that takes
-    one in GNU's or BSD's tools: `-Stk`), whose copies keep their sources' names."""
+    be either; none with -t (target_directories, not the value of a letter before it that takes one in GNU's or BSD's
+    tools: `-Stk`), whose copies keep their sources' names."""
+    if target_directories(args, "SmogBfDhlMNT")[0]:
+        return [], []
     ops, value = [], False   # (each operand, whether it may be an option's value)
     for i, a in enumerate(args):
         if a == "--":
             ops += [(w, False) for w in args[i + 1:]]
             break
         if a.startswith("-") and a != "-":
-            if re.match(r"-[^-SmogBfDhlMNTt]*t", a) or a.startswith("--t") and "--target-directory".startswith(
-                    a.partition("=")[0]):
-                return [], []
             value = "=" not in a
             continue
         ops.append((a, value))
@@ -2019,6 +2067,13 @@ def _home_readings(ctx):
     the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`) or a here-string gives it (_xargs_here_words),
     and a Windows root or home (_windows_home: C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so
     TK-D004 reads them as that home or root, and TK-D014 as a system folder.
+    Every other command xargs runs (also through env, sudo …) is read again with the words echo or printf pipes into
+    it too (`echo URL | xargs curl -d x`), so a rule reads the words it gets.
+    Also `setcap -` read with the capabilities on its stdin in place of its `-` (`echo cap_setuid+ep | setcap - ./x`),
+    so TK-A077 reads them as setcap's own words: what the stage before it prints when the line gives that exactly
+    (echo, printf's %s and %b, a herestring or heredoc cat copies), else its own herestring or heredoc; piped input
+    the line doesn't give exactly, a pipe and a herestring or heredoc both, or a heredoc or herestring whose text holds
+    a variable or a substitution the parser didn't resolve, reads as every capability.
     lean: in the line's order, whatever subshell or branch the cd is in; a cd elsewhere (or one it can't name) ends it"""
     where, links, printed, fed = None, {}, {}, None
     for c in list(ctx["cmds"]):
@@ -2036,14 +2091,31 @@ def _home_readings(ctx):
                 printed.setdefault(p, []).append((s, ops))
         elif argv[0] in ("xargs", "gxargs"):
             fed = c
-        if c["via"][-1:] in (["xargs"], ["gxargs"]):
+        given = False   # (the words echo or printf pipes in, to what xargs runs: through env, sudo … too)
+        if "xargs" in c["via"] or "gxargs" in c["via"]:
             spots = [(c["pipeline"], c.get("stage", 0)), *(c.get("reaches") or ())]
             extra = [w for p, s in spots for ps, ws in printed.get(p, ()) if ps < s for w in ws]
             if extra:
-                argv = argv + extra
+                argv, given = argv + extra, True
         if c["via"][-1:] in (["xargs"], ["gxargs"]):
             argv = argv + _xargs_here_words(fed, c)
+        if argv[0] == "setcap" and "-" in argv:
+            # what the stage before it prints (Parser.said; a heredoc cat copies is in that cat's stdin), else its own
+            # herestring or heredoc; None, input the line doesn't give exactly, is read as every capability (all+ep)
+            # (one inside a group, subshell, function or shell that is itself a piped stage reads that pipe: None too),
+            # and so is a heredoc or herestring with a $ or backtick left in its text: an expansion the parser didn't
+            # resolve (a variable it doesn't know, a substitution, a heredoc's body as written), as a variable echo
+            # prints is
+            feed = c.get("setcap_in", None if any(s > 0 for _, s in c.get("reaches") or ()) else c["stdin"])
+            texts = [t if isinstance(t, str) else " ".join(x for d in t["cmds"] for x in d["stdin"]) for t in feed or ()]
+            given = ["all+ep"] if feed is None or any(re.search(r"[$`]", t) for t in texts) else \
+                [w for t in texts for w in t.split()]
+            if given:
+                i = argv.index("-")
+                ctx["cmds"].append({**c, "argv": argv[:i] + given + argv[i + 1:], "via": c["via"] + ["setcap's stdin"]})
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
+            if given:
+                ctx["cmds"].append({**c, "argv": argv, "via": c["via"] + ["read with its input"]})
             continue
         read = [argv[0]]
         for a in argv[1:]:
@@ -2144,7 +2216,8 @@ def _learned(ctx):
     second reading (`readings`) read anything the line as written doesn't (more: without it,
     analyse(readings=False) is the same parse); the names of the functions it defines; each name the line gives a
     value (an assignment, a loop's variable), with the literals it may get; whether its loop values' own readings were
-    read (pieces) or the budget left them out (pieces_cut); the redirection targets it appends to (`>>`); `placed`,
+    read (pieces) or the budget left them out (pieces_cut); the redirection targets it appends to (`>>`); the glob
+    options it sets (globs: _glob_options); `placed`,
     each text it read again as code: (how, at, inner, within), `how` "shell" (a line a shell runs: sh -c's script,
     eval's words, a heredoc a shell reads) or "interp" (an interpreter's program), `at` and `inner` its _At (None, None
     when the line doesn't hold it where the parser can name: a git alias's value, a script the line writes), `within`
@@ -2154,7 +2227,8 @@ def _learned(ctx):
             "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"],
             "functions": list(ctx["functions"]), "given": {k: list(v) for k, v in ctx["given"].items()},
             "pieces": bool(ctx.get("piece_lines")) and not ctx.get("pieces_cut"), "pieces_cut": ctx.get("pieces_cut", False),
-            "appended": list(ctx.get("appended", ())), "placed": ctx["placed"], "programs": ctx["programs"]}
+            "appended": list(ctx.get("appended", ())), "globs": ctx["globopts"], "placed": ctx["placed"],
+            "programs": ctx["programs"]}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):
@@ -2545,12 +2619,12 @@ def _brace(word, charge, room=MAX_BRACE, depth=0):
 
 
 # the names the shipped rules protect that a pattern may stand for (`~/.bashr?`, `authorized_key?`, `.git/hook?/x`,
-# `id_*`)
+# `id_*`; app.env for any secrets file named *.env: `./*env`)
 GLOB_NAMES = (".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".zshenv", ".zshrc", ".zprofile",
-              ".zlogin", ".zlogout", "profile", "bash.bashrc", "zshrc", "zshenv", ".env", "id_rsa", "id_ed25519",
-              "id_ecdsa", "id_dsa", "authorized_keys", "authorized_keys2", "credentials", "config", "rc", ".netrc",
-              ".git-credentials", ".pgpass", ".ssh", ".aws", ".git", "hooks", ".claude", ".codex", ".gemini", ".hermes",
-              "docker.sock")
+              ".zlogin", ".zlogout", "profile", "bash.bashrc", "zshrc", "zshenv", ".env", "app.env", "id_rsa",
+              "id_ed25519", "id_ecdsa", "id_dsa", "authorized_keys", "authorized_keys2", "credentials", "config", "rc",
+              ".netrc", ".git-credentials", ".pgpass", ".ssh", ".aws", ".git", "hooks", ".claude", ".codex", ".gemini",
+              ".hermes", "docker.sock")
 _PATTERN_SYNTAX = re.compile(r"[*?]|\[[^]]*\]")
 
 
@@ -2650,17 +2724,40 @@ def _glob_tokens(part):
     return out
 
 
+_STARS_AND_ANY = re.compile(r"(\*+|\?)")
+
+
 def _plain_tokens(part):
     out = []
-    for c in part:
-        if c != "*" or not out or out[-1] is not _STAR:
-            out.append(_STAR if c == "*" else _ANY if c == "?" else c)
+    for run in _STARS_AND_ANY.split(part):
+        if run[:1] == "*":
+            out.append(_STAR)
+        elif run == "?":
+            out.append(_ANY)
+        else:
+            out.extend(run)
     return out
 
 
 def _glob_fits(tokens, name, nocase=False):
     """Whether `name` matches a component's tokens (_glob_tokens): one pass over the name, keeping each token it may
     stand at, so time grows with the name times the tokens (_unglob tries only names as long as its fixed tokens)."""
+
+    if not nocase and tuple not in map(type, tokens):   # (no bracket set: two cursors, one star to go back to)
+        at, pos, star, mark = 0, 0, -1, 0
+        while pos < len(name):
+            if at < len(tokens) and tokens[at] is _STAR:
+                star, mark, at = at, pos, at + 1
+            elif at < len(tokens) and (tokens[at] is _ANY or tokens[at] == name[pos]):
+                at, pos = at + 1, pos + 1
+            elif star >= 0:
+                at, mark = star + 1, mark + 1
+                pos = mark
+            else:
+                return False
+        while at < len(tokens) and tokens[at] is _STAR:
+            at += 1
+        return at == len(tokens)
 
     def one(t, c):
         if t is _ANY:
@@ -3141,6 +3238,21 @@ def _foreign_runs_text(shell, args):
     return True
 
 
+def _kubectl_at(name, args):
+    """Where kubectl's words start in `args` (program `name`'s words after its name) when `name` runs kubectl with them:
+    microk8s's, k3s's and k0s's `kubectl` (k0s's `kc` too), the snap's microk8s.kubectl, kubecolor, and minikube's
+    `kubectl` after its own options, its words after a `--` (minikube reads any option before it as its own); else
+    None."""
+    if name in ("microk8s.kubectl", "kubecolor"):
+        return 0
+    if name in ("microk8s", "k3s", "k0s") and args[:1] in (["kubectl"], ["kc"] if name == "k0s" else []):
+        return 1
+    if name == "minikube" and "kubectl" in args:
+        k = args.index("kubectl") + 1
+        return args.index("--", k) + 1 if "--" in args[k:] else k
+    return None
+
+
 def _as_node(name, args):
     """Node's words for Deno's or Bun's run of code (`deno eval CODE`, `bun -e CODE` or --eval, --print: `-e CODE`) or of
     its stdin (`deno run … -`, `bun run -`: `-`), so node's reading applies; None for any other (a script file, a
@@ -3231,15 +3343,10 @@ def _find_execs(args):
     return out
 
 
-# the options bun and deno must be given a value for, the next word when it isn't joined by `=`; an option whose value
-# is optional takes it only joined by `=` (deno's --inspect, --lock, --env-file, --v8-flags; bun's --config, --inspect)
+# the options deno must be given a value for, the next word when it isn't joined by `=` (bun's: _BUN_VALUED); an option
+# whose value is optional takes it only joined by `=` (deno's --inspect, --lock, --env-file, --v8-flags)
 _DENO_VALUED = {"--ext", "-c", "--config", "--import-map", "--cert", "--seed", "--location", "--conditions", "-L",
                 "--log-level", "--preload", "--require", "--inspect-publish-uid", "--min-dep-age", "--node-modules-linker"}
-_BUN_VALUED = {"--cwd", "-r", "--preload", "--require", "--import", "--conditions", "--main-fields", "--extension-order",
-               "--tsconfig-override", "-d", "--define", "--drop", "-l", "--loader", "--jsx-factory", "--jsx-fragment",
-               "--jsx-import-source", "--jsx-runtime", "--env-file", "--port", "--title", "--console-depth",
-               "--elide-lines", "-F", "--filter", "--shell", "--install", "--unhandled-rejections", "--watch-kill-signal",
-               "--fetch-preconnect", "--max-http-header-size", "--dns-result-order", "--user-agent"}
 _DENO_SUBCOMMANDS = {"eval", "test", "fmt", "lint", "check", "compile", "install", "uninstall", "cache", "info",
                      "doc", "bench", "task", "add", "remove", "upgrade", "completions", "types", "jupyter", "serve",
                      "repl", "init", "coverage", "publish", "outdated", "clean"}
@@ -4340,6 +4447,9 @@ class _Parser:
                                 self.ctx["more"] |= bool(other)
                                 named += [piece[0]] + other * self.ctx["readings"]
                         self.spliced = was
+                    # a brace expression that makes one word (`a{i..i}`) is that name; one that makes more is an
+                    # ambiguous redirect, which bash doesn't write
+                    named += [b[0] for t in named if (b := _brace(t, self.charge)) and len(b) == 1]
                     made = [c for t in named for c in _unglob(t, self.ctx["globopts"], self.ctx["work"])] \
                         if self.ctx["readings"] and target[2] else []
                     self.ctx["more"] |= bool(made)
@@ -4544,6 +4654,8 @@ class _Parser:
                 elif self.spliced or self.expanded or self.unknown or g:
                     text = (_Spliced if self.spliced else _Expanded)(text)
                     text.names, text.unknown, text.glob, text.joined = self.expanded, self.unknown, bool(g), self.joined
+                    text.whole = not g and bool(self.exps) and all(p.quoted and not _ALL_ITEMS.match(p)
+                                                                   for p in self.exps)   # ("$@": a word each)
                 if pieces is None and not located:
                     text = self.where(text, start, self.i)
                 words.append(text)
@@ -4622,7 +4734,9 @@ class _Parser:
             texts = [None if v and not t or k > 5 and p else t   # None: gone
                      for t, v, p in zip(columns[k % 6], vanish, patterns)]
             kept = [i for i, t in enumerate(texts) if t is not None]
-            alt = [words[i] if texts[i] == words[i] else texts[i] for i in kept]   # (a word as written: placed)
+            # (a whole word's other texts are whole too: its expansions left are as quoted as before; a word as written: placed)
+            alt = [words[i] if texts[i] == words[i] else _Whole(texts[i]) if getattr(words[i], "whole", False) and (
+                "$" in texts[i] or "`" in texts[i]) else texts[i] for i in kept]
             read[key] = [(idx[i], t) for i, t in enumerate(texts) if t != words[i]]
             self.ctx["more"] |= bool(read[key])
             self.gone[k].update(read[key])   # and the line (flush)
@@ -4812,6 +4926,8 @@ class _Parser:
         for c in cmds:
             c["stdin"] += strings
             c["out"], c["in"], c["stage"] = outs, ins, stage
+            if piped and c["argv"][0] == "setcap":   # what `setcap -` reads (_home_readings): None when not exact
+                c["setcap_in"] = None if strings or docs or stdin_redirect else self.said.get((pid, stage - 1))
         own = {id(c) for c in cmds}   # what its substitutions and subshells run prints into it
         for c in self.ctx["cmds"][first:]:
             if id(c) not in own:
@@ -5362,10 +5478,27 @@ class _Parser:
                 continue
             elif name in ("npx", "npm") and (script := _npm_call(name, args)) is not None:
                 self.nested(self.code(cmd, [script]), via + [name + " -c"])
-            elif name == "hub":   # git's wrapper: its words are git's
-                argv, via, unreadable = ["git", *args], via + ["hub"], unreadable
+            elif name in ("hub", "ntl"):   # git's wrapper, and the Netlify CLI's own short name: their words are git's, netlify's
+                argv, via, unreadable = ["git" if name == "hub" else "netlify", *args], via + [name], unreadable
+                continue
+            elif name in ("pass", "gopass") and args[:1] == ["git"]:   # git in the password store, with every word after
+                k = 1
+                if name == "gopass":   # but gopass's own --store and a `--` first
+                    k += 2 if args[1:2] == ["--store"] else len(args) > 1 and args[1].startswith("--store=")
+                    k += args[k:k + 1] == ["--"]
+                argv, via, unreadable = ["git", *args[k:]], via + [f"{name} git"], unreadable[k:]
+                continue
+            elif (at := _kubectl_at(name, args)) is not None:   # a Kubernetes distribution's kubectl: its words are kubectl's
+                argv, via, unreadable = ["kubectl", *args[at:]], via + [name], unreadable[at:]
+                self.charge(len(argv))
                 continue
             elif name in ("deno", "bun") and (node := _as_node(name, args)) is not None:   # their code: node's
+                for k in runner_at("bun", args) if name == "bun" else ():   # and bunx's run, its options its own
+                    for other in _unwrap("bun", args[k:]):   # (`bun x -p pkg cmd`: -p is bunx's --package)
+                        if (key := (pid, name, tuple(other))) not in self.unwrapped:
+                            self.unwrapped.add(key)
+                            self.charge(len(other))
+                            cmds += self.emit(other, pid, via + [name], glob, unreadable[len(argv) - len(other):])
                 argv, via, unreadable = ["node", *node], via + [name], [False] * (1 + len(node))
                 self.charge(len(argv))
                 continue
@@ -6720,12 +6853,18 @@ def _lower_name(word):
     return word[:i] + name
 
 
+# Homebrew's coreutils, findutils and GNU tar under a g prefix (gcp is cp)
+_GNU_PREFIXED = re.compile(r"g(cp|mv|rm|ln|install|dd|tee|truncate|shred|chmod|chown|chgrp|unlink|link|tar|find|xargs|"
+                           r"patch|touch|mkdir|rmdir)")
+
+
 @functools.lru_cache(maxsize=256)   # (a decision asks it of each command's program many times)
 def base_name(word):
     """The name a word gives a program or file by: its part after the last / or \\ (Windows reads C:\\x\\git.exe so),
     casefolded and without a Windows program's extension (as _lower_name). A name bash's reading (after the last /)
     gives, it gives too."""
-    return _lower_name(word[max(word.rfind("/"), word.rfind("\\")) + 1:])
+    name = _lower_name(word[max(word.rfind("/"), word.rfind("\\")) + 1:])
+    return m.group(1) if (m := _GNU_PREFIXED.fullmatch(name)) else name
 
 
 def _programs(words, cmds):

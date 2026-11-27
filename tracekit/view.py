@@ -81,6 +81,7 @@ from .netserver import Server
 from .policy2 import compile as policy_compile
 from .policy2.engine import Engine
 from .sdk.client import Client, Incompatible, SignerUnavailable
+from .signer.labels import NOTE_TAIL
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
 from .signer.service import data_dir_at, dev_data_dir, dev_witnesses, load_config, lookup, read_vkeys, reader
@@ -373,10 +374,16 @@ def policy_reasons(paths=(), kept=None):
             out.policies["sha256:" + os.path.basename(p)[:-5]] = json.loads(data)
     for h, pol in out.policies.items():
         # a rule with no reason gives its label as words: side_effect reads "side effect"
-        out[h] = {r["id"]: {"reason": r.get("reason") or (r.get("label") or "").replace("_", " "),
+        # and a rule in shadow as the hook says it (labels.noted): noted, nothing blocked
+        out[h] = {r["id"]: {"reason": _noted(r, r.get("reason") or (r.get("label") or "").replace("_", " ")),
                             **{k: r[k] for k in ("remedy",) if k in r}}
                   for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
     return out
+
+
+def _noted(rule, reason):
+    """A rule's reason as the page and the report say it: a rule in shadow's as a note (labels.NOTE_TAIL)."""
+    return f"noted: {reason}. {NOTE_TAIL}" if rule.get("mode") == "shadow" and reason else reason
 
 
 def _who(i):
@@ -408,9 +415,11 @@ class Translator(observe.Translator):
         self.approvers = observe._Bounded(observe.MAX_RUNS_KEPT)   # approval_id -> who approved it
         self.shadow = collections.defaultdict(lambda: [0, 0])   # rule id -> [person answers agreeing, compared]
         self.content = {}   # (run_id, run_seq) -> a decision's retained arguments, from StoreFeed's content source
+        self.requested = observe._Bounded(observe.MAX_RUNS_KEPT)   # (run, exchange id) -> when a model request was signed, until its response
         # a findings run -> (the run its findings are about, its author: the identity the signer measured)
         self.analyzes = observe._Bounded(observe.MAX_RUNS_KEPT)
         self.grants = observe._Bounded(observe.MAX_RUNS_KEPT)   # grant id -> its intent.grant record's data
+        self.isolation = observe._Bounded(observe.MAX_RUNS_KEPT)   # run id -> its run.registered signer_isolation
 
     def _base(self, e, rec, event):   # tk_tier: T2 a gateway or executor wrote it for its client (said vs did)
         return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent"),
@@ -484,6 +493,7 @@ class Translator(observe.Translator):
             return [{**self._base(e, rec, "tk_note"), "title": title, "text": text, "tape": tape, "v2": v2}]
         if t == "run.registered":
             self.agent_names[e["run_id"]] = (d.get("agent") or {}).get("name") or "agent"
+            self.isolation[e["run_id"]] = d.get("signer_isolation")
             if d.get("analyzes"):
                 self.analyzes[e["run_id"]] = d["analyzes"], _who(d.get("identity"))
             return [{**self._base(e, rec, "SessionStart"),
@@ -491,6 +501,19 @@ class Translator(observe.Translator):
                                + (f" · findings about run {d['analyzes']}" if d.get("analyzes") else "")}]
         if t == "input.observed":   # with its kept content when it was read (wanted): what TIPS' lessons read
             kept = self.content.pop((e["run_id"], e.get("run_seq")), None)
+            agent, _, rest = str(d.get("source")).partition(":hook-decided:")
+            if rest and d.get("trust") == "untrusted":   # (claude_code._flush_decided: the hook's account; a trusted
+                # one is no hook's, and reads as any input). A hook decides a call itself only in dev mode, where the
+                # signer runs as the agent's user: under another signer it is unexpected
+                decision, _, tool = rest.partition(":")
+                odd = self.isolation.get(e["run_id"]) not in (None, "same-user")
+                return note(f"{'UNEXPECTED: ' if odd else ''}THE AGENT-SIDE HOOK REPORTS · {decision} {tool} while "
+                            "the signer was down",
+                            f"{agent}'s hook says it {decision} this call itself, with no signer answering: the agent's "
+                            "own account, no signed decision" + (
+                                "; a hook under this signer fails closed and decides no call itself" if odd else ""),
+                            "INPUT", trust=d.get("trust"), source=d.get("source"),
+                            **({"value": kept} if kept is not None else {}))
             return note(f"INPUT · {d.get('source')}", f"{d.get('trust')} content the run read; the record holds "
                                                        "only its commitment", "INPUT", trust=d.get("trust"),
                         source=d.get("source"), **({"value": kept} if kept is not None else {}))
@@ -700,6 +723,25 @@ class Translator(observe.Translator):
                          "a later call that breaks it waits for a person's approval (TK-CONSTRAINT)"
                          + (": the file is committed, not named" if d.get("object_commitment") else ""), "HOLD",
                          constraint=d.get("kind"))
+        if t == "run.label":   # a run label (docs/policy-v2.md#run-conditions): what the run's conditions read
+            if d.get("action") == "clear" and d.get("self_cleared"):   # a dev signer's own user: maybe the agent
+                return alert("med", f"RUN LABEL SELF-CLEARED · {d.get('label')}"
+                             + (f" · of run {d['run_id']}" if d.get("run_id") else ""),
+                             f"by {d.get('identity')}, the run's own user on a dev signer, whom the agent runs as"
+                             + (f" · {json.dumps(d['reason'])}" if d.get("reason") else ""), "HOLD")
+            if d.get("action") == "clear":
+                return alert("info", f"RUN LABEL CLEARED · {d.get('label')}"
+                             + (f" · of run {d['run_id']}" if d.get("run_id") else ""),
+                             f"by {d.get('person') or d.get('identity')}"
+                             + (f" · {json.dumps(d['reason'])}" if d.get("reason") else ""), "HOLD")
+            how = f"inherited from run {(d.get('inherited') or {}).get('run_id')}, of the same requester" \
+                if "inherited" in d else f"set by this run's record {d.get('source')}"
+            return alert("med", f"RUN LABEL · {d.get('label')}", f"{how}: a later call a run condition reads it "
+                         "for is held for a person (recorded only, under a rule in shadow)", "HOLD")
+        if t == "run.writer":   # a requester of the run besides its owner: the run's labels are its too
+            return alert("info", f"RUN WRITER · {d.get('identity')}",
+                         f"writes stream {d.get('stream')}{' through a gateway' if d.get('gateway') else ''}: the "
+                         "labels this run carries are its as well", "SIGNER")
         if t == "run.child":
             return alert("info", "CHILD RUN", f"run {d.get('run_id')} registered from this run's harness process with "
                                               "this run as its parent", "SIGNER")
@@ -777,8 +819,16 @@ class Translator(observe.Translator):
         # a transcript's thinking or text line has neither, unless it is its message's last: the tailer signs usage there
         out = super().feed(rec) if d.get("tool_uses") or d.get("usage") else []
         x = {"exchange_id": d.get("exchange_id"), "tool_ids": [u["id"] for u in d.get("tool_uses") or ()]}
+        key = (e["run_id"], d.get("exchange_id"))
+        # the LLM gateway signs a request and its response (source "gateway": the signer stamps it, no client's record has it) under one
+        # exchange id: the turn's real start. A record an agent signed under that id says nothing of when the model was asked
+        gateway = e.get("source") == "gateway"
+        if gateway and d.get("phase") == "request" and d.get("exchange_id"):
+            self.requested[key] = observe._epoch(e.get("ts"))
         for r in out:
             r["v2"] = x
+            if gateway and r["event"] == "tk_model" and key in self.requested:
+                r["started"] = self.requested.pop(key)
         if d.get("phase") == "request":
             prompt = findings_v2._tailer(body) and findings_v2._prompt(body)
             return [{**self._base(e, rec, "UserPromptSubmit"), "prompt": prompt[0], "v2": x}] if prompt else []
@@ -1046,6 +1096,11 @@ class StoreFeed:
         self.store = store_name(cfg)
         self.vkeys, self.note = store_trust(cfg, log_vkey)
         self.records, self.base, self.lock = [], 0, threading.Condition()
+        # (tenant, run_id) -> a client run's records as they verified, while its rows are on the live view: the why
+        # server joins why logs to them (why.server.Store._verify); signed_version counts each change, under self.lock
+        # lean: holds each live run's records in memory once more; read them from the store when the join needs them if
+        # a store's live runs outgrow memory
+        self.signed_runs, self.signed_version = {}, 0
         # past it the oldest records leave the live view (base counts them), as observe.Feed's
         self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
         # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report, "checked": when
@@ -1287,7 +1342,9 @@ class StoreFeed:
         with self.lock:   # _again drops a run's off this thread too (rows())
             kept = self.bundles.pop(key, {})
         rep, code, text, verified = check(reader, tenant, run_id, note, self.trust, None, self.memo,
-                                          **({} if self.pg else {"kept": kept}))
+                                          **({} if self.pg else {"kept": kept}),
+                                          policy_dir=os.path.join(self.cfg["data_dir"], "policies")
+                                          if self.cfg.get("data_dir") else None)
         # the runs checked last keep theirs, BUNDLES_MAX bytes in all: one past them is read whole next time, and so is a
         # run bigger than that alone, which keeping would only empty the others' (the signer's own run, never final)
         if kept and len(kept["data"]) <= BUNDLES_MAX:
@@ -1366,6 +1423,12 @@ class StoreFeed:
                 for k in [k for k in self.rowcache if k[:2] == key]:   # and /api/rows' answers
                     del self.rowcache[k]
             self._append([dict(x, tenant=tenant) for x in new], key)
+            if key[1] != SIGNER_RUN[1]:   # what the why server joins why logs to (signed_runs)
+                if code:
+                    self.signed_runs.pop(key, None)
+                else:
+                    self.signed_runs[key] = records
+                self.signed_version += 1
         if self.on_run and key[1] != SIGNER_RUN[1] and not hidden:   # after the tape has the records
             with self._mlock:   # a file store's run as the bytes that verified: an import waiting holds no records
                 self._mirror[key] = kept.get("data") or records
@@ -1469,6 +1532,8 @@ class StoreFeed:
                 if key and self.latest.get(key) is x:
                     del self.latest[key]
                     self.kept[key] = x
+                    if self.signed_runs.pop(key, None) is not None:
+                        self.signed_version += 1
                     if self.on_run and key[1] != SIGNER_RUN[1]:
                         with self._mlock:
                             self._mirror[key] = None
@@ -1518,7 +1583,8 @@ class StoreFeed:
                     count = bisect.bisect_left(run["seqs"], note[0]) if run and note else 0
                     if not count:
                         return None
-                    export(r, tenant, run_id, note[1], out)
+                    export(r, tenant, run_id, note[1], out, policy_dir=os.path.join(self.cfg["data_dir"], "policies")
+                           if self.cfg.get("data_dir") else None)
                     verified, _, code = bundle_records(out, self.trust, self.memo)   # the watcher's: checked once
                 # the store does not match its own checkpoint, or holds a record of a shape export can't read
                 except (ValueError, KeyError, TypeError, AttributeError, IndexError):
@@ -1667,20 +1733,21 @@ def write_trust(path, vkeys, witnesses=()):
     return path
 
 
-def check(reader, tenant, run_id, note, trust, out=None, memo=None, kept=None):
+def check(reader, tenant, run_id, note, trust, out=None, memo=None, kept=None, policy_dir=None):
     """(report, exit code, printed report, records) of verify.v2 on the run's bundle from `reader` with `note`, exported
     to `out`, else checked as bundle_v2.bundle builds it (not zipped); `records`: the run's records as verify.v2 read
     them ([] unless it verifies), so what is shown is what was checked, never a second read of the store; `memo`:
     verify.v2's, kept across checks; `kept`: a dict that holds bundle's `kept` of the run's last bundle that verified
-    (none once one does not), so a run that grew is read from there, from a reader that still holds those records."""
+    (none once one does not), so a run that grew is read from there, from a reader that still holds those records;
+    `policy_dir`: the signer's compiled policies (a file store's own beside it by default: bundle_v2.bundle)."""
     from .why.import_v2 import bundle_records
     records, now = [], {}
     try:
         if out:
-            export(reader, tenant, run_id, note, out)
+            export(reader, tenant, run_id, note, out, policy_dir=policy_dir)
             verified, rep, code = bundle_records(out, trust, memo)
         else:
-            files, info = bundle(reader, tenant, run_id, note, kept=kept)
+            files, info = bundle(reader, tenant, run_id, note, kept=kept, policy_dir=policy_dir)
             verified, rep, code = bundle_records(files, trust, memo)
             now = {} if code else info.get("kept", {})
         records = verified.get(run_id, [])

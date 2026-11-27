@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from factories import TOO_DEEP_JSON
 from tracekit import __version__, agent_hooks, audit, cli
 from tracekit.integrations import harness_hooks
 from tracekit.signer.service import DEFAULT_POLICY, evaluate, load_policy
@@ -233,7 +234,7 @@ class TestAudit(unittest.TestCase):
 
     def test_a_line_nested_past_what_json_takes_is_malformed_and_the_rest_is_read(self):
         """Review of 1.5.3: its RecursionError made the whole file unreadable, its calls uncounted."""
-        _write_jsonl(self.root / "s.jsonl", ["[" * 5000 + "]" * 5000, _call("Bash", {"command": "ls"})])
+        _write_jsonl(self.root / "s.jsonl", [TOO_DEEP_JSON, _call("Bash", {"command": "ls"})])
         report = audit.audit(str(self.root))
         self.assertEqual((report["counts"]["allow"], report["skipped_malformed"], report["unreadable"]), (1, 1, []))
 
@@ -627,6 +628,18 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(report["agents"], {"claude": {"folder": str(folder), "calls": 2, "sessions": 1}})
         self.assertEqual({c["agent"] for c in report["calls"]}, {"claude"})
         self.assertIn(f"\nread: claude ({folder}): 2 calls in 1 session\n", text)
+
+    def test_a_home_with_no_sessions_says_so_in_one_line(self):
+        """It printed every agent's folder, one wall of paths, and exited 2."""
+        home = self.root / "home"
+        home.mkdir()
+        with mock.patch.dict(os.environ, _home(home)):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            code, out, err = _run("--since", "7d")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("no coding-agent sessions found", err)
+        self.assertIn(str(home), err)
+        self.assertEqual(len(err.strip().splitlines()), 1 + ("experimental" in err), err)
 
     def test_help_names_every_reader(self):
         """#811: audit's description listed the agents it reads by hand, so a new reader had to remember to edit it."""
@@ -1053,8 +1066,12 @@ class TestAudit(unittest.TestCase):
             self.assertEqual(audit.codex_root(), str(self.root / "missing" / ".codex" / "sessions"))
             code, _, err = _run()
             self.assertEqual(code, 2)
-            self.assertIn("$CODEX_HOME/sessions", err)
-            self.assertIn("~/.codex/sessions", err)
+            self.assertIn("no coding-agent sessions found", err)
+            helped = io.StringIO()   # where each agent keeps its sessions is the help's
+            with contextlib.redirect_stdout(helped), self.assertRaises(SystemExit):
+                cli.main(["audit", "--help"])
+            self.assertIn("$CODEX_HOME/sessions", " ".join(helped.getvalue().split()))
+            self.assertIn("~/.codex/sessions", " ".join(helped.getvalue().split()))
 
     def _gemini_sessions(self) -> Path:
         """A Gemini CLI tmp folder (#715): a session written as JSON lines, its subagent's file, a session from before

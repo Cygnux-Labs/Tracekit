@@ -5,6 +5,7 @@
 import base64
 import collections
 import contextlib
+import gc
 import hashlib
 import http.client
 import io
@@ -24,9 +25,9 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_signer_service as tsvc  # noqa: E402
-from factories import cc_assistant, cc_result, iso, v2rec, wait_for, write_jsonl  # noqa: E402
+from factories import TOO_DEEP_JSON, cc_assistant, cc_result, iso, v2rec, wait_for, write_jsonl  # noqa: E402
 from test_view import page_js  # noqa: E402
-from tracekit import cli, lessons, observe, tips, view  # noqa: E402
+from tracekit import cli, hook, lessons, observe, tips, view  # noqa: E402
 from tracekit.format import canon  # noqa: E402
 from tracekit.sdk.client import Client, RunHandle  # noqa: E402
 from tracekit.signer import service as svc  # noqa: E402
@@ -1352,7 +1353,7 @@ class Page(unittest.TestCase):
         ex = lambda seq, x: v2rec(seq, "model.exchange", {"exchange_id": x, "phase": "response", "model": "m",  # noqa: E731
                                                           "upstream": "anthropic", "usage": usage})
         got = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
-                                  "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest",
+                                  "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "llmTurn", "ingest",
                                   "joinEgress", "whyRef", "netEffects", "effectHow", "dict", "esc", "plural", "ANSWER",
                                   "DECIDED", "decided"], f"""
             let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
@@ -1385,7 +1386,7 @@ class Page(unittest.TestCase):
         for recs, want in ((tailer + gateway, [1100 + 1513, 407 + 50]), (gateway + tailer, [1100 + 1513, 407 + 50]),
                            (twins + twins_gw, [2 * 1513, 2 * 60]), (twins_gw + twins, [2 * 1513, 2 * 60])):
             got = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
-                                      "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest",
+                                      "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "llmTurn", "ingest",
                                       "joinEgress", "whyRef", "netEffects", "effectHow", "dict", "esc", "plural",
                                       "ANSWER", "DECIDED", "decided"], f"""
                 let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
@@ -1730,7 +1731,7 @@ class Codex(unittest.TestCase):
                                                                         "cache_write_input_tokens": 3_300,
                                                                         "output_tokens": 50}}}])
         with open(os.path.join(d, "2026", "10", "10", "rollout-2026-10-10T11-00-00-3333.jsonl"), "w") as f:
-            f.write("[" * 100_000 + "\n")   # a line nested past what json.loads takes
+            f.write(TOO_DEEP_JSON + "\n")   # a line nested past what json.loads takes
         agents, files, bad = tips.read_codex_sessions(d, 0)
         self.assertEqual(files, 3)
         self.assertEqual(len(agents), 2)   # the root thread's id in the subagent's file merges nothing
@@ -1739,6 +1740,27 @@ class Codex(unittest.TestCase):
         sub = next(a for a in agents.values() if a["kind"] == "subagent")
         self.assertEqual(len(sub["steps"]), 1)   # the record whose payload isn't an object stops nothing
         self.assertEqual((sub["steps"][0]["in"], sub["steps"][0]["cr"], sub["steps"][0]["w"]), (0, 1_000, 3_300))
+
+    def test_no_collection_starts_inside_json_loads_of_a_line_nested_past_its_limit(self):
+        """json.loads of such a line recurses to the interpreter's limit; a collection started there ran other
+        objects' finalisers on that full stack, where their warnings raised (unraisable, flaky on 3.9)."""
+        in_parser = []
+
+        def started(phase, info):   # json.loads's C scanner runs under JSONDecoder.raw_decode
+            f = sys._getframe()
+            while phase == "start" and not in_parser and f is not None:
+                if f.f_code.co_name == "raw_decode":
+                    in_parser.append(True)
+                f = f.f_back
+
+        old = gc.get_threshold()
+        gc.set_threshold(1, 1, 1)
+        self.addCleanup(gc.set_threshold, *old)
+        gc.callbacks.append(started)
+        self.addCleanup(gc.callbacks.remove, started)
+        entries = list(hook.transcript_entries([TOO_DEEP_JSON.encode() + b"\n"], final=True))
+        self.assertEqual(entries, [(len(TOO_DEEP_JSON) + 1, None)])
+        self.assertEqual(in_parser, [])
 
     def test_a_codex_model_with_no_price_shows_the_tips_no_price_note(self):
         body = tips.build([], codex=self.week(model="gpt-made-up"), now=NOW)

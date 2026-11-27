@@ -20,7 +20,7 @@ tracekit report --share --since 7d     # the week's counts, to post
 `tracekit report` does ([weekly report](viewer.md#weekly-report)) and prints its counts alone:
 
 ```text
-Tracekit 1.7.3 field report (tracekit report --share): 7 days
+Tracekit 1.8.0 field report (tracekit report --share): 7 days
 Integrity: the store verified, 31 of 31 runs verify
 Runs that verify, by agent: claude-code 27, codex 2, other 2
 Tool calls: 18,204   allow 15,733, flag 2,318, ask 61, deny 92
@@ -76,9 +76,9 @@ of the calls it matched, marked as `report --share` marks it.
 | The gaps by kind: the signer's own kinds, any other as `other` (`report`) | An agent name that isn't Tracekit's own |
 | Each rule with its decision and its count: Tracekit's own rule ids, every other as `custom rule` (`no rule` for a decision no rule named, `report`); each rule's holds, with how many were approved (by a person or the run's own user, as on a dev signer) and how many never approved were rejected or expired (`report`) | A rule id that isn't Tracekit's own; any record, hash or signature |
 
-An agent name is printed only when it is one Tracekit's own hooks and tools give a run (`claude-code`, `codex`,
-`cursor`, `gemini-cli`, `opencode`, `goose`, `qwen-code`, `droid`, `antigravity`, `crush`, `agentsh`,
-`tracekit-why`). Any other is counted as `other`: an SDK or framework run is named by your code or after your script's
+An agent name is printed only when it is one Tracekit's own hooks and tools give a run (`agentsh`, `antigravity`, `claude-code`, `cline`, `codebuddy-code`, `codex`, `copilot`, `crush`, `cursor`,
+`devin`, `droid`, `gemini-cli`, `goose`, `gptme`, `jcode`, `kilo`, `kiro-cli`, `open-interpreter`, `opencode`,
+`openhands`, `qwen-code`, `tracekit-why`). Any other is counted as `other`: an SDK or framework run is named by your code or after your script's
 file (`tracekit.instrument()`), it can name a customer or a project, and an agent can register its run under any name
 it likes. A rule id is printed only when it is one of the shipped packs', an engine check's or the signer's own; a rule
 of a policy you wrote is counted as `custom rule`, all such rules together. `tracekit report --share`

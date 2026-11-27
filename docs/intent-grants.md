@@ -133,7 +133,7 @@ Amounts are written as you say them, a number and a currency (`500 USDC`, `12.50
 USD, EUR, GBP, INR, CAD, AUD, CHF, SGD, JPY, USDC and USDT; records hold whole smallest units (`500 USDC` is
 500000000). `--signer` names another signer, as for `tracekit approvals`.
 
-From code, the signer's calls are `grant_issue`, `grant_list` and `grant_revoke` (signer protocol 22), for example
+From code, the signer's calls are `grant_issue`, `grant_list` and `grant_revoke` (signer protocol 22 and later), for example
 `tracekit.sdk.client.Client().grant_issue({...})`:
 
 | Call | Request | Answer |

@@ -67,7 +67,7 @@ field that a table does not list is refused, as Versioning says; the notes do no
 
 ## Versioning
 
-The contract has one version number, and this page describes version 27. A released version never changes: any change to
+The contract has one version number, and this page describes version 29. A released version never changes: any change to
 a request or an answer is a new version.
 
 A signer serves a range of versions, from 15 up to its own highest. A client sends `hello` first, which is not one of
@@ -99,6 +99,8 @@ A call or field that this page does not list below was already in version 15. Th
 | 25 | `content_get`'s `type` and `source` |
 | 26 (Tracekit 1.7) | `register_run`'s `continues`: a later run of an agent session, whose provenance index starts `partial` |
 | 27 | `decide`'s `agent_id`: the sub-agent that made the call, as the harness reported it |
+| 28 (Tracekit 1.8) | `run_label_clear`, an operator call (on a dev signer, the run's own user's too): a person ends one of a run's labels ([run conditions](policy-v2.md#run-conditions)); `decide`'s `recorded`: the rules in shadow that would hold the call |
+| 29 (Tracekit 1.8) | the [AI approver](approvals.md#the-ai-approver): `approval_request`'s `project`; `approval_decide`'s `ai` and `view_digest`; `approval_review`'s `ai`; `approver`, for people; an approval's `ai` on `approval_get` and `approval_list`; `approval_list`'s `ended` |
 
 ## Errors
 
@@ -141,7 +143,8 @@ When the connection drops, the SDKs send a call again with the same `request_id`
 refuses a call, the SDKs send only the five event calls (`decide`, `complete`, `observe`, `state_write` and
 `model_event`) again: after `unavailable`, or after `quota_exceeded` with `retry_after_ms`, up to three tries, waiting
 at least `retry_after_ms`. They send no other refused call again, because the signer remembers a `request_id` only in
-memory, and a retry after `unavailable` could record the call twice.
+memory, and a retry after `unavailable` could record the call twice; the one exception is the Python client's
+`export_bundle`, which waits and sends `export_run` again, a read that records nothing.
 
 ## Who may call what
 
@@ -173,7 +176,7 @@ never granted by default. Each one needs an `authorize` entry, or the rule in th
 
 | Call | Who may use it |
 |---|---|
-| `incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`, `response_pause`, `response_resume`, `suspend`, `unsuspend` | The operator calls. See **Operator calls** below. |
+| `incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`, `response_pause`, `response_resume`, `suspend`, `unsuspend`, `run_label_clear` | The operator calls. See **Operator calls** below. |
 | `content_get` | Granted as `content_read`, not under its own name. See **The content vault grant** below. |
 | `content_erase`, `approval_agents`, `decision_import` | Only a caller whose `authorize` entry lists the call. |
 | `approval_review` | Only an agent approver whose `authorize` entry lists it. See **Agent approvers** below. |
@@ -205,12 +208,12 @@ call only `register_run`, `decide`, `complete`, `observe`, `model_event`, `state
 and `status`, whatever `authorize` lists. When its daemon is suspended, the channel stops with it.
 
 **Operator calls.** `incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`,
-`response_pause`, `response_resume`, `suspend` and `unsuspend` are for people who run containment (see
+`response_pause`, `response_resume`, `suspend`, `unsuspend` and `run_label_clear` are for people who run containment (see
 [Operators](incidents.md#operators)). An agent's identity cannot operate its own containment. The signer refuses to
 start if one `authorize` entry lists `register_run` together with an operator call, and it checks again on every call,
 because an identity can match several entries. A call is also refused with `forbidden` for an identity that may
 `register_run` through all its entries together, or that owns open runs, so give operators an identity of their own.
-`incident_resolve` and `run_resume` apply a second check to the person who calls: see
+`incident_resolve`, `run_resume` and `run_label_clear` apply a second check to the person who calls: see
 [Operators](incidents.md#operators).
 
 **Downloading runs.** `export_run` is for an identity that only reads. One `authorize` entry may list it together with
@@ -362,6 +365,8 @@ lists `decide`. A box's agent channel may call it too.
 | `run_seq` | whole number | yes |  |
 | `expires_at` | text | no | up to 40 characters |
 | `send_result` | always `true` | no |  |
+| `recorded` | list of texts | no | up to 32 items; each item: up to 64 characters |
+| `noted` | text | no | up to 1024 characters |
 | `incident_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 
 </details>
@@ -849,6 +854,7 @@ lists `approval_request`. A box's agent channel may call it too.
 | `tool_call_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `attempt` | whole number | no |  |
 | `reason` | text | no | up to 1024 characters |
+| `project` | text | no | 1 to 1024 characters |
 
 **Answer**
 
@@ -947,6 +953,28 @@ lists `approval_get`. A box's agent channel may call it too.
 | `escalation.by` | one of `agent`, `signer` | yes |  |
 | `escalation.reason` | text | no | up to 1024 characters |
 | `run_closing` | always `true` | no |  |
+| `ai` | object | no |  |
+| `ai.mode` | one of `enforce`, `shadow`, `null` | yes |  |
+| `ai.reason` | text | yes | up to 1024 characters |
+| `ai.answer` | object | no |  |
+| `ai.answer.decision` | one of `approve`, `reject`, `escalate` | yes |  |
+| `ai.answer.mode` | one of `enforce`, `shadow` | yes |  |
+| `ai.answer.by` | text | yes | up to 256 characters |
+| `ai.answer.reason` | text | no | up to 1024 characters |
+| `ai.answer.view` | text | no | text: up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])`; text: up to 77 characters; matches `^hmac-sha256:[0-9a-f]{64}(?![\s\S])` |
+| `ai.answer.matched` | object | no |  |
+| `ai.answer.matched.approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `ai.answer.matched.by` | text | no | up to 256 characters |
+| `ai.answer.matched.at` | text | no | up to 40 characters |
+| `ai.answer.matched.target` | text | no | up to 1024 characters |
+| `ai.answer.answers` | list of objects | no | 1 to 2 items |
+| `ai.answer.answers[].model` | text | yes | 1 to 128 characters |
+| `ai.answer.answers[].decision` | one of `approve`, `reject`, `escalate` | yes |  |
+| `ai.answer.answers[].identity` | text | no | 1 to 256 characters |
+| `ai.answer.revoked` | object | no |  |
+| `ai.answer.revoked.by` | text | yes | up to 256 characters |
+| `ai.answer.revoked.at` | text | yes | up to 40 characters |
+| `ai.answer.revoked.reason` | text | no | up to 1024 characters |
 | `args_source` | one of `raw`, `parsed`, `coerced` | yes |  |
 | `args` | any value | yes |  |
 | `binding_digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
@@ -960,7 +988,11 @@ lists `approval_get`. A box's agent channel may call it too.
 Lists the approvals the caller may see, a page at a time, oldest first. Send the previous answer's `next_cursor` as
 `cursor` to get the next page. `state`, `escalated` and `for` narrow the list: `for: agent` gives the approvals an agent
 approver may answer now, and `for: person` gives all the others, including the approvals an agent reviews in shadow mode. An agent approver lists without `run_id`, and the
-signer refuses the request if it sends one.
+signer refuses the request if it sends one. The live approvals come first, by when they were requested; with `ended:
+true` (version 29), the approvals of runs that ended in the last day follow them, in the order their runs ended (never
+to an agent approver). `approval_get` answers such an approval by its id either way. `next_cursor` is a place in that
+order, not an approval: when an approval's run ends between two pages the next page goes on after its place, and with
+`ended: true` an approval listed live may come again among the ended ones (`tracekit approvals list --all` keeps one).
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `approval_list`. An agent approver may call it too, with an `authorize` entry that lists it.
@@ -983,6 +1015,7 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 | `on_behalf.tenant` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `state` | one of `requested`, `approved`, `rejected`, `expired`, `consumed` | no |  |
 | `escalated` | true or false | no |  |
+| `ended` | true or false | no |  |
 | `for` | one of `agent`, `person` | no |  |
 
 **Answer**
@@ -1011,6 +1044,28 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 | `approvals[] (variant 1).escalation.by` | one of `agent`, `signer` | yes |  |
 | `approvals[] (variant 1).escalation.reason` | text | no | up to 1024 characters |
 | `approvals[] (variant 1).run_closing` | always `true` | no |  |
+| `approvals[] (variant 1).ai` | object | no |  |
+| `approvals[] (variant 1).ai.mode` | one of `enforce`, `shadow`, `null` | yes |  |
+| `approvals[] (variant 1).ai.reason` | text | yes | up to 1024 characters |
+| `approvals[] (variant 1).ai.answer` | object | no |  |
+| `approvals[] (variant 1).ai.answer.decision` | one of `approve`, `reject`, `escalate` | yes |  |
+| `approvals[] (variant 1).ai.answer.mode` | one of `enforce`, `shadow` | yes |  |
+| `approvals[] (variant 1).ai.answer.by` | text | yes | up to 256 characters |
+| `approvals[] (variant 1).ai.answer.reason` | text | no | up to 1024 characters |
+| `approvals[] (variant 1).ai.answer.view` | text | no | text: up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])`; text: up to 77 characters; matches `^hmac-sha256:[0-9a-f]{64}(?![\s\S])` |
+| `approvals[] (variant 1).ai.answer.matched` | object | no |  |
+| `approvals[] (variant 1).ai.answer.matched.approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `approvals[] (variant 1).ai.answer.matched.by` | text | no | up to 256 characters |
+| `approvals[] (variant 1).ai.answer.matched.at` | text | no | up to 40 characters |
+| `approvals[] (variant 1).ai.answer.matched.target` | text | no | up to 1024 characters |
+| `approvals[] (variant 1).ai.answer.answers` | list of objects | no | 1 to 2 items |
+| `approvals[] (variant 1).ai.answer.answers[].model` | text | yes | 1 to 128 characters |
+| `approvals[] (variant 1).ai.answer.answers[].decision` | one of `approve`, `reject`, `escalate` | yes |  |
+| `approvals[] (variant 1).ai.answer.answers[].identity` | text | no | 1 to 256 characters |
+| `approvals[] (variant 1).ai.answer.revoked` | object | no |  |
+| `approvals[] (variant 1).ai.answer.revoked.by` | text | yes | up to 256 characters |
+| `approvals[] (variant 1).ai.answer.revoked.at` | text | yes | up to 40 characters |
+| `approvals[] (variant 1).ai.answer.revoked.reason` | text | no | up to 1024 characters |
 | `approvals[] (variant 2)` | object | no |  |
 | `approvals[] (variant 2).approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `approvals[] (variant 2).state` | one of `requested`, `approved`, `rejected`, `expired`, `consumed` | yes |  |
@@ -1067,6 +1122,12 @@ answer](approvals.md#who-may-answer).
 | `asserted.model` | text | no | up to 128 characters |
 | `asserted.version` | text | no | up to 64 characters |
 | `asserted.prompt_hash` | text | no | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
+| `ai` | object | no |  |
+| `ai.answers` | list of objects | yes | 1 to 2 items |
+| `ai.answers[].model` | text | yes | 1 to 128 characters |
+| `ai.answers[].decision` | one of `approve`, `reject`, `escalate` | yes |  |
+| `ai.answers[].identity` | text | no | 1 to 256 characters |
+| `view_digest` | text | no | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 
 **Answer**
 
@@ -1089,7 +1150,10 @@ is `approve` or `reject`. The signer applies its rules to that person, not to th
 is refused for an agent approver.
 
 **Who may call:** only a caller whose `authorize` entry lists `approval_decide_on_behalf`. It is never granted by
-default.
+default. One identity can't both run agents and decide approvals on someone's behalf: a signer.yaml that grants one
+identity `register_run` and `approval_decide_on_behalf` (in one entry, or in entries that add up for an OIDC identity)
+doesn't start, or answers the call with `forbidden`. Remove `register_run` from that entry, or give
+`approval_decide_on_behalf` to an identity of its own (the bridge's).
 
 <!-- api-doc:begin approval_decide_on_behalf -->
 <details>
@@ -1154,6 +1218,7 @@ granted by default.
 | `budget` | object | yes |  |
 | `args` | any value | yes |  |
 | `redacted` | list of texts | yes | up to 4096 items; each item: up to 4096 characters |
+| `ai` | object | no |  |
 | `view_digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 
 </details>
@@ -1212,7 +1277,8 @@ call never runs. Only an approval that an agent approved and nothing has consume
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `approval_revoke`. When the signer has an `approvals` configuration, the caller must also be one of its approvers
-or a break-glass identity.
+or a break-glass identity, and not an identity any run of the tenant had as its client or a writer, open or ended
+(unless `self_approval: allow`): that is an agent session's.
 
 <!-- api-doc:begin approval_revoke -->
 <details>
@@ -1305,6 +1371,48 @@ approvals it revoked.
 </details>
 <!-- api-doc:end approval_agents -->
 
+### `approver`
+
+The [AI approver](approvals.md#the-ai-approver), for people. `status` says whether a person switched it on or off
+(`switch`), the rules and mode the policy gives it, the run labels that send a session's calls to people (`clean`),
+whether the operator's kill switch has agent approvals off (`agents_off`), how often people agreed with it per rule
+(`agreement`), the rules its circuit breaker dropped to shadow, the playbook in force and the entries people's answers
+propose, each with `binds` (people said no to calls like it: the signer holds them for a person, in any project, and
+asks no model; else it is advice the reviewer reads). `on` (for `rules` only, when given) and `off` switch it; `off`
+withdraws its approvals not yet used and hands its waiting calls to people (`revoked` lists the approvals withdrawn).
+`accept` puts a proposal in force (`id`: `L-…`, a lesson drafted from a disagreement with a person, or `P-…`, from
+people's answers all one way) and answers whether it `binds`; one that binds also hands calls like it that wait to
+people and withdraws the AI's approvals of them not yet used (`revoked`). `drop` drops a proposal, `retire` ends one in
+force, `revoke` takes back a precedent (`id`: the approval id of a person's answer), and `enable` turns rules the
+breaker dropped back on. Each change is a signed record in the tenant's signer run, and needs `request_id` (and, from a
+break-glass identity, a `reason`). A signer without an AI approver (no `approvals.agents`, or no `approval_agent` in its policy) answers `invalid_request`.
+
+**Who may call:** an approver of the caller's tenant (`approvals.approvers` or `break_glass`), with the default grants or
+an `authorize` entry that lists `approver`, and for a change, not an identity any run of the tenant had as its client
+or a writer, open or ended (unless `self_approval: allow`): that is an agent session's. An agent approver can't.
+
+<!-- api-doc:begin approver -->
+<details>
+<summary>Request and answer fields</summary>
+
+**Request**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `request_id` | text | depends | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `action` | one of `status`, `on`, `off`, `accept`, `retire`, `drop`, `revoke`, `enable` | yes |  |
+| `id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `rules` | list of texts | no | 1 to 32 items; each item: up to 64 characters |
+| `reason` | text | no | up to 1024 characters |
+
+**Answer**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+
+</details>
+<!-- api-doc:end approver -->
+
 ### `passkey_register`
 
 Registers the passkey of the person a bridge acts for, named in `on_behalf`: its `credential_id` and its `public_key`
@@ -1366,7 +1474,7 @@ lists `status`. A box's agent channel may call it too.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `rpc_version` | always `27` | yes |  |
+| `rpc_version` | always `29` | yes |  |
 | `signer` | object | yes |  |
 | `signer.name` | text | yes | up to 128 characters |
 | `signer.version` | text | yes | up to 64 characters |
@@ -1737,7 +1845,7 @@ listed under `analyzers` in the signer's configuration may register one. In any 
 | `review.verdict (kind finding).asserted.version` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:/@+-]+(?![\s\S])` |
 | `review.verdict (kind finding).asserted.prompt_hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `review.verdict (kind finding).families` | object | no |  |
-| `review.verdict (kind finding).families.reviewer` | one of `anthropic`, `openai`, `google`, `meta`, `mistral`, `deepseek`, `qwen`, `xai`, `None` | yes |  |
+| `review.verdict (kind finding).families.reviewer` | one of `anthropic`, `openai`, `google`, `meta`, `mistral`, `deepseek`, `qwen`, `xai`, `null` | yes |  |
 | `review.verdict (kind finding).families.agent` | list of (one of `anthropic`, `openai`, `google`, `meta`, `mistral`, `deepseek`, `qwen`, `xai`) | yes | up to 8 items |
 | `review.verdict (kind finding).window` | object | no |  |
 | `review.verdict (kind finding).window.grace_s` | number | yes | at least 0; at most 86400 |
@@ -2159,6 +2267,45 @@ the owner, principal or requester of the run.
 
 </details>
 <!-- api-doc:end run_resume -->
+
+### `run_label_clear`
+
+Ends one of a run's labels ([run conditions](policy-v2.md#run-conditions)): the signer writes a `run.label` record
+with `action: clear`, `by: person`, the caller's identity and person, and the redacted `reason`. The label also ends
+for the run's client in the run's tenant, so a later run of theirs doesn't inherit it; an identity the run was
+delegated to keeps its own runs' labels. A later call that sets the label sets it again. A label the run doesn't
+carry is refused with `invalid_request`. The answer gives the `run_id`, the `label` and the `run_seq` of the record.
+
+**Who may call:** only a caller whose `authorize` entry lists `run_label_clear`. It is never granted by default. As
+for `run_resume`, the identity must run no agent, and the caller must be a person (an identity mapped in
+`approvals.persons`, or an OIDC person, who is an approver, or a break-glass identity giving a `reason`) who is not
+the owner, principal or requester of the run. More: [operators](incidents.md#operators). On a signer with no
+`approvals` config (a dev signer), any identity of the run's tenant that may `register_run` clears it, the run's own
+owner too, and the record says `self_cleared`.
+
+<!-- api-doc:begin run_label_clear -->
+<details>
+<summary>Request and answer fields</summary>
+
+**Request**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `request_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `label` | one of `secrets_access`, `untrusted_content` | yes |  |
+| `reason` | text | no | up to 1024 characters |
+
+**Answer**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `label` | one of `secrets_access`, `untrusted_content` | yes |  |
+| `run_seq` | whole number | yes |  |
+
+</details>
+<!-- api-doc:end run_label_clear -->
 
 ### `response_pause`
 

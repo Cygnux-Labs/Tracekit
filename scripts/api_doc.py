@@ -35,7 +35,7 @@ def kind(schema):
     if "const" in schema:
         return "always `%s`" % json.dumps(schema["const"])
     if "enum" in schema:
-        return "one of " + ", ".join("`%s`" % v for v in schema["enum"])
+        return "one of " + ", ".join("`%s`" % ("null" if v is None else v) for v in schema["enum"])
     t = schema.get("type")
     if isinstance(t, list):
         return " or ".join(NAMES.get(x, x) for x in t)

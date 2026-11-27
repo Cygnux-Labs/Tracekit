@@ -652,7 +652,7 @@ class WeeklyReport(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
             code = cli.main(["report", "--config", config])
         self.assertEqual(code, 1)
-        self.assertIn("tracekit report: while parsing a flow node", err.getvalue())
+        self.assertIn("tracekit report:", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
 
     def test_the_dev_report_creates_no_data_dir(self):

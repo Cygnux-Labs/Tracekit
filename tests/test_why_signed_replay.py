@@ -90,7 +90,7 @@ class As:
 class SignedReplay(unittest.TestCase):
     def setUp(self):
         self.dir = tmpdir(self)
-        grants = sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR) + ["content_read"]
+        grants = sorted(REQUESTS.keys() - {"content_get", "export_run", svc.ON_BEHALF} - svc.OPERATOR) + ["content_read"]
         self.s = svc.SignerService(self.dir, gateways=["mtls:spiffe://acme/*"], analyzers=["token:http"],
                                    authorize={"token:http": grants, "mtls:spiffe://acme/gateway": ["model_event", "status"]},
                                    content={"retain": True}, grace_s=60, idle_s=600)
@@ -276,7 +276,8 @@ class TestFindings(SignedReplay):
         self.assertEqual(len(finding["data"]["replay_runs"]), 8)
         (rep, code), manifest = self.bundle()
         self.assertEqual(code, 0, rep.checks)
-        self.assertEqual(manifest["verifier_min_version"], "1.1.0")
+        # 1.2: the decisions carry `detect`, as the laptop default counts calls (TK-L001)
+        self.assertEqual(manifest["verifier_min_version"], "1.2.0")
         self.assertIn(("findings", "pass"), [(c["check"], c["status"]) for c in rep.checks])
 
     @unverified_bundles

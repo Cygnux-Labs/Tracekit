@@ -13,7 +13,8 @@ import pytest
 from tracekit import privacy
 
 SIZE = 256 * 1024
-BOUND = 0.5  # CPU seconds per input, the best of three runs; generous for slow CI runners
+BOUND = 1.0  # CPU seconds per input, the best of three runs: 0.17 on a laptop, up to 0.53 on CI's runners; the
+# quadratic reading it guards took 18.5
 
 ADVERSARIAL = {
     "private_key": ["-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n", "-----BEGIN "],  # agent-flow:allow-secret
@@ -165,6 +166,24 @@ class RedactionRuntimeTests(unittest.TestCase):
                                                                         "Bash"))
                                   for line in (repeated(prefix)[:SIZE // 4], repeated(prefix)))
                 self.assertLess(whole, 6 * quarter + 0.05)
+
+    @pytest.mark.serial
+    def test_the_shapes_code_scanning_flags_read_in_linear_time(self):
+        """CodeQL's py/polynomial-redos flags _NAME_WORDS (zeros), _BLOCK_HEAD (tabs) and _NAME_RUN_EQ (zeros) as
+        polynomial (alerts 58-60): each is matched at one place per name, block head or word, and each of those is read
+        once, so these lines, built to stretch each one, take about four times as long at four times the length."""
+        n = SIZE
+        for name, f in (
+                ("_NAME_WORDS, a secret name of zeros", lambda k: privacy.redact_text("PASSWORD" + "0" * k + "=x")),
+                ("_NAME_WORDS, capitals and zeros", lambda k: privacy.redact_text("TOKEN" + "A0" * (k // 2) + "=x")),
+                ("_BLOCK_HEAD, a head and tabs", lambda k: privacy.redact_text("password: |" + "\t" * k + "x\n")),
+                ("_BLOCK_HEAD, heads and tabs", lambda k: privacy.redact_text("token:\t|\t\tx" * (k // 12))),
+                ("_NAME_RUN_EQ, a word of zeros", lambda k: privacy.redact_command("export TOKEN" + "0" * k, True)),
+                ("_NAME_RUN_EQ, words of zeros",
+                 lambda k: privacy.redact_command("export " + "TOKEN0000 " * (k // 10), True))):
+            with self.subTest(name):
+                quarter, whole = seconds(lambda: f(n // 4)), seconds(lambda: f(n))
+                self.assertLess(whole, 6 * quarter + 0.005)   # the cheapest takes ~2 ms at a quarter: 16x must fail
 
     def test_realistic_secrets_still_redacted(self):
         # fake redaction fixtures  agent-flow:allow-secret

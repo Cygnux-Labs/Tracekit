@@ -69,8 +69,21 @@ held, only deny while quarantined, a held call approved only by a person (never 
 the incident id, no consume under a hold but of an approval asked under an incident still holding the run and none
 under a quarantine, and no tool.result while held or quarantined but of a call in flight when the response took effect
 or, held, one consumed with such an approval.
-Policy snapshots: a policies/ file not named by the SHA-256 of its bytes fails `policy snapshot`; the others are the
-one set of snapshots, by policy_hash, that both the incidents and the agent-approval checks read.
+Run labels (format 1.8, docs/policy-v2.md#run-conditions): a run whose decisions name one policy the bundle carries is
+replayed under it (tracekit.signer.labels): each label a record sets (a call that ran: its decision allowed or flagged
+it, its approval was consumed, or it ran against its decision; an input observed as untrusted) is added by a
+run.label before the run's next decision or consume, and each add cites a record that sets it and wasn't carried; an
+add a run inherits from another run of its requester (`inherited`) is of a label its policy reads (the run it names
+is another bundle's: signer-asserted); a clear is of a carried label and not by the run's owner; a decision's
+run_labels were carried or set by its own rules, and cover each run condition rule it names. A rule on the labels
+field is searched as RE2 reads it, in linear time within one budget for the bundle (tracekit.policy2.linear): a pattern
+the signer would refuse (outside compile.check_pattern) or searches past the budget fail the check, never hang it.
+Fails `run labels`; without the snapshot they are signer-asserted. Every policy a decision names that neither the bundle nor the trust
+config (`policies`) carries is a `label policies` warning: a signer that left a label out of such a run would pass
+unseen.
+Policy snapshots: a policies/ file not named by the SHA-256 of its bytes fails `policy snapshot`; the others, and each
+compiled policy's text the trust config's `policies` lists, by the SHA-256 of its UTF-8 bytes, are the one set of
+snapshots, by policy_hash, that the incidents, run labels and agent-approval checks read.
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
 by kind) gives a `coverage` line; unreconciled calls and unexplained effects make it a warning, so `--strict` exits 3
 on them. Its `matrix` gives the `coverage matrix` line: per action class (model calls, tool calls, network, processes,
@@ -168,10 +181,11 @@ from tracekit.format.canon import StrictJSONError, loads_strict
 from tracekit.format.records import RecordError, record_digest, verify_record
 from tracekit.ledger import read_records, verify_record_sig
 from tracekit.merkle import leaf_hash, verify_consistency, verify_inclusion
+from tracekit.policy2 import compile as policy_compile
 from tracekit.schema import V2, validate
 from tracekit.signer.format_bridge import retire_data
 from tracekit.signer import rpc_schema
-from tracekit.signer.pipeline import SIGNER_RUN
+from tracekit.signer.pipeline import PRECEDENT_S, SIGNER_RUN
 from tracekit.storage.base import ZERO_HASH
 
 # capture.gap kinds that say nothing against a run's own records: the witness, anchor, key and bridge lines judge those
@@ -594,7 +608,7 @@ def load_trust(path):
         t = loads_strict(f.read(MAX_LINE))
     r = t.get("rekor", {}) if isinstance(t, dict) else None
     ok = (isinstance(t, dict) and set(t) <= {"logs", "witnesses", "algs", "witnesses_required", "rekor", "monitors",
-                                             "issuers", "analyzers"}
+                                             "issuers", "analyzers", "policies"}
           and isinstance(r, dict) and (not r or set(r) == {"trusted_root", "publishing_key", "class"}
                                        and isinstance(r["trusted_root"], dict) and isinstance(r["publishing_key"], str)
                                        and r["class"] in CLASSES)
@@ -612,10 +626,17 @@ def load_trust(path):
           and all(isinstance(i, dict) and set(i) == {"vkey", "issuance_log_vkey"}
                   and all(isinstance(v, str) for v in i.values()) for i in t.get("issuers", []))
           and isinstance(t.get("analyzers", []), list)
-          and all(isinstance(a, str) and _IDENTITY.fullmatch(a) for a in t.get("analyzers", [])))
+          and all(isinstance(a, str) and _IDENTITY.fullmatch(a) for a in t.get("analyzers", []))
+          and isinstance(t.get("policies", []), list) and all(isinstance(p, str) for p in t.get("policies", [])))
     if not ok:
         raise ValueError(f"{path}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, "
-                         "issuers, analyzers)")
+                         "issuers, analyzers, policies)")
+    known = {}   # policies: the text of each compiled policy the verifier knows, by its policy_hash
+    for text in t.get("policies", []):
+        data = text.encode("utf-8", "surrogatepass")
+        if not isinstance(loads_strict(data), dict):
+            raise ValueError(f"{path}: a policies entry is not a compiled policy (a JSON object's text)")
+        known["sha256:" + hashlib.sha256(data).hexdigest()] = data
     for k in (t["logs"] + [w["vkey"] for w in t.get("witnesses", [])] + [m["vkey"] for m in t.get("monitors", [])]
               + [v for i in t.get("issuers", []) for v in i.values()]):
         try:
@@ -633,7 +654,8 @@ def load_trust(path):
         if classes.setdefault(w["vkey"], w["class"]) != w["class"]:
             raise ValueError(f"trust pins witness {w['vkey'].split('+')[0]} with two classes ({classes[w['vkey']]}, "
                              f"{w['class']}); a witness has one class: list it once, with the class you give it")
-    return {"witnesses": [], "witnesses_required": 0, "monitors": [], "issuers": [], "analyzers": [], **t}
+    return {"witnesses": [], "witnesses_required": 0, "monitors": [], "issuers": [], "analyzers": [], **t,
+            "policies": known}
 
 
 def _jsonl(data, shortest=MIN_RECORD):
@@ -1045,6 +1067,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   p if p == f"policies/{h[7:]}.json" else f"{p} is not named by the SHA-256 of its bytes")
         if p == f"policies/{h[7:]}.json":
             policies[h] = files[p]
+    policies = {**trust["policies"], **policies}   # and those the trust config knows, by the same hash
 
     still_open = [rs for rs in runs.values() if rs[-1]["event"].get("type") != "run.final"]
     rep.integrity = ("VERIFIED" if not still_open else
@@ -1129,6 +1152,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     _reviews(rep, runs, trust["analyzers"])
     _constraints(rep, runs)
     _incidents(rep, runs, policies)
+    _labels(rep, runs, policies)
     vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",
                                                                                               "content.erased"))
     if vault:   # signer records of the content vault (docs/privacy.md): who read or erased retained content
@@ -1186,10 +1210,15 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     rep.check("key assurance", True, f"certified: {len(issued)} of {len(timeline)} record key(s) by pinned issuer(s) "
                                      f"{', '.join(sorted(set(issued.values())))}" if issued else
               "asserted: the log declares its record keys; none is attested")
+    # a label the run's own user cleared on a dev signer (self_cleared): who that is can be the agent, as for a
+    # self-approval
+    self_cleared = any(r["event"].get("type") == "run.label" and isinstance(r["event"].get("data"), dict)
+                       and r["event"]["data"].get("self_cleared") is True for r in every)
     rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved,
-                                anchors, monitored, reg_cosigs)
+                                anchors, monitored, reg_cosigs, self_cleared)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))
     _approvals(rep, runs, policies)
+    _ai_approvals(rep, runs, policies)
     glass = [r["event"] for r in every if r["event"].get("type") == "approval"
              and r["event"]["data"].get("break_glass") is True]
     if glass:
@@ -1275,14 +1304,20 @@ def _approvals(rep, runs, policies):
             try:
                 pol = loads_strict(snap)
                 asks = {r["id"]: r for r in pol.get("ask", [])}
-                flags = {r["id"] for r in pol.get("flag", [])}
+                flags = {r["id"] for r in pol.get("flag", [])} | (
+                    {"TK-UNKNOWN-TOOL"} if pol.get("unknown_tools") == "flag" else set())
+                listed = set((pol.get("approval_agent") or {}).get("rules") or ()) & set(policy_compile.APPROVER_RULES)
             except (ValueError, TypeError, KeyError, AttributeError):
                 problems.append(f"{where}: the policy snapshot is not a policy")
                 continue
             for rid in dec.get("rule_ids") or []:
                 approval = (asks.get(rid) or {}).get("approval") or {}
-                if rid not in flags and (not isinstance(approval, dict) or "agent" not in approval
-                                         or approval.get("passkey") == "required"):
+                # an AI approver's rule: one the policy's approval_agent lists (from the reviewed list), held as an ask
+                # there, or TK-SHELL-PARSE where on_parse_error asks
+                ai = rid in listed and (rid in asks or rid == "TK-SHELL-PARSE"
+                                        and pol.get("on_parse_error", "ask") == "ask") and req.get("ai") is not None
+                if rid not in flags and not ai and (not isinstance(approval, dict) or "agent" not in approval
+                                                    or approval.get("passkey") == "required"):
                     problems.append(f"{where}: rule {str(rid)[:64]} does not permit agents")
     if agents:   # a bundle without agent approvals keeps the report it always had
         rep.check("approvals by people", True, f"{people} approval(s) answered by people")
@@ -1291,6 +1326,133 @@ def _approvals(rep, runs, policies):
                       "offline (salted commitments): audit one with `tracekit signer reveal`"
                       + (f"; agent approval bounds unchecked for {len(unchecked)}" if unchecked else ""),
             f"{agents} approval(s) answered by agents"), (problems or unchecked)[:20], warn=not problems)
+
+
+def _run_bound(snap):
+    """The run bound (approval_agent.run.clean) of policy snapshot `snap` (bytes): () when the policy has no
+    approval_agent; None when there is no snapshot or it can't be read, `run` included (not an object, its `clean` not a
+    list of strings)."""
+    try:
+        aa = loads_strict(snap).get("approval_agent") if snap else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if snap is None or aa is not None and not isinstance(aa, dict):
+        return None
+    run = (aa or {}).get("run", {})
+    clean = run.get("clean", ()) if isinstance(run, dict) else None
+    return tuple(clean) if isinstance(clean, (list, tuple)) and all(isinstance(c, str) for c in clean) else None
+
+
+def _ai_approvals(rep, runs, policies):
+    """The AI approver's records (docs/approvals.md#the-ai-approver), on a line of their own when the bundle has any: the
+    `ai` of approval requests, what AI answers relied on (`relied_on`), and its playbook, precedent and circuit-
+    breaker records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`) carries
+    `relied_on` with mode enforce, two answers that approve and a person's precedent, the request's policy hash, and
+    no person's rejection of a call like it; with the snapshot of the policy it names, none of the labels its run
+    carried is one the policy's approval_agent run bound names: those the signer says it read (`relied_on.labels`)
+    and those the run's own run.label records add and clear, replayed up to the yes and up to its consume. That is
+    checked on a line of its own, `AI run bound`, when any AI yes had a label either way, which also fails when the
+    bundle has no readable snapshot of the policy such a yes cites (a bundle can leave a snapshot out, never its
+    signed records; a snapshot whose approval_agent.run isn't an object can't be read). A precedent it names, when
+    the bundle holds it, and any person's rejection the bundle holds of a call like it, count as the signer counts
+    them: a person's own answer (not a self-approval, not break-glass) to a request with the same precedent key (its
+    digest), tenant and requester, made in a run clean when asked and when answered (run_clean), before the answer
+    and at most PRECEDENT_S before it, not revoked as a precedent (precedent.revoked) before it. A named precedent
+    that doesn't count, or a rejection that does, fails the line; a named precedent the bundle doesn't hold (often
+    another run's) is counted, not checked."""
+    events = sorted((r["event"] for rs in runs.values() for r in rs), key=lambda e: e["seq"])
+    asked, answered, gone, broken, bound_broken = {}, {}, {}, [], []
+    yes = shadow = checked = outside = changes = labelled = 0
+    carried, held, consumed = {}, {}, {}   # the labels each run's records add and clear, as of each record of note
+    for e in events:
+        d, key = e["data"], (e.get("tenant"), e["data"].get("approval_id"))
+        have = carried.setdefault((e.get("tenant"), e.get("run_id")), set())
+        if e.get("type") == "run.label" and isinstance(d.get("label"), str):
+            (have.add if d.get("action") == "add" else have.discard)(d["label"])
+        elif e.get("type") in ("approval", "approval.consumed"):
+            (held if e["type"] == "approval" else consumed).setdefault(e["seq"] if e["type"] == "approval" else key,
+                                                                         set(have))
+        if e.get("type") == "approval.request" and "ai" in d:
+            asked[key] = e
+        elif e.get("type") == "approval" and d.get("approver_kind") != "agent":
+            answered[key] = e
+        elif e.get("type") in ("playbook.entry", "precedent.revoked", "approver.enabled", "approver.switched"):
+            changes += 1
+            if e["type"] == "precedent.revoked":
+                gone.setdefault((e.get("tenant"), d["approval_id"]), e["seq"])
+
+    def when(e):
+        return datetime.datetime.fromisoformat(e["ts"].replace("Z", "+00:00")).timestamp()
+
+    def discounted(p, pa, e):
+        """Why person's answer `p` (to request `pa`) doesn't count as a precedent at AI answer `e`, or None."""
+        return ("was self-approved" if p["data"].get("self_approved") else
+                "was a break-glass answer" if p["data"].get("break_glass") else
+                "was made in a run that wasn't clean" if not (pa["data"]["ai"]["clean"]
+                                                              and p["data"].get("run_clean") is True) else
+                "came after the answer" if p["seq"] > e["seq"] else
+                f"is more than {PRECEDENT_S // 86400} days older than the answer" if when(e) - when(p) > PRECEDENT_S
+                else "was revoked as a precedent before the answer"
+                if gone.get((e.get("tenant"), p["data"]["approval_id"]), e["seq"]) < e["seq"] else None)
+    for e in events:
+        d = e["data"]
+        if e.get("type") == "approval.suggested" and "relied_on" in d:
+            shadow += 1
+        if not (e.get("type") == "approval" and d.get("approver_kind") == "agent" and d.get("decision") == "approve"):
+            continue
+        mine = asked.get((e.get("tenant"), d.get("approval_id")))
+        if mine is None:   # an agent approver bounded by argument fields, or a request outside the bundle
+            continue
+        yes, at, x = yes + 1, f"seq {e['seq']}", d.get("relied_on")
+        if x is None or x["mode"] != "enforce" or [a["decision"] for a in x.get("answers", ())] != ["approve"] * 2:
+            broken.append(f"{at}: an AI yes that decided without two answers that approve")
+            continue
+        if not x["precedents"]["approve"] or x["precedents"]["reject"]:
+            broken.append(f"{at}: an AI yes without a person's precedent, or with a person's rejection of a call like it")
+        if x["policy_hash"] != mine["data"]["policy_hash"]:
+            broken.append(f"{at}: an AI yes that cites policy {x['policy_hash']}, not the one its call was held under")
+        # the run bound of the policy it cites decides whether the labels the run carried let it answer: those the
+        # signer read, and those the run's own records held at the yes and at its consume
+        ways = (("that carried {}", set(x["labels"])), ("whose records held {} at the yes", held[e["seq"]]),
+                ("whose records held {} at its consume", consumed.get((e.get("tenant"), d.get("approval_id")), set())))
+        if any(ls for _, ls in ways):
+            labelled, bound = labelled + 1, _run_bound(policies.get(x["policy_hash"]))
+            if bound is None:
+                had = ", ".join(sorted(set().union(*(ls for _, ls in ways))))
+                bound_broken.append(f"{at}: an AI yes in a run that carried {had}, under policy {x['policy_hash']}, "
+                                    "whose snapshot the bundle doesn't hold (or can't be read): export the run with its "
+                                    "policy snapshots")
+            for how, ls in ways if bound is not None else ():
+                if ls & set(bound):
+                    bound_broken.append(f"{at}: an AI yes in a run {how.format(sorted(ls & set(bound))[0])}, which "
+                                        "the policy's run bound names")
+        for pid in x["precedents"]["approve"]:
+            p, pa = answered.get((e.get("tenant"), pid)), asked.get((e.get("tenant"), pid))
+            if p is None or pa is None:
+                outside += 1
+                continue
+            checked += 1
+            why = ("is no person's approval" if p["data"].get("decision") != "approve" else
+                   "is of another kind of call" if pa["data"]["ai"]["digest"] != mine["data"]["ai"]["digest"] else
+                   "is another requester's" if pa["data"]["requester"] != mine["data"]["requester"] else
+                   discounted(p, pa, e))
+            if why:
+                broken.append(f"{at}: precedent {pid[:64]} {why}")
+        for (tenant, pid), p in answered.items():   # a rejection that counted, named or not
+            pa = asked.get((tenant, pid))
+            if tenant == e.get("tenant") and pa is not None and p["data"].get("decision") == "reject" \
+                    and pa["data"]["ai"]["digest"] == mine["data"]["ai"]["digest"] \
+                    and pa["data"]["requester"] == mine["data"]["requester"] and discounted(p, pa, e) is None:
+                broken.append(f"{at}: a person's rejection of a call like it ({pid[:64]}) counted when the AI said yes")
+    if asked or shadow or changes:   # a bundle without the AI approver keeps the report it always had
+        rep.check("AI approvals", not broken,
+                  f"{yes} AI approval(s) that decided, each with two answers that agree and a person's precedent "
+                  f"({checked} precedent(s) checked in this bundle, {outside} in runs it doesn't hold); {shadow} "
+                  f"shadow suggestion(s); {changes} switch, playbook, precedent and circuit-breaker record(s)",
+                  broken[:20])
+    if labelled:
+        rep.check("AI run bound", not bound_broken, f"{labelled} AI approval(s) in a run that carried a label, each "
+                  "read against the run bound of the policy snapshot it cites", bound_broken[:20])
 
 
 def _coverage(matrices, k):
@@ -1382,6 +1544,164 @@ def _incidents(rep, runs, policies):
         rep.check("incident policies", False, f"{len(unbundled)} cited policy(ies) not in the bundle: their incidents "
                   "are signer-asserted, not recomputed (export the run with the signer's config, which bundles the "
                   "policies its records cite)", sorted(unbundled)[:20], warn=True)
+
+
+def _labels(rep, runs, policies):
+    """The `run labels` line (module docstring): each run's labels replayed from its records under the compiled
+    policies the bundle (or the trust config) carries for the policy_hashes its decisions name, each record under its
+    own (_policies_at); signer-asserted when one is missing, and so is each label a run inherits (the run it names is
+    another bundle's). A `label policies` warning names each policy a run was decided under that neither carries: its
+    labels, or one a signer left out, can't be replayed. A run condition rule on the labels field is searched as the
+    signer compiles it (labels._compiled), within one budget for the bundle (linear.Budget): a pattern the signer
+    would have refused, or searches past the budget, fail the check."""
+    from tracekit.policy2 import linear
+    from tracekit.signer import detect, labels
+    problems, checked, asserted, unbundled, inherited, budget = [], 0, 0, set(), [], linear.Budget()
+    refused = set()
+    for rs in runs.values():
+        events = [r["event"] for r in rs if isinstance(r["event"].get("data"), dict)]
+        marked = any(e.get("type") == "run.label" or e.get("type") == "policy.decision" and "run_labels" in e["data"]
+                     for e in events)
+        hashes = {str(e["data"]["policy_hash"]) for e in events if e.get("type") == "policy.decision"
+                  and "policy_hash" in e["data"]}
+        unbundled |= {h[:80] for h in hashes if h not in policies}
+        if not hashes or not hashes <= policies.keys():
+            asserted += marked
+            continue
+        srcs = {h: labels.Sources(detect.Rules(loads_strict(policies[h]))) for h in sorted(hashes)}
+        refused |= {(h[:80], str(rid)[:64]) for h, src in srcs.items() for rid in src.refused}
+        if marked or any(src.tracked for src in srcs.values()):
+            checked += 1
+            try:
+                problems += _run_labels(events, srcs, inherited, budget)
+            except linear.Spent as e:
+                problems.append(f"{e}: the rest of the bundle's runs weren't replayed")
+                break
+    problems = [f"policy {h}: {rid} reads the labels with a pattern the signer would refuse (outside the RE2 subset "
+                "check_pattern accepts, or too large): not replayed" for h, rid in sorted(refused)] + problems
+    if checked or asserted:
+        rep.check("run labels", not problems, _found(problems, f"{checked} run(s) replayed under their policies, "
+                                                               f"{asserted} signer-asserted (under a policy not in "
+                                                               "the bundle)"
+                                                     + (f"; {len(inherited)} label(s) inherited from another run of "
+                                                        "the requester, signer-asserted (that run's bundle shows its "
+                                                        "add)" if inherited else ""), "run labels"),
+                  problems[:20])
+    if unbundled:
+        rep.check("label policies", False, f"{len(unbundled)} policy(ies) neither in the bundle nor the trust config: "
+                  "the labels of the runs decided under them are signer-asserted, not replayed, so one a signer left "
+                  "out wouldn't show (export the run with the signer's config, which bundles the policies its records "
+                  "cite, or add the policy's text to the trust config's `policies`)", sorted(unbundled)[:20],
+                  warn=True)
+
+
+def _policies_at(events, srcs):
+    """The policies (labels.Sources) each of a run's records is replayed under, `srcs` {policy_hash: Sources} holding
+    each one its decisions name: a decision's own; another record's, that of the decision before it (the first one's
+    before any) and, between two decisions under different policies, the next one's too (the signer restarted under
+    another policy somewhere between them)."""
+    if len(srcs) == 1:
+        return [list(srcs.values())] * len(events)
+    named = [str(e["data"]["policy_hash"]) if e.get("type") == "policy.decision" and "policy_hash" in e["data"]
+             else None for e in events]
+    after, nxt = None, []
+    for h in reversed(named):
+        after = h or after
+        nxt.append(after)
+    before, out = None, []
+    for h, n in zip(named, reversed(nxt)):
+        before = h or before
+        out.append([srcs[x] for x in dict.fromkeys((before or n, n or before))])
+    return out
+
+
+def _run_labels(events, srcs, inherited, budget=None):
+    """The problems of one run's labels under labels.Sources `srcs` (policy_hash -> Sources), each record replayed under
+    its policy (_policies_at): a label a record sets that no run.label adds before the run's next decision or consume
+    (or its end), where a record replayed under two policies owes only what both set and may add what either does; an
+    add the record it cites doesn't set, or of a label carried; an inherited add of a label no run condition reads; a
+    clear of a label not carried, or by the run's owner; a decision whose run_labels the run didn't carry (nor its own
+    rules set) or that don't cover each run condition rule it names. Each inherited add of a label its policy reads goes
+    to `inherited`, (where, label, the add it cites). A label pattern's searches spend `budget` (linear.Budget; a fresh
+    one without), raising linear.Spent when it runs out."""
+    from tracekit.policy2 import linear
+    budget = budget or linear.Budget()
+    problems, carried, owed, may, asked, decided, owner, seqs, callers = [], set(), {}, {}, {}, {}, None, {}, set()
+    key = lambda x: x if isinstance(x, str) else None   # noqa: E731 (a schema-invalid id names nothing)
+    for e, cands in zip(events, _policies_at(events, srcs)):
+        t, d, where, src = e.get("type"), e["data"], f"seq {e.get('seq')}", cands[0]
+        if not isinstance(e.get("run_seq"), int):   # schema-invalid: its schema check fails it
+            continue
+        seqs[e["run_seq"]] = e.get("seq")
+        if t == "run.registered" and isinstance(d.get("identity"), dict):
+            owner = f"{d['identity'].get('scheme')}:{d['identity'].get('subject')}"
+        if t in ("run.registered", "run.writer"):   # the client a gateway registered it for, a writer: requesters
+            callers.add(d.get("caller") if t == "run.registered" else d.get("identity"))
+        if t == "run.label" and d.get("action") == "clear" and "run_id" in d:   # an ended run's, in the signer run
+            continue
+        if t == "run.label":
+            x = key(d.get("label"))
+            if d.get("action") == "add":
+                if x is not None and x in carried:
+                    problems.append(f"{where}: adds {x[:32]}, which the run carries already")
+                elif "inherited" in d and any(x in c.tracked for c in cands):
+                    inherited.append((where, x, d["inherited"]))
+                elif "inherited" in d:
+                    problems.append(f"{where}: inherits {str(x)[:32]}, which the run's policy doesn't read")
+                elif x is None or d.get("source") not in (owed.get(x), may.get(x)) or d.get("source") is None:
+                    problems.append(f"{where}: adds {str(x)[:32]} citing run_seq {str(d.get('source'))[:20]}, which "
+                                    "doesn't set it under the run's policy")
+                if x is not None:
+                    owed.pop(x, None)
+                    may.pop(x, None)
+                    carried.add(x)
+            elif x not in carried:
+                problems.append(f"{where}: clears {str(x)[:32]}, which the run doesn't carry")
+            elif d.get("identity") == owner and d.get("self_cleared") is not True:
+                problems.append(f"{where}: {str(x)[:32]} cleared by the run's own owner")
+            elif d.get("identity") in callers and d.get("self_cleared") is not True:
+                problems.append(f"{where}: {str(x)[:32]} cleared by a requester of the run (a writer or a gateway's "
+                                "caller)")
+            else:
+                carried.discard(x)
+            continue
+        if t in ("policy.decision", "approval.consumed"):
+            problems += [f"seq {seqs.get(s)}: sets {x}, which no run.label adds before {where}" for x, s in owed.items()]
+            carried |= owed.keys()
+            owed, may = {}, {}
+        ids = [i for i in d.get("rule_ids") if isinstance(i, str)] if isinstance(d.get("rule_ids"), list) else []
+        if t == "policy.decision":
+            have = carried | {src.label[i] for i in ids if i in src.label}
+            used = {x for x in d.get("run_labels") if isinstance(x, str)} if isinstance(d.get("run_labels"), list) \
+                else set()
+            problems += [f"{where}: run_labels names {x[:32]}, which the run didn't carry" for x in sorted(used - have)]
+            problems += [f"{where}: {i} applied without run_labels naming {', '.join(sorted(src.when[i]))}"
+                         for i in ids if i in src.when and not src.when[i] <= used]
+            # a run condition on the labels field, replayed from the call's rule ids and what the run carried, as
+            # Engine.condition matches it (not for a retry the signer answers from its memo, nor a harness call, which
+            # meets no run condition, nor a call none of whose rules has a label it reads)
+            subject = policy_compile.labels_subject(ids, src.subject_labels)
+            tool = d.get("tool") if isinstance(d.get("tool"), str) else None
+            if subject and key(e.get("tool_call_id")) not in decided and tool and \
+                    src.rules.tool_class(tool) != "harness":
+                problems += [f"{where}: {rid} applies (the call's labels {subject}; the run carried "
+                             f"{', '.join(sorted(src.when[rid]))}) but the decision doesn't name it"
+                             for rid, rx, unless, cls in src.on_labels if rid not in ids and src.when[rid] <= have
+                             and cls in (None, src.rules.tool_class(tool)) and rx(subject, budget)
+                             and not (unless and unless(subject, budget))]
+            if isinstance(d.get("caller"), str):
+                callers.add(d["caller"])
+            decided[key(e.get("tool_call_id"))] = {"tool": d.get("tool"), "rule_ids": ids}
+        elif t == "approval.request" and isinstance(d.get("binding"), dict):
+            asked[key(d.get("approval_id"))] = {"tool": d["binding"].get("tool"), "rule_ids": ids}
+        call = {**d, "rule_ids": ids} if t == "policy.decision" else d
+        sets = [c.sets({**e, "data": call}, lambda a: asked.get(key(a)), lambda c: decided.get(key(c))) for c in cands]
+        need = set.intersection(*sets)
+        for x in sorted(need - carried - owed.keys()):
+            owed[x] = e["run_seq"]
+        for x in sorted(set.union(*sets) - need - carried - owed.keys() - may.keys()):
+            may[x] = e["run_seq"]
+    return problems + [f"seq {seqs.get(s)}: sets {x}, which no run.label adds" for x, s in owed.items()]
 
 
 def _honoured(events, pointers):
@@ -1918,8 +2238,9 @@ def _level(cosigs, witnesses, trust, anchors=()):
 
 
 def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anchors=(), monitored=(),
-               registry_notes=()):
-    """dev: no pinned witness cosigned or anchor verified, or a self-approval in the run; local: only operator-run
+               registry_notes=(), self_cleared=False):
+    """dev: no pinned witness cosigned or anchor verified, or a self-approval or self-cleared label in the run; local:
+    only operator-run
     ones; witnessed: enough independent ones (a pinned Rekor anchor counts as one, unless classed operator);
     witnessed+monitored: witnessed, and a pinned monitor's (not classed operator) fresh report covers the checkpoint.
     A run-set's registry notes (`registry_notes`: the cosignatures of each) cap the level by the same rule."""
@@ -1927,7 +2248,7 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anch
     times = [datetime.datetime.fromtimestamp(ts, datetime.timezone.utc) for k, ts in cosigs if witnesses[k] != "operator"]
     times += [at for _, cls, at in anchors if cls != "operator"]
     order = ("dev", "local", "witnessed")
-    level = "dev" if self_approved else _level(cosigs, witnesses, trust, anchors)
+    level = "dev" if self_approved or self_cleared else _level(cosigs, witnesses, trust, anchors)
     capped = min((_level(c, witnesses, trust) for c in registry_notes), key=order.index, default="witnessed")
     if order.index(capped) < order.index(level):
         level = capped
@@ -1946,7 +2267,7 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anch
             + (f"; earliest independent anchor {min(times):%Y-%m-%dT%H:%M:%SZ}" if times else "")
             + "".join(f"; monitored by {name} ({cls}) at {at}" for name, cls, at in monitored)
             + (f"; capped by the run-set's registry notes ({capped})" if capped else "")
-            + ("; approvals: self" if self_approved else ""))
+            + ("; approvals: self" if self_approved else "") + ("; labels: self-cleared" if self_cleared else ""))
 
 
 # the checkpoint check's refusal of a cosignature names the pinned witness by its key name, which docs/public-witness.md

@@ -223,6 +223,14 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
   },
   "incident policies": { warn: "Policies an incident cites that aren't in the bundle: those incidents are the "
     + "signer's word." },
+  "run labels": {
+    pass: "What each run had done that its run conditions read (a secret read, untrusted content), replayed from its "
+      + "records under its policy, and what it inherited from another run of the same requester.",
+    fail: "A run label was added without a record that sets it, left out after one, or cleared by the run's own owner, "
+      + "or a call was held under a label the run didn't carry.",
+  },
+  "label policies": { warn: "Policies runs were decided under that neither the bundle nor the trust config carries: "
+    + "their labels are the signer's word, and one it left out wouldn't show." },
   "content vault": { pass: "Who read or erased retained content, as the signer recorded it." },
   "tiers": {
     pass: "Tool calls by how they were captured: T2 gateway or executor, T1 adapter, T3 import (receipt only).",
@@ -246,6 +254,20 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
     warn: "Held calls approved by agents (model output); some couldn't be checked against their rules: the bundle "
       + "lacks the policy they were held under.",
     fail: "An agent approved a call the rules for agent approvals don't let it approve.",
+  },
+  "AI approvals": {
+    pass: "Held calls an AI approver answered, each yes with two model answers that agree and a person's earlier yes "
+      + "to a call like it, checked where the bundle holds that yes.",
+    fail: "An AI approver's yes decided a call without two answers that agree, without a person's earlier yes to a "
+      + "call like it, with a person's rejection of a call like it, or on an earlier yes that doesn't hold: another "
+      + "kind of call, a self-approval or break-glass answer, a run that wasn't clean, given after it or over 30 days "
+      + "before it, or revoked before it.",
+  },
+  "AI run bound": {
+    pass: "AI approvals in runs that carried a label (a secret read, say), each checked against the run bound of the "
+      + "policy it was decided under: none of those labels closed the run to the AI approver.",
+    fail: "An AI approver's yes in a run whose label the policy's run bound names, or one whose policy snapshot the "
+      + "bundle doesn't hold, so nothing shows the run bound allowed it. Export with the policy snapshots.",
   },
   "break-glass approvals": { warn: "Approvals given under the break-glass role, with who and why." },
   "not interpreted": { warn: "Records carry an extension this verifier doesn't read. They verified like every other "

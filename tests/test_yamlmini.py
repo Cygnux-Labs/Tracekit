@@ -224,6 +224,24 @@ class WithoutPyYAML(unittest.TestCase):
             self.assertEqual(yamlmini.load_any(text), {"data_dir": "viewer", "storage": {"postgres": {"dsn_file": "reader.dsn"}}})
             self.assertEqual(yamlmini.load_any("data_dir: viewer\n"), {"data_dir": "viewer"})
 
+    def test_malformed_text_is_a_yaml_error_with_pyyaml_and_without(self):
+        for modules in ({}, {"yaml": None}):
+            with self.subTest(modules=modules), mock.patch.dict("sys.modules", modules):
+                with self.assertRaises(yamlmini.YAMLError) as cm:
+                    yamlmini.load_any("::: [\n")
+                self.assertIsInstance(cm.exception, ValueError)
+
+
+class StripComment(unittest.TestCase):
+    def test_a_line_with_no_hash_comes_back_as_the_comment_scan_returns_it(self):
+        # a line with no `#` skips the scan; the scan, given the same line with a comment after it, must agree
+        lines = ['key: "a \\" quote"  ', "key: 'it''s'", "list: [a, 'b', \"c\"]", "map: {a: 1, b: [2, 3]}", "- item  ",
+                 "plain value with trailing spaces   ", "  indented: x\t"]
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertEqual(yamlmini._strip_comment(line), line.rstrip())
+                self.assertEqual(yamlmini._strip_comment(line + " # a comment"), line.rstrip())
+
 
 if __name__ == "__main__":
     unittest.main()

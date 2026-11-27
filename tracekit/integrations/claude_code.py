@@ -99,8 +99,8 @@ import uuid
 import warnings
 from collections import deque
 
-from tracekit import __version__, constraints, model_receipt, privacy
-from tracekit.client import system_config
+from tracekit import __version__, model_receipt, privacy
+from tracekit.client import SystemConfigError, system_config
 from tracekit.core import subagent_id
 from tracekit.deploy import files
 from tracekit.format.canon import event_hash
@@ -126,6 +126,10 @@ REFUSED_LINE = re.compile(r'- "([^"]+)", refused: (".*")')
 RESUMED = ("resume", "fork")   # SessionStart sources whose transcript already holds the session's earlier history
 FRESH = ("startup", "clear")   # SessionStart sources of a new transcript
 ENDED = "ended"   # _state(sid, ENDED): a SessionEnd of the session came; kept as the session's state is (_prune)
+# _state(sid, HOOK_DECIDED): the calls the hook decided itself with no signer answering (_hook_decided), each sent to the
+# run as an untrusted observation once the signer answers again (_flush_decided) and kept, marked sent, for doctor
+HOOK_DECIDED = "hook-decided"
+HOOK_DECIDED_MAX = 100
 FULL = ("[tracekit] the run has the most file constraints the signer takes: what this prompt says not to change was "
         "not added, so every write of the run is now held for your approval")
 APPROVAL_WAIT_S = 540   # a PreToolUse hook, approval wait included, answers within this: below its timeout (install.HOOK_TIMEOUT)
@@ -238,24 +242,43 @@ def _block(msg):
     return 2
 
 
-def approvals_cmd(signer, use_interpreter=False):
-    """`tracekit approvals`, for a person to run, naming `signer` when there is one: a named signer (system mode's,
-    $TRACEKIT_SIGNER's) may not be the person's default; quoted: outside system mode the agent may have set it. On
-    Windows (cmd.exe reads no single quotes) in double quotes, which cmd.exe and PowerShell both read as written but for
-    a quote (PowerShell's curly ones too), $, a backtick, cmd.exe's %VAR% or a line break: a name holding one is left
-    for the person to fill in. `use_interpreter`: run through the Python running the hook (Codex's `!` may not have
-    `tracekit` on PATH) with `-I`: the person runs it in the agent's working folder, where `-m` would first import a
-    `tracekit` package found there; on Windows Codex runs it under PowerShell, which runs a quoted program only through
-    `&`, so a path that needs no quotes goes bare, as agent_hooks does for Codex's hook command."""
+def system_signer(signer):
+    """Whether `signer` is system mode's own: the one the root-owned client config names."""
+    try:
+        return bool(signer) and signer == (system_config() or {}).get("signer")
+    except SystemConfigError:   # the hook refuses to run then; a person's command still names the signer
+        return False
+
+
+def person_cmd(signer, use_interpreter=False):
+    """(how a person runs Tracekit, the ` --signer ADDR` its commands name, or ""), for `signer`. System mode's own
+    signer (the root-owned client config's) is the person's default, and init puts no `tracekit` on PATH there: the
+    root-owned venv's Python, `-I -m tracekit`, as the docs say. Another named signer ($TRACEKIT_SIGNER's, a remote
+    one) may not be the person's default: named, quoted, as the agent may have set it. On Windows (cmd.exe reads no
+    single quotes) in double quotes, which cmd.exe and PowerShell both read as written but for a quote (PowerShell's
+    curly ones too), $, a backtick, cmd.exe's %VAR% or a line break: a name holding one is left for the person to fill
+    in. `use_interpreter`: run through the Python running the hook (Codex's `!` may not have `tracekit` on PATH) with
+    `-I`: the person runs it in the agent's working folder, where `-m` would first import a `tracekit` package found
+    there; on Windows Codex runs it under PowerShell, which runs a quoted program only through `&`, so a path that needs
+    no quotes goes bare, as agent_hooks does for Codex's hook command."""
+    if system_signer(signer):
+        from tracekit.install import OPT_PYTHON
+        return f"{OPT_PYTHON} -I -m tracekit", ""
     unsafe = r'["\N{LEFT DOUBLE QUOTATION MARK}-\N{DOUBLE LOW-9 QUOTATION MARK}$`%\x00-\x1f\x7f]'
     named = signer and (shlex.quote(signer) if os.name != "nt" else
                         "<TRACEKIT_SIGNER>" if re.search(unsafe, signer) else f'"{signer}"')
-    command = "tracekit approvals" + (f" --signer {named}" if named else "")
+    command = "tracekit"
     if use_interpreter:
         exe = (shlex.quote(sys.executable) if os.name != "nt" else sys.executable
                if re.fullmatch(r"[A-Za-z0-9_.:\\-]+", sys.executable) else f'& "{sys.executable}"')
         command = f"{exe} -I -m {command}"
-    return command
+    return command, f" --signer {named}" if named else ""
+
+
+def approvals_cmd(signer, use_interpreter=False):
+    """`tracekit approvals`, for a person to run, as person_cmd says to run it against `signer`."""
+    program, named = person_cmd(signer, use_interpreter)
+    return f"{program} approvals{named}"
 
 
 def _utc(ts):
@@ -393,6 +416,8 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
                 st = _register(client, path, st)   # the signer closed the stored run (idle): a new one gets them all
                 full = _constrain(client, path, st)
         _tail(client, path, st)
+        if st and not st.get("ended"):
+            st = _flush_decided(client, path, st, sid)
         seen = _seen(st and st.get("transcript"))   # before this event's call: lines its run's tailer reports there
         if not (st and send):
             if seen and not st.get("ended"):
@@ -414,6 +439,63 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
             _constrain(client, path, st)
             _tail(client, path, st)
             return _send(client, path, st, send, fields, seen, skip)
+
+
+def _next_seq(sid):
+    """The session's next client_seq as its state says, or None."""
+    try:
+        return (_load(_state(sid)) or {}).get("seq")
+    except Exception:   # (unreadable state: the call is then counted by a skip, _flush_decided)
+        return None
+
+
+def _hook_decided(sid, tid, tool, args, decision, why, used=False):
+    """Keep a call the hook decided itself, with no signer answering (failclosed): `decision` blocked or allowed, `why`
+    the class or rules that blocked it, `used` whether its send that failed used a client_seq. Under the session lock,
+    as _run sends them."""
+    path = _state(sid, HOOK_DECIDED)
+    with open(_state(sid)[:-len(".json")] + ".lock", "a") as lk:
+        lock_file(lk)
+        kept = (_load(path) or [])[-(HOOK_DECIDED_MAX - 1):]
+        files.write_json(path, kept + [{"ts": time.time(), "tool": str(tool)[:128], "tool_use_id": tid,
+                                        "decision": decision, "why": why, "args": event_hash(args), "used": used}])
+
+
+def _flush_decided(client, path, st, sid):
+    """Send the run each call the hook decided while the signer was down (_hook_decided) and hasn't sent: an untrusted
+    observation `<agent>:hook-decided:<blocked|allowed>:<tool>` whose value is the hook's account (never a signed
+    decision); marked sent. Each such call is one event the signer never got: its send that failed used a client_seq,
+    or (`used` false) its observation goes one past the last sent (_send's skip), so the signer writes and signs a
+    client_counter_gap counting each call once, whatever the harness's transcript shows (a harness recorded said_only
+    shows no call). -> the session state, its client_seq past them. Called under the session lock (_run)."""
+    queue = _state(sid, HOOK_DECIDED)
+    kept = _load(queue) or []
+    for x in kept:
+        if not isinstance(x, dict) or x.get("sent"):
+            continue
+        skip = int(x.get("used") is not True)
+        _send(client, path, st, "observe", {"source": f"{AGENT}:hook-decided:{x.get('decision')}:{x.get('tool')}"[:256],
+                                            "trust": "untrusted", "value": {k: v for k, v in x.items() if k != "sent"}},
+              skip=skip)
+        st = dict(st, seq=st["seq"] + skip + 1)
+        x["sent"] = True
+        files.write_json(queue, kept)
+    return st
+
+
+def _project(cwd):
+    """{"project": the folder the session works in}, for an approval request: the nearest folder at or above `cwd` (the
+    hook payload's, absolute) that holds a .git, else `cwd` itself; {} without one. The signer keys the AI approver's
+    precedents by it (narrowing them only: it is the agent's own word); the reviewer reads nothing of the project
+    (docs/approvals.md#the-ai-approver). Only names are looked at: nothing in the folder is read or run."""
+    if not (isinstance(cwd, str) and os.path.isabs(cwd) and len(cwd) <= 1024):
+        return {}
+    d = cwd
+    while not os.path.lexists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return {"project": cwd}
+        d = os.path.dirname(d)
+    return {"project": d}
 
 
 def _register(client, path, prev=None, offsets=None, continues=True):
@@ -760,7 +842,7 @@ def _pre(client, p, sid, tid, end=None):
         try:
             cap()
             # the same call held earlier in the run (the agent's retry) gets that call's approval: approved, it runs
-            asked = run.call("approval_request", tool_call_id=tid)
+            asked = run.call("approval_request", tool_call_id=tid, **_project(p.get("cwd")))
             aid, state = asked["approval_id"], asked["state"]
             cmd = approvals_cmd(client.signer, use_interpreter=AGENT == "codex")
             wait_s = approval_wait_s()
@@ -793,7 +875,8 @@ def _pre(client, p, sid, tid, end=None):
             expires, look = _utc(asked.get("expires_at")), f"look with `{bang}{cmd} show {aid}`"
             if waited.get("reason"):   # an agent approver's approval in its veto delay: approved, it may run after it
                 return block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])} is {waited['reason']}, then "
-                                      "make the identical call again.", reason, look + ".",
+                                      "make the identical call again.", reason,
+                                      f"{look}; take it back before it runs with `{bang}{cmd} revoke {aid}`.",
                                       "wait as the first line says, then make the identical call again; if it is "
                                       "held again, tell the person and pass on what it says."))
             return block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])}"
@@ -809,9 +892,17 @@ def _pre(client, p, sid, tid, end=None):
         c = run.approval_consume(tid, tool, args)   # every call that runs: once, for the decided args
     if not c["ok"]:
         return block(stopped(f"BLOCKED, nothing ran{_rules(c['rule_ids'])}.", c.get("reason")))
+    # a rule in shadow that would hold the call (decide's `recorded`): one quiet line for the person, the call runs
+    note = d.get("recorded") and "[tracekit] " + (d.get("noted") or f"noted: {d.get('reason') or 'a rule in shadow'} "
+                                                  f"({', '.join(d['recorded'])}). Nothing is blocked; it's in the record.")
     if "args" in c and AGENT == "claude-code":   # T2: the signer's copy is what runs
         args = c["args"]
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}}))
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args},
+                          **({"systemMessage": note} if note else {})}))
+    elif note and AGENT == "claude-code":   # Claude Code shows a systemMessage to the person
+        print(json.dumps({"systemMessage": note}))
+    elif note:
+        print(note, file=sys.stderr)
     files.write_json(_state(sid, tid), {"run_id": run.run_id, "tool_call_id": tid, "decision_id": d["decision_id"],
                                         "args_digest": event_hash({"tool": tool, "args": args}), "tool": tool,
                                         "send_result": d.get("send_result", False),
@@ -927,6 +1018,7 @@ def _post(client, p, sid, tid):
 
 def _live(prompt):
     """The constraints `prompt` states that the signer holds calls for: all but a scope (only_change)."""
+    from tracekit import constraints   # only a UserPromptSubmit needs it, and it loads the policy engine
     return [(kind, obj and obj[:256]) for kind, obj in constraints.extract(prompt) if kind != "only_change"]
 
 
@@ -951,6 +1043,7 @@ def _states(prompt, source, value, start):
     handoff (_handoff)."""
     if _handoff(prompt, source, start):
         return []
+    from tracekit import constraints
     return _live(re.sub(r"<[^<>]*>", "", value[:constraints.MAX_TEXT]))
 
 
@@ -1197,7 +1290,7 @@ def _prune():
     call's, which one that never got its PostToolUse leaves behind, or a lock no state needs) after the signer's
     default run idle timeout, when the signer has closed its run. A session's ENDED marker is kept as its state is."""
     from tracekit.signer.service import IDLE_S
-    now, ended = time.time(), _state("", ENDED).rsplit(".", 2)[1]
+    now, ended, decided = time.time(), _state("", ENDED).rsplit(".", 2)[1], _state("", HOOK_DECIDED).rsplit(".", 2)[1]
     for f in sorted(glob.glob(os.path.join(glob.escape(autospawn.runtime_dir()), "claude-code-*")),
                     key=lambda f: f.endswith(".lock")):   # the state first, then the locks it no longer needs
         # lean: a lock goes only once its session state has; a hook that resumes that very session at this instant
@@ -1207,8 +1300,9 @@ def _prune():
         if ".tailer-" in f and os.path.exists(os.path.join(os.path.dirname(f), os.path.basename(f).split(".")[0]
                                                            + ".json")):   # a run's tailer's: kept with its session
             continue
-        # a session's state (not claude-code-<sid>.<call>.json), or its ENDED marker
-        session = f.endswith(".json") and (os.path.basename(f).count(".") == 1 or f.endswith(f".{ended}.json"))
+        # a session's state (not claude-code-<sid>.<call>.json), its ENDED marker or the calls its hook decided
+        session = f.endswith(".json") and (os.path.basename(f).count(".") == 1 or f.endswith(f".{ended}.json")
+                                           or f.endswith(f".{decided}.json"))
         try:
             if os.path.getmtime(f) < now - (SESSION_KEEP_S if session else IDLE_S):
                 os.remove(f)
@@ -1219,8 +1313,9 @@ def _prune():
 @functools.lru_cache(maxsize=256)
 def _tool_class(tool):
     # lean: the class in the dev signer's default policy; a signer with another policy may class the tool otherwise
-    from tracekit.signer.service import load_policy
-    return load_policy().tool_class(tool)
+    from tracekit.policy2 import classes, compile as policy_compile
+    from tracekit.signer.service import DEFAULT_POLICY
+    return classes.tool_class(policy_compile.tools(DEFAULT_POLICY), tool)
 
 
 def _handle(client, p, event, sid, tid, end=None):
@@ -1450,11 +1545,12 @@ def _event(p, end=None):
     except Exception as e:   # a TRACEKIT_SIGNER that is not the system signer, or an unreadable system config
         print(f"[tracekit] {e}; {failed}", file=sys.stderr)
         return code, None
+    seq = _next_seq(sid) if pre else None   # (whether this call's failed send used a client_seq: _hook_decided)
     try:
         return _handle(client, p, name, sid, tid, end), client
     except SignerUnavailable as e:   # the signer unreachable: the run's fail mode for the tool's class (a local
         # OSError, a full disk, is no outage: it blocks below, as the call could not be counted)
-        fix = ""
+        fix, sc, why = "", {}, None
         try:
             sc = system_config() or {}
             if sc and not sc.get("signer") and not os.environ.get("TRACEKIT_SIGNER"):   # v1 system mode: no v2 signer
@@ -1465,8 +1561,22 @@ def _event(p, end=None):
                 (_load(_state(sid)) or {}).get("fail_modes"), _tool_class(p.get("tool_name") or "?"))
         except Exception:
             closed = True
+        if pre and not closed:   # an open fail mode: secrets, deploys, payments and pushes to main still fail closed
+            from tracekit.policy2 import failclosed   # (only with no signer answering: loaded here)
+            try:
+                closed, why = failclosed.decide(p.get("tool_name") or "?", p.get("tool_input"), sc.get("policy"),
+                                                p.get("typed_text"))   # (harness_hooks: text typed into a terminal)
+            except Exception as x:   # (never a reason to let the call run)
+                closed, why = True, f"the hook could not read the call ({type(x).__name__})"
+            try:
+                _hook_decided(sid, tid, p.get("tool_name") or "?", p.get("tool_input"),
+                              "blocked" if closed else "allowed", why, _next_seq(sid) != seq)
+            except Exception:   # unrecorded here: the next event's client_seq skip can't name it (_flush_decided)
+                pass
         if pre:
-            failed, code = ("blocking (fail-closed)", 2) if closed else ("allowing (fail-open)", 0)
+            local = "; decided by the hook while the signer was down" if why or not closed else ""
+            failed, code = (f"blocking (fail-closed{': ' + why if why else ''}){local}", 2) if closed else \
+                (f"allowing (fail-open){local}", 0)
         print(f"[tracekit] signer unreachable ({e}); {failed}{fix}", file=sys.stderr)
         return code, client
     except Exception as e:   # a signer refusal or a crash: never a reason to let the call run
