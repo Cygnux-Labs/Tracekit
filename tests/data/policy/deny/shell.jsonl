@@ -650,3 +650,9 @@
 {"tool": "Bash", "args": {"command": "npx @railway/cli@3 delete"}, "expect": "ask", "note": "railway delete through npx at a version"}
 {"tool": "Bash", "args": {"command": "npx aws-cdk@2 destroy --force"}, "expect": "ask", "note": "cdk destroy through npx at a version"}
 {"tool": "Bash", "args": {"command": "bun prisma migrate reset --force"}, "expect": "ask", "note": "prisma migrate reset run by bun"}
+{"tool": "Bash", "args": {"command": "pnpm pnpm sudo ls"}, "expect": "deny", "note": "a package manager run by a package manager"}
+{"tool": "Bash", "args": {"command": "bun bun run sudo ls"}, "expect": "deny", "note": "a package manager run by a package manager"}
+{"tool": "Bash", "args": {"command": "npx tk@npm:@cygnuxlabs/tracekit@1.8.0 approvals approve a1"}, "expect": "deny", "note": "answering an approval through an npm alias spec"}
+{"tool": "Bash", "args": {"command": "npx x@npm:wrangler@3 delete"}, "expect": "ask", "note": "wrangler delete through an npm alias spec"}
+{"tool": "Bash", "args": {"command": "yarn node -e \"require('child_process').execSync('sudo ls')\""}, "expect": "deny", "note": "node code run through yarn"}
+{"tool": "Bash", "args": {"command": "bun exec rm -rf /"}, "expect": "deny", "note": "bun exec runs all its words"}

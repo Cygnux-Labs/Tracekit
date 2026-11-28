@@ -60,8 +60,8 @@
       "fp": 0
     },
     "shell": {
-      "deny": 652,
-      "caught": 652,
+      "deny": 658,
+      "caught": 658,
       "benign": 426,
       "fp": 0
     },
@@ -74,8 +74,8 @@
   },
   "packs": {
     "server": {
-      "deny": 1158,
-      "caught": 1158,
+      "deny": 1164,
+      "caught": 1164,
       "benign": 1049,
       "fp": 1
     },
@@ -1205,6 +1205,12 @@
     "deny/shell:650": "ask TK-A001",
     "deny/shell:651": "ask TK-A001",
     "deny/shell:652": "ask TK-A055",
+    "deny/shell:653": "deny TK-D001",
+    "deny/shell:654": "deny TK-D001",
+    "deny/shell:655": "deny TK-D012",
+    "deny/shell:656": "ask TK-A042",
+    "deny/shell:657": "deny TK-D001",
+    "deny/shell:658": "deny TK-D004 TK-F003",
     "deny/sql:1": "deny TK-DB001 TK-A041",
     "deny/sql:2": "deny TK-DB001 TK-A041",
     "deny/sql:3": "deny TK-DB001 TK-A041",

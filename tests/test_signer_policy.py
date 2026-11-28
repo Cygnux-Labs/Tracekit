@@ -5300,6 +5300,28 @@ class CodingPack(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(coding.decide("Bash", {"command": command})["verdict"], verdict)
 
+    def test_a_manager_run_by_a_manager_an_npm_alias_yarn_node_and_bun_exec_words_are_read(self):
+        a = "approvals approve a1"
+        held = ((f"pnpm pnpm tracekit {a}", "TK-D012"), (f"pnpm pn tracekit {a}", "TK-D012"),
+                (f"pn tracekit {a}", "TK-D012"), ("pnpm pnpm sudo ls", "TK-D001"), ("pnpm pnpm@9 sudo ls", "TK-D001"),
+                ("bun bun run sudo ls", "TK-D001"), (f"yarn yarn tracekit {a}", "TK-D012"),
+                (f"npx tk@npm:@cygnuxlabs/tracekit@1.8.0 {a}", "TK-D012"),
+                (f"npx -p tk@npm:@cygnuxlabs/tracekit tracekit {a}", "TK-D012"),
+                ("npx x@npm:wrangler@3 delete", "TK-A042"),
+                ("yarn node -e \"require('child_process').execSync('sudo ls')\"", "TK-D001"),
+                ("pnpm node -e \"require('child_process').execSync('sudo ls')\"", "TK-D001"),
+                ("bun exec rm -rf /", "TK-D004"), ("bun exec -- 'sudo ls'", "TK-D001"),
+                ("bun exec git push --force origin main", "TK-D003"), ("bun exec 'sudo ls'", "TK-D001"),
+                (f"bun exec tracekit {a}", "TK-D012"), ("bun exec wrangler delete", "TK-A042"))
+        self.every_pack_verdicts(held)
+        for pack, engine, e in self.every_pack():
+            for command in ("yarn node app.js", "pnpm x sudo ls", "bun exec echo hi", "bun exec -- echo hi", "pn run build",
+                            "npx x@npm:wrangler@3 deploy", "npx tk@npm:@cygnuxlabs/tracekit@1.8.0 verify b.tkb",
+                            "node -e \"console.log(1)\"", "yarn node -e \"console.log(1)\""):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertFalse({"TK-D001", "TK-D003", "TK-D004", "TK-D012", "TK-A042"} & set(
+                        e.decide("Bash", {"command": command})["rule_ids"]))
+
     def test_a_remote_ref_organization_or_group_deleted_through_the_api_asks(self):
         """TK-A002 and TK-A042 (1.5.3 sweep): a branch or tag deleted through GitHub's or GitLab's API, and a whole
         organization or group, were allowed; a GET, another method or a sub-resource (a member) still isn't held."""

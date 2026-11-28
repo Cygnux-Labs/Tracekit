@@ -2978,9 +2978,9 @@ def uv_commands(args):
 
 
 # the bin a package's name runs where it isn't the name's last part (`npx aws-cdk` runs cdk, `npx @railway/cli` railway),
-# and a bin's second name: Vercel's vc
+# and a bin's second name: Vercel's vc, pnpm's pn
 PACKAGE_BINS = {"netlify-cli": "netlify", "aws-cdk": "cdk", "firebase-tools": "firebase", "sequelize-cli": "sequelize",
-                "@railway/cli": "railway", "@cygnuxlabs/tracekit": "tracekit", "vc": "vercel"}
+                "@railway/cli": "railway", "@cygnuxlabs/tracekit": "tracekit", "vc": "vercel", "pn": "pnpm"}
 # the options of yarn, pnpm and bun that take a value before the command (RUNNERS' own, without -p: yarn's --parallel)
 _MANAGER_VALUED = {"pnpm": ("-C", "--dir", "-F", "--filter", "--package"),
                    "yarn": ("--cwd", "--package", "-j", "--jobs", "--from", "--include", "--exclude"),
@@ -2998,17 +2998,17 @@ _MANAGER_COMMANDS = {
         "t", "tst", "stop", "restart", "dlx", "create", "init", "publish", "pack", "deploy", "store", "config", "c", "set",
         "get", "root", "bin", "setup", "doctor", "env", "self-update", "server", "cache", "cat-file", "cat-index",
         "find-hash", "approve-builds", "ignored-builds", "sbom", "catalog", "recursive", "multi", "m", "completion",
-        "help", "pn", "pnpm", "x")),
+        "help")),
     "yarn": frozenset(_NPM_COMMANDS + (
         "add", "install", "i", "remove", "upgrade", "up", "upgrade-interactive", "link", "unlink", "list", "ls", "outdated",
         "why", "licenses", "exec", "run", "dlx", "init", "publish", "pack", "global", "cache", "config", "bin", "check",
-        "autoclean", "generate-lock-entry", "import", "lockfile", "workspace", "workspaces", "dedupe", "explain", "node",
+        "autoclean", "generate-lock-entry", "import", "lockfile", "workspace", "workspaces", "dedupe", "explain",
         "npm", "patch", "patch-commit", "plugin", "rebuild", "set", "stage", "unplug", "constraints", "fund", "tag",
         "help", "versions", "policies", "start", "test")),
     "bun": frozenset((
         "run", "test", "x", "repl", "exec", "install", "i", "add", "a", "remove", "rm", "update", "outdated", "link",
         "unlink", "pm", "build", "init", "create", "c", "upgrade", "publish", "patch", "audit", "info", "why", "completions",
-        "feedback", "help", "getcompletes", "pack", "bun"))}
+        "feedback", "help", "getcompletes", "pack"))}
 
 
 def package_bins(name, args, word):
@@ -3020,7 +3020,7 @@ def package_bins(name, args, word):
     run by its own shell, as `sh` runs it (`bun x.sh`). An option they take a value for (`pnpm --filter vercel remove
     x`) has the value as its next word; any other may or may not, so it is read both ways. The words are read within
     the first 32."""
-    spec = re.split(r"(?<!^)@|==|>=|<=|~=|!=", word.casefold(), 1)[0]
+    spec = re.split(r"(?<!^)@|==|>=|<=|~=|!=", re.sub(r"^(?:@[^/@]+/)?[^/@]+@npm:", "", word.casefold()), 1)[0]
     last = spec.rsplit("/", 1)[-1]
     bin_name = PACKAGE_BINS.get(spec) or PACKAGE_BINS.get(last) or last
     if bin_name and bin_name != name:
@@ -3046,11 +3046,17 @@ def package_bins(name, args, word):
 
 
 def bun_exec(args):
-    """The script `bun exec` runs in Bun Shell (its first word after bun's options), or None."""
+    """The scripts `bun exec` may run in Bun Shell, after bun's options and a `--`: its first word, and all its words
+    joined as `sh -c` joins them (Bun's help doesn't say which it takes), or []."""
     i = 0
     while i < len(args) and args[i].startswith("-"):
         i += 2 if args[i] in _BUN_VALUED else 1
-    return args[i + 1] if args[i:i + 1] == ["exec"] and i + 1 < len(args) else None
+    if args[i:i + 1] != ["exec"]:
+        return []
+    words = args[i + 1:]
+    while words[:1] == ["--"] or words[:1] and words[0].startswith("-") and words[0] != "-":
+        words = words[1:]
+    return list(dict.fromkeys([words[0], " ".join(words)])) if words else []
 
 
 def runner_at(name, args):
@@ -5563,8 +5569,9 @@ class _Parser:
                 continue
             elif name in ("npx", "npm") and (script := _npm_call(name, args)) is not None:
                 self.nested(self.code(cmd, [script]), via + [name + " -c"])
-            elif name == "bun" and (script := bun_exec(args)) is not None:   # Bun Shell runs its text as sh does
-                self.nested(self.code(cmd, [script]), via + ["bun exec"])
+            elif name == "bun" and (scripts := bun_exec(args)):   # Bun Shell runs its text as sh does
+                for script in scripts:
+                    self.nested(self.code(cmd, [script]), via + ["bun exec"])
             elif name in ("hub", "ntl"):   # git's wrapper, and the Netlify CLI's own short name: their words are git's, netlify's
                 argv, via, unreadable = ["git" if name == "hub" else "netlify", *args], via + [name], unreadable
                 continue
