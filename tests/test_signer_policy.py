@@ -895,7 +895,8 @@ class CodingPack(unittest.TestCase):
                    "curl -X DELETE \"$CI_API_V4_URL/projects/$CI_PROJECT_ID\"", "curl -L -X DELETE api.github.com/repos/o/r",
                    "curl -X DELETE HTTPS://api.github.com/repos/o/r", "gh api -X DELETE repos/{owner}/{repo}",
                    "glab api -X DELETE projects/:id",
-                   "glab repo -R '' delete g/p --yes", "vercel --token '' remove web --yes"]
+                   "glab repo -R '' delete g/p --yes", "vercel --token '' remove web --yes",
+                   "wrangler kv namespace delete x"]
         routine = ["curl -s https://api.github.com/repos/acme/prod-service",
                    "curl -s https://gitlab.com/api/v4/projects/42",
                    "curl -s https://api.vercel.com/v9/projects/prod-app",
@@ -903,7 +904,7 @@ class CodingPack(unittest.TestCase):
                    "curl -X DELETE https://api.netlify.com/api/v1/sites/abc-123/deploys/x",
                    "netlify unlink", "netlify sites:list", "netlify sites:create --name x",
                    "wrangler deploy", "wrangler dev", "wrangler publish",
-                   "wrangler kv key delete mykey", "wrangler kv namespace delete x",
+                   "wrangler kv key delete mykey",
                    "wrangler pages project list", "wrangler pages deploy dist",
                    "wrangler d1 execute mydb --command \"select 1\"", "wrangler rollback",
                    "netlify deploy --prod", "netlify api listSites",

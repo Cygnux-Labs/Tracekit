@@ -3298,7 +3298,8 @@ def _as_node(name, args):
     package script, a subcommand)."""
     if name == "bun":
         code = next((text for _, text in _code_words("node", args)), None)
-        return ["-e", code] if code is not None else ["-"] if args[:1] == ["run"] and "-" in args[1:] else None
+        return ["-e", code] if code is not None else ["-"] if any(
+            args[k] == "run" and "-" in args[k + 1:] for k in runner_at("bun", args)) else None
     sub = next((i for i, a in enumerate(args) if not a.startswith("-")), None)
     if sub is None or args[sub] not in ("eval", "run"):
         return None
