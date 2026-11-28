@@ -27,7 +27,7 @@ import regex
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from factories import SLOWER, process_pool  # noqa: E402
+from factories import SLOWER, machine_scale, process_pool  # noqa: E402
 from tracekit import cli  # noqa: E402
 from tracekit.policy import PolicyError, _sre_c, _sre_p  # noqa: E402
 from tracekit.policy2 import classes, compile as pc, engine, shell, source  # noqa: E402
@@ -887,11 +887,7 @@ class Speed(unittest.TestCase):
     RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D011", "TK-DB003", "TK-C010", "TK-A032"}
     # TK-M003 reads a recipient list forward to a whole-company address: ~12 ms on an M-series Mac. Read greedily and
     # backed off over, 64 KiB of a list took 78 ms there and 152-221 ms on CI's macOS runners (#481)
-    RULE_BUDGET_S = {"TK-M003": 0.06}
-    # every budget is for the M-series Mac it was set on, where machine_scale's reference search takes REF_S; another
-    # machine's budgets are scaled by how much slower it runs that search (#517: TK-A040, ~75 ms there, reads eight
-    # options after each redis-cli and took 152-261 ms on CI's Linux runners, over a fixed budget)
-    REF_S = 0.055
+    RULE_BUDGET_S = {"TK-M003": 0.06}   # every budget here is scaled by machine_scale (tests/factories.py)
 
     def fillers(self, rid, pattern):
         n = MAX_SUBJECT - 4
@@ -1377,16 +1373,6 @@ def _over_budget(item, scale):
     budget = speed.RULE_BUDGET_S.get(rid, speed.BUDGET_S) * scale
     rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
     return [s for s in speed.fillers(rid, pattern) if speed.search(rx, s, budget) > budget]
-
-
-@functools.lru_cache(maxsize=None)
-def machine_scale():
-    """How many times slower than Speed.REF_S's Mac this machine runs a fixed linear search of 64 KiB on the fallback
-    engine, best of three: at least 1, and at most 4 (CI's runners are 2-3.5x slower), so a busy moment while it is
-    timed can't stretch the budgets past what a slow runner needs. A pattern slow everywhere still fails."""
-    rx = regex.compile(r"(^|\s)(\S{0,256}/)?redis-cli(\s+-\S*(\s+[^-\s]\S*)?){0,8}\s*<<<", regex.ASCII | regex.V0)
-    s = "a/redis-cli -" * ((MAX_SUBJECT - 4) // 13)
-    return min(4.0, max(1.0, min(Speed().search(rx, s, 2.5) for _ in range(3)) / Speed.REF_S))
 
 
 # a parse-budget test's limit on one decision, times machine_scale: these time Python parsing, which a busy runner slows
