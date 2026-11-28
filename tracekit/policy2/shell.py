@@ -2977,6 +2977,26 @@ def uv_commands(args):
                     yield c, s
 
 
+# the CLIs whose deletes TK-A042 holds, by the package that has the bin (netlify-cli's is netlify)
+PACKAGE_BINS = {b: b for b in ("wrangler", "netlify", "ntl", "vercel", "gh", "glab", "hub")} | {"netlify-cli": "netlify"}
+
+
+def package_bins(name, args):
+    """The command a run of a hosting CLI's package is, as (bin, its arguments): the package named at a version or by
+    its package name, as npx, bunx, pnpm dlx and yarn dlx name it (`npx wrangler@3 delete`, `bunx vercel@33 rm p`,
+    `npx netlify-cli sites:delete x`), and the bin yarn or pnpm runs by its name (`yarn wrangler delete`, `pnpm -C app
+    vercel rm p`) after their options, each with a value or not, and a `run`. The rules read a command from its
+    name."""
+    base = name.partition("@")[0] if "@" in name[1:] else name
+    if base in PACKAGE_BINS and PACKAGE_BINS[base] != name:
+        yield PACKAGE_BINS[base], args
+    elif name in ("yarn", "pnpm"):
+        for i, a in enumerate(args[:16]):
+            if a in PACKAGE_BINS and all(w.startswith("-") or w == "run" or j and args[j - 1].startswith("-")
+                                         for j, w in enumerate(args[:i])):
+                yield PACKAGE_BINS[a], args[i + 1:]
+
+
 def runner_at(name, args):
     """Each place in `args` the subcommand of runner `name` that runs a command may be (RUNNERS: `uv run`, `pnpm
     exec`), after the runner's own options, each with a value or not (`pnpm -r --filter x exec`, `npm -w a exec`),
@@ -5416,6 +5436,12 @@ class _Parser:
                 if (key := (pid, name, tuple(other))) not in self.unwrapped:
                     self.unwrapped.add(key)
                     cmds += self.emit(other, pid, via, glob, [unreadable[0], unreadable[c + 1], *unreadable[k + 1:]])
+            for bin_name, rest in package_bins(name, args):   # and as the CLI's own command (package_bins)
+                self.charge(len(rest) + 1)
+                other = [bin_name, *rest]
+                if (key := (pid, name, tuple(other))) not in self.unwrapped:
+                    self.unwrapped.add(key)
+                    cmds += self.emit(other, pid, via, glob, [unreadable[0], *unreadable[len(argv) - len(rest):]])
             if not unreadable[0] and "/" in argv[0]:   # a file run by its path
                 self.run_file(argv[0], via, cmd, True, args)
             if not unreadable[0] and argv[0] in self.ctx["functions"]:   # and as the program of that name, if it isn't
