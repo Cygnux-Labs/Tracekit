@@ -71,7 +71,7 @@ from http.client import HTTPException
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
-from . import findings_text, findings_v2, grants, lessons, parsers
+from . import findings_text, findings_v2, fleet, grants, lessons, parsers
 from .bundle_v2 import bundle, export
 from .format import checkpoint
 from .format.records import RecordSigner
@@ -87,6 +87,7 @@ from .signer.rpc_schema import RPCError
 from .signer.service import data_dir_at, dev_data_dir, dev_witnesses, load_config, lookup, read_vkeys, reader
 from .storage.base import StorageChanged, StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
+from .usage import Prices
 from .verify import anchoring, cosignature_failure, v2
 from .why.server import Store
 
@@ -1121,6 +1122,10 @@ class StoreFeed:
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
         self.rowcache = collections.OrderedDict()   # (tenant, run_id, its covered records) -> rows: the newest ROWCACHE_MAX
+        # (tenant, run_id) -> fleet.summarize of the run as it verified: what the FLEET page adds up
+        # lean: one tuple per call and model turn of every run verified, in memory; a store of millions of calls needs
+        # them summed per day instead
+        self.fleet_runs = {}
         self.verifying = threading.BoundedSemaphore(2)   # /api/rows checks at once
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
         # why runs are not checked (the watch thread ended, or the store can't be checked): the page then says
@@ -1396,6 +1401,7 @@ class StoreFeed:
             rows = [x for r in records[state["shown"]:] for x in self.tr.feed(r)]   # translated: later rows need it
             new += [] if hidden else rows
             rv = review(records, rep, "verified")
+            fleet_run = key[1] != SIGNER_RUN[1] and fleet.summarize(records, self.tr.rules)
             summary = (f"tenant {tenant} · the signer's own records" if run_id == SIGNER_RUN[1] else
                        f"tenant {tenant} · agent {rv['agent'] or '?'} · {rv['state']} · decisions "
                        + (", ".join(f"{v} {n}" for v, n in sorted(rv["decisions"].items())) or "none")
@@ -1416,6 +1422,10 @@ class StoreFeed:
             new[-1].update(signer=True, agent="signer")
         with self.lock:
             self.runs[key] = state
+            if code or not fleet_run:
+                self.fleet_runs.pop(key, None)
+            else:
+                self.fleet_runs[key] = fleet_run
             if code:   # its records, and the reports and findings of when it verified
                 for i, x in enumerate(self.records):
                     if x is not observe.RETRACTED and (x.get("tenant"), x.get("session_id")) == key:
@@ -1441,6 +1451,8 @@ class StoreFeed:
             row = {**self.tr._base(e, {}, "tk_run"), "analysis": True,
                    "review": dict(rv, findings=found[-1].pop("summary"))}
             with self.lock:
+                if key in self.fleet_runs:
+                    self.fleet_runs[key]["findings"] = fleet.findings(found, records)
                 self._append([dict(x, tenant=tenant) for x in found + [row]], key)
 
     def _mirrors(self):
@@ -1612,6 +1624,18 @@ class StoreFeed:
             while len(self.rowcache) > ROWCACHE_MAX:
                 self.rowcache.popitem(last=False)
         return body
+
+    def fleet_state(self):
+        """(the summaries of the runs that verified and are not waiting for a re-check, what FLEET leaves out): the
+        runs that failed, the runs no checkpoint covers yet, how many the viewer has not checked, and the chain."""
+        with self.lock:
+            ok = {k: s for k, s in self.fleet_runs.items() if (self.runs.get(k) or {}).get("count") == s["count"]
+                  and not self.runs[k]["failed"] and not self.runs[k].get("again")}
+            runs = {k: st for k, st in self.runs.items() if k[1] != SIGNER_RUN[1]}
+            failed = [{"tenant": k[0], "id": k[1], "why": st["failed"]} for k, st in runs.items() if st["failed"]]
+            pending = [{"tenant": k[0], "id": k[1]} for k, st in runs.items() if not st["count"] and not st["failed"]]
+        _, problems, _ = self.verify()
+        return ok, {"failed": failed, "pending": pending, "unchecked": self.checking(), "chain": not problems}
 
     def checking(self, tenant=None):
         """How many of the store's runs (of `tenant`, else of all) this viewer has not checked yet (on start it checks
@@ -1997,6 +2021,9 @@ def main(argv=None):
     ap.add_argument("--transcripts", metavar="DIR", help="Claude Code transcripts the TIPS page reads, read-only "
                                                          "(default with the dev store: $CLAUDE_CONFIG_DIR/projects or "
                                                          "~/.claude/projects)")
+    ap.add_argument("--prices", metavar="FILE", help="a JSON price table (as `tracekit cost --prices` takes it): the "
+                                                     "FLEET page then shows dollars for the models it names; with "
+                                                     "none it shows tokens only")
     a = ap.parse_args(argv)
     if a.approval and not re.fullmatch(r"([a-z0-9-]+\.)?apr-[0-9a-f]{32}", a.approval):
         print(f"tracekit view: --approval takes an approval id (apr- and 32 hex digits), not {a.approval!r}",
@@ -2006,6 +2033,11 @@ def main(argv=None):
     if transcripts and not os.path.isdir(transcripts):
         print(f"tracekit view: --transcripts {transcripts}: no such folder (Claude Code keeps its transcripts in "
               "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)", file=sys.stderr)
+        return 2
+    try:
+        prices = a.prices and Prices.load(a.prices)
+    except (OSError, ValueError) as e:   # json.JSONDecodeError is a ValueError
+        print(f"tracekit view: --prices {a.prices}: {e}", file=sys.stderr)
         return 2
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a stop runs atexit too: the temp dirs go
     from .cli import experimental
@@ -2067,6 +2099,8 @@ def main(argv=None):
                     if os.path.isdir(os.path.join(cfg["data_dir"], WHY_DIR)) else "--why"
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
                                                         dev_analysis() if dev else None, signer)
+            if feed:   # FLEET: the verified runs' summaries
+                feed.fleet = fleet.Page(feed, prices, a.prices and os.path.basename(a.prices))
             if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them;
                 # Codex's sessions too in dev mode, from $CODEX_HOME (else ~/.codex) plus sessions
                 from . import audit, tips
