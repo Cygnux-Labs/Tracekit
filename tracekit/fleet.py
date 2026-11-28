@@ -71,12 +71,21 @@ def _turns(records):
     return [(x["t"], x["model"], *x["n"]) for x in turns]
 
 
+def _why(rules, section):
+    """The rules a deny (`section` "deny") or a hold ("ask") is filed under: those of that section of the policy it was
+    decided under. A flag or a note on the same call is no reason for it. Rules with no section (an engine check such as
+    TK-SHELL-PARSE, or a policy the viewer doesn't have) stand for it only when no rule of its section does; with no
+    rule at all it is filed as "no rule"."""
+    mine = [r for r in rules if r.get("section") == section] or [r for r in rules if r.get("section") is None]
+    return mine or [{"id": "no rule", "reason": ""}]
+
+
 def summarize(records, rules):
     """What one verified run adds to the page, from its `records` (as the viewer verified them): its agent, when it
     began and was last written, whether it is final, its calls (time, tool, flags, signer-observed milliseconds or
     None), the held and denied calls by rule (`marks`), its model turns, the holds an AI approver and a person both
     answered (`pairs`) and, for a findings run, its signed findings (about `analyzes`). `rules(decision data)`: its
-    rules as [{"id", "reason"}] (view.Translator.rules)."""
+    rules as [{"id", "reason", "section"}] (view.Translator.verdicts)."""
     evs = [r["event"] for r in records]
     out = {"count": len(records), "agent": None, "analyzes": None, "final": False, "first": ts_seconds(evs[0]["ts"]),
            "last": ts_seconds(evs[-1]["ts"]), "calls": [], "marks": [], "tokens": _turns(records), "pairs": [],
@@ -121,8 +130,8 @@ def summarize(records, rules):
         if res and not flags & (HELD | DENIED):
             ms = max(0, round((ts_seconds(res["event"]["ts"]) - t) * 1000))
         out["calls"].append((t, d.get("tool") or "?", flags, ms))
-        for kind in ("held" * bool(flags & HELD), "denied" * bool(flags & DENIED)):
-            for rule in kind and (rules(d) or [{"id": "no rule", "reason": ""}]):
+        for kind, section in (("held" * bool(flags & HELD), "ask"), ("denied" * bool(flags & DENIED), "deny")):
+            for rule in kind and _why(rules(d), section):
                 out["marks"].append((t, kind, rule["id"], rule.get("reason") or "", d.get("tool") or "?"))
     return out
 

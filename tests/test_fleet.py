@@ -9,6 +9,7 @@ import socket
 import sys
 import threading
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -25,8 +26,11 @@ NOW = datetime.datetime(2026, 11, 28, 14, 0, tzinfo=datetime.timezone.utc).times
 DAY = 86400
 
 
+SECTIONS = {"T-RM": "deny", "T-NET": "deny", "T-PAY": "ask", "T-FLAG1": "flag", "T-FLAG2": "flag", "TK-Q001": "flag"}
+
+
 def rules(d):
-    return [{"id": i, "reason": "why " + i} for i in d.get("rule_ids") or []]
+    return [{"id": i, "reason": "why " + i, "section": SECTIONS.get(i)} for i in d.get("rule_ids") or []]
 
 
 class Run:
@@ -159,6 +163,16 @@ class Build(unittest.TestCase):
         out = fleet.build(runs_of(before, prev, now), NOW, "30d", "UTC")   # all first seen within the longer range
         self.assertEqual({i["rule"]: i["status"] for i in out["issues"]}, {"T-NET": "new", "T-RM": "new", "T-PAY": "new"})
 
+    def test_a_denied_call_is_an_issue_of_the_rule_that_denied_it_not_of_the_flags_and_notes_on_it(self):
+        r = Run("r1", "a", NOW - 100)
+        r.call("a", "rm", "deny", ["T-FLAG1", "T-RM", "T-FLAG2", "TK-Q001"])
+        r.call("b", "pay", "ask", ["T-FLAG1", "T-PAY"])
+        r.call("c", "Bash", "ask", ["TK-SHELL-PARSE"])   # an engine check: no section, the only reason
+        r.call("d", "Bash", "deny")   # a deny that names no rule
+        out = fleet.build({("default", "r1"): r.summary()}, NOW, "7d", "UTC")
+        self.assertEqual(sorted((i["kind"], i["rule"]) for i in out["issues"]),
+                         [("denied", "T-RM"), ("denied", "no rule"), ("held", "T-PAY"), ("held", "TK-SHELL-PARSE")])
+
     def test_signed_findings_are_about_the_run_they_analyze(self):
         run = Run("r1", "coding", NOW - 100)
         run.call("a", "Bash", ok=True)
@@ -229,6 +243,23 @@ ask:
 TOKEN = "fleet-" + "t" * 32
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 SESSION = {"Cookie": "tracekit_observe=1.s"}   # a sign-in's cookie, not the token's
+
+
+class NotCounted(unittest.TestCase):
+    def test_a_run_counts_only_while_its_summary_is_of_its_verified_records(self):
+        """A summary kept from an earlier check is never added up: the run grew past it, is waiting for a re-check
+        after a store change, or failed since."""
+        k = lambda i: ("default", f"r{i}")   # noqa: E731
+        feed = types.SimpleNamespace(
+            lock=threading.Lock(), fleet_runs={k(i): {"count": 5} for i in range(5)},
+            runs={k(0): {"count": 5, "failed": None}, k(1): {"count": 7, "failed": None},
+                  k(2): {"count": 5, "failed": None, "again": 3}, k(3): {"count": 5, "failed": "FAILED"},
+                  k(4): {"count": 0, "failed": None}},
+            verify=lambda: (0, [], None), checking=lambda: 0)
+        ok, rest = view.StoreFeed.fleet_state(feed)
+        self.assertEqual(list(ok), [k(0)])
+        self.assertEqual(([x["id"] for x in rest["failed"]], [x["id"] for x in rest["pending"]],
+                          [x["id"] for x in rest["unread"]]), (["r3"], ["r4"], ["r1"]))
 
 
 @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")

@@ -451,6 +451,12 @@ class Translator(observe.Translator):
         return [{"id": i, "reason": known.get(i, {}).get("reason") or ENGINE_RULES.get(i, ""),
                  **{k: v for k, v in known.get(i, {}).items() if k == "remedy"}} for i in d.get("rule_ids") or []]
 
+    def verdicts(self, d):
+        """rules(d), each with its `section` in the policy the decision was made under (deny, ask or flag; a rule in
+        shadow is a flag), None for an engine check or when the viewer doesn't have that policy."""
+        secs = self.reads(d).get("secs") or {}
+        return [{**r, "section": secs.get(r["id"])} for r in self.rules(d)]
+
     def feed(self, rec):
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
@@ -1404,7 +1410,7 @@ class StoreFeed:
             new += [] if hidden else rows
             rv = review(records, rep, "verified")
             try:
-                fleet_run = key[1] != SIGNER_RUN[1] and fleet.summarize(records, self.tr.rules)
+                fleet_run = key[1] != SIGNER_RUN[1] and fleet.summarize(records, self.tr.verdicts)
             except (KeyError, TypeError, ValueError):   # a record FLEET can't read: the run shows, and is listed there
                 fleet_run = None
             summary = (f"tenant {tenant} · the signer's own records" if run_id == SIGNER_RUN[1] else
