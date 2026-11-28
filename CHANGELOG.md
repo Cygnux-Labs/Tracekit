@@ -2,13 +2,20 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## 1.8.1 (2026-11-28) — package runners read as the command they run, MCP deletes chosen by an argument, more hosting-CLI deletes, and Codex Code Mode in `tracekit audit`
+## 1.8.1 (2026-11-28) — package runners read as the command they run, MCP deletes chosen by an argument, more hosting-CLI deletes, Codex Code Mode in `tracekit audit`, and a FLEET view
 
-A fix release on 1.8.0. Policy now reads more of what a call does: a command run through a package runner or manager is
+A fix release on 1.8.0, with one new view. Policy now reads more of what a call does: a command run through a package runner or manager is
 decided as the command itself, and an MCP tool's delete can be chosen by an argument. The shipped packs change (`coding`
 is `2026.11-v2-113`, `dev` is `2026.11-dev-15`, `server` is `2026.11-server-22`, `strict` is `2026.11-strict-19`,
 `server-cloud` is `2026.11-server-cloud-19`), so a run's policy hash changes and some calls that were allowed are now
 held. The signer protocol (29) and the bundle format (no new `VERSIONS` row) are unchanged.
+
+### Added
+- **FLEET (experimental), a tab in `tracekit view`** that adds up what your agents did over the last 24 hours, 7 days
+  or 30 days, from the runs that verified: calls by day, issues by rule, agents, tokens and cost (cost needs
+  `tracekit view --prices FILE`; without it the page shows tokens only), tool latency, and how often the AI approver
+  and people agreed. Runs that didn't verify, aren't covered by a checkpoint yet, or aren't agent activity are listed
+  under **Not counted** and never counted ([viewer](docs/viewer.md#fleet), #1186).
 
 ### Changed
 - **A delete chosen by an MCP tool's `method`, `action` or `operation` argument is held where a delete in the tool's
