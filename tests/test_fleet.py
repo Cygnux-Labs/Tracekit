@@ -2,6 +2,7 @@
 range, against the range before it. `summarize` and `build` over hand-made records, then a real signer's store through
 StoreFeed and the HTTP API, and the page."""
 import datetime
+import html.parser as html_parser
 import http.client
 import json
 import os
@@ -12,6 +13,8 @@ import time
 import types
 import unittest
 from unittest import mock
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -136,7 +139,7 @@ class Build(unittest.TestCase):
             self.assertEqual([b["calls"] for b in out["buckets"]], [0] * 6 + [1])   # today, in that zone
         self.assertEqual(fleet.build({}, NOW, "30d", "Not/AZone")["range"]["tz"], "UTC")
         h = fleet.build({("default", "r1"): r.summary()}, NOW, "24h", "UTC")
-        self.assertEqual((len(h["buckets"]), h["range"]["bucket"], h["buckets"][-2]["calls"]), (24, "hour", 1))   # the hour before this one
+        self.assertEqual((len(h["buckets"]), h["range"]["bucket"], h["buckets"][-2]["calls"]), (25, "hour", 1))   # the last 24 hours: its first and last hours partial
         self.assertEqual(h["range"]["since"] - h["range"]["previous"], DAY)
 
     def test_a_trend_compares_with_the_range_before(self):
@@ -223,6 +226,70 @@ class Build(unittest.TestCase):
         out = fleet.build({**runs, ("default", "r2"): r2.summary()}, NOW, "7d", "UTC", prices)
         self.assertEqual({a["agent"]: (a["cost"], a["unpriced"]) for a in out["agents"]}, {"a": (12.0, 505), "b": (None, 55)})
 
+    def test_a_trend_compares_ranges_of_the_same_length_on_steady_traffic(self):
+        """A call every 10 minutes, for 70 days: the 7d range is 6 days and the day so far, so the range before it is as
+        long as that, not 7 whole days (a trend of -13.7% at half past midnight)."""
+        for now in (NOW, NOW - 14 * 3600 - 1800):
+            r = Run("r1", "a", now - 70 * DAY)
+            for i in range(70 * 144):
+                r.recs.append(v2rec(len(r.recs), "policy.decision", {"tool_use_id": f"c{i}", "tool": "Read", "decision": "allow",
+                                                                    "decision_id": f"d{i}", "rule_ids": []}, "r1",
+                                    ts=iso(now - 70 * DAY + 600 * i)))
+            r.recs.append(v2rec(len(r.recs), "tool.result", {"tool_use_id": "c0", "ok": True, "decision_id": "d0"}, "r1",
+                                ts=iso(now - 70 * DAY + 1)))
+            summary = fleet.summarize(r.recs, rules)
+            for span, width in (("24h", 1), ("7d", 7), ("30d", 30)):
+                out = fleet.build({("default", "r1"): summary}, now, span, "UTC")
+                r_ = out["range"]
+                self.assertEqual(r_["since"] - r_["previous"], now - r_["since"], span)
+                self.assertLessEqual(abs(out["totals"]["calls"] - out["previous"]["calls"]), 1, span)
+
+    def test_replay_runs_are_listed_and_not_counted_as_agents(self):
+        r = Run("r1", "tracekit-why", NOW - 100)
+        r.recs[0]["event"]["data"]["replay_of"] = "r0"
+        r.call("a", "Read", ok=True)
+        a = Run("r2", "claude-code", NOW - 100)
+        a.call("b", "Read", ok=True)
+        out = fleet.build(runs_of(r, a), NOW, "7d", "UTC")
+        self.assertEqual(([x["agent"] for x in out["agents"]], out["totals"]["calls"], out["replays"]["n"]),
+                         (["claude-code"], 1, 1))
+
+    def test_the_agents_footer_link_opens_the_runs_the_table_counts(self):
+        quiet = Run("r1", "a", NOW - 100)   # a run with no call in the range is still a run of the agent
+        busy = Run("r2", "b", NOW - 100)
+        busy.call("x", "Read", ok=True)
+        out = fleet.build(runs_of(quiet, busy), NOW, "7d", "UTC")
+        self.assertEqual((out["links"]["runs"]["n"], sum(a["runs"]["n"] for a in out["agents"]), out["links"]["calls"]["n"]),
+                         (2, 2, 1))
+
+    def test_an_approver_pair_is_filed_under_the_ask_rules_of_the_held_call_not_its_flags(self):
+        r = Run("r1", "a", NOW - 100)
+        r.call("c0", "pay", "ask", ["T-FLAG1", "T-PAY"])
+        r.add("approval.request", {"approval_id": "apr-0", "rule_ids": ["T-FLAG1", "T-PAY"],
+                                   "binding": {"tool": "pay", "tool_call_id": "c0"}})
+        r.add("approval.suggested", {"approval_id": "apr-0", "decision": "approve", "approver_kind": "agent"})
+        r.add("approval", {"approval_id": "apr-0", "decision": "approve", "approver": "alice"})
+        out = fleet.build({("default", "r1"): r.summary()}, NOW, "7d", "UTC")
+        self.assertEqual([x["rule"] for x in out["approver"]["rules"]], ["T-PAY"])
+
+    @pytest.mark.serial
+    def test_turn_matching_is_linear_in_turns_that_share_their_counts(self):
+        """16,000 turns with the same usage (an agent can sign them) took 2.8 s, at every checkpoint."""
+        r = Run("r1", "a", NOW - 40000)
+        for i in range(16000):
+            r.turn(f"x{i}", "m", (10, 5, 0, 0), after=1)
+        t0 = time.perf_counter()
+        turns = fleet._turns(r.recs)
+        self.assertEqual(len(turns), 16000)
+        self.assertLess(time.perf_counter() - t0, 1.0)
+
+    def test_a_turn_joined_by_its_exchange_id_is_not_joined_again_by_its_old_counts(self):
+        r = Run("r1", "a", NOW - 1000)
+        r.turn("x1", "m", (10, 5, 0, 0))   # the transcript's turn
+        r.turn("x1", "m", (12, 5, 0, 0), source="gateway")   # the gateway's counts of the same message differ: it joins by id
+        r.turn("x2", "m", (10, 5, 0, 0), source="gateway")   # another message with the first one's counts: its own turn
+        self.assertEqual([t[2:4] for t in fleet._turns(r.recs)], [(12, 5), (10, 5)])
+
     def test_a_link_names_the_runs_it_counts_and_is_bounded(self):
         rs = []
         for i in range(fleet.RUNS_MAX + 5):
@@ -239,10 +306,55 @@ deny:
   - {id: T-RM, tool: rm, pattern: '^', reason: deleting files}
 ask:
   - {id: T-PAY, tool: pay, pattern: '^', reason: paying money}
+flag:
+  - {id: T-PATH, tool: rm, pattern: path, reason: a path}
 """
 TOKEN = "fleet-" + "t" * 32
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 SESSION = {"Cookie": "tracekit_observe=1.s"}   # a sign-in's cookie, not the token's
+
+
+class Zones(unittest.TestCase):
+    def test_only_a_zone_this_machine_has_under_that_name_is_used_and_the_cache_stays_small(self):
+        for name in ("utc", "europe/london", "Europe/London ", '"><x>', "Etc/../UTC", "A" * 5000):
+            self.assertEqual(fleet._tz(name)[1], "UTC", name)
+        self.assertEqual(fleet._tz("Europe/London")[1], "Europe/London")
+        feed = types.SimpleNamespace(fleet_state=lambda: ({}, {"chain": True, "failed": [], "pending": [], "unread": [],
+                                                              "unchecked": 0}))
+        page = fleet.Page(feed, ttl=0.05)
+        for span in fleet.RANGES:
+            for name in ("UTC", "utc", "Utc", "Europe/London", "europe/london", "x" * 100, "Asia/Calcutta"):
+                page(span, name)
+        self.assertLessEqual(len(page.kept), len(fleet.RANGES) * 3)
+        self.assertEqual(sorted({k[1] for k in page.kept}), ["Asia/Calcutta", "Europe/London", "UTC"])
+        time.sleep(0.1)
+        page("7d", "UTC")
+        self.assertEqual(list(page.kept), [("7d", "UTC")])   # what is older than the ttl is gone
+
+
+class Findings(unittest.TestCase):
+    def test_the_viewers_findings_of_a_run_survive_its_next_summary(self):
+        k = ("default", "r1")
+        finding = (NOW - 5, "TK-X205", "high", "said it ran tests")
+        summary = lambda: {"count": 5, "findings": []}   # noqa: E731
+        feed = types.SimpleNamespace(lock=threading.Lock(), fleet_runs={k: summary()}, fleet_found={k: [finding]},
+                                     runs={k: {"count": 5, "failed": None}}, verify=lambda: (0, [], None),
+                                     checking=lambda: 0)
+        self.assertEqual(view.StoreFeed.fleet_state(feed)[0][k]["findings"], [finding])
+        feed.fleet_runs[k] = summary()   # the run is summarized again at its next checkpoint
+        self.assertEqual(view.StoreFeed.fleet_state(feed)[0][k]["findings"], [finding])
+
+
+class Prices_(unittest.TestCase):
+    def test_a_bad_price_table_fails_at_startup_and_v1_views_take_none(self):
+        d = tmpdir(self)
+        bad, ok = os.path.join(d, "bad.json"), os.path.join(d, "ok.json")
+        for path, body in ((bad, {"models": {"m": {"input": "abc"}}}), (ok, {"models": {"m": {"input": 1}}})):
+            with open(path, "w") as f:
+                json.dump(body, f)
+        self.assertEqual(view.main(["--data-dir", d, "--prices", bad]), 2)
+        self.assertEqual(view.main(["--ledger", "--prices", ok]), 2)
+        self.assertEqual(view.main(["--bundle", ok, "--prices", ok]), 2)
 
 
 class NotCounted(unittest.TestCase):
@@ -251,7 +363,7 @@ class NotCounted(unittest.TestCase):
         after a store change, or failed since."""
         k = lambda i: ("default", f"r{i}")   # noqa: E731
         feed = types.SimpleNamespace(
-            lock=threading.Lock(), fleet_runs={k(i): {"count": 5} for i in range(5)},
+            lock=threading.Lock(), fleet_runs={k(i): {"count": 5, "findings": []} for i in range(5)}, fleet_found={},
             runs={k(0): {"count": 5, "failed": None}, k(1): {"count": 7, "failed": None},
                   k(2): {"count": 5, "failed": None, "again": 3}, k(3): {"count": 5, "failed": "FAILED"},
                   k(4): {"count": 0, "failed": None}},
@@ -376,6 +488,19 @@ class Store(unittest.TestCase):
         self.assertEqual((out["models"][0]["tokens"], out["tokens"]["cost"]), ([1500, 150, 0, 0], None))
         self.assertEqual({(i["rule"], i["status"]) for i in out["issues"]}, {("T-RM", "new"), ("T-PAY", "new")})
 
+    def test_a_flag_is_no_issue_when_the_viewer_reads_the_policy_from_the_signers_data_dir(self):
+        """The rm call is denied by T-RM and flagged by T-PATH. A viewer started with --data-dir alone (no policy file)
+        read the policy the signer kept, so T-PATH stays a flag; without it every rule on the call was a deny."""
+        self.build_store()
+        self.service.close()
+        cfg = {"data_dir": self.cfg["data_dir"]}
+        feed = view.StoreFeed(cfg)
+        self.addCleanup(feed.close)
+        feed.fleet = fleet.Page(feed, ttl=0)
+        self.assertTrue(wait_for(lambda: len(feed.fleet_runs) == 3 and not feed.checking(), 30))
+        _, out = self.get(self.serve(feed), "/api/fleet")
+        self.assertEqual({(i["kind"], i["rule"]) for i in out["issues"]}, {("denied", "T-RM"), ("held", "T-PAY")})
+
     def test_cost_shows_with_a_price_table(self):
         self.build_store()
         prices = Prices({"models": {"priced-*": {"input": 2, "output": 10}}})
@@ -441,3 +566,51 @@ class Page(unittest.TestCase):
         self.assertIn('(p !== "fleet" || FLEETON)', page)
         self.assertIn("FLEETON = !!snap.fleet", page)
         self.assertIn('id="fleetp"', page)
+
+    def test_nothing_a_record_or_the_price_file_holds_reaches_the_page_as_markup(self):
+        """FLEET builds most of its HTML by concatenation, which the page's esc() check does not read: every field a
+        record, a run's name or the price table can fill carries hostile text through the page's own code."""
+        x = '"><img src=x onerror=alert(1)>\'`${x}</svg><script>alert(2)</script>'
+        hostile_rules = lambda d: [{"id": x + "rule", "reason": x + " reason", "section": None}   # noqa: E731
+                                   for _ in d.get("rule_ids") or [None]]
+        r = Run(x + "run", x + "agent", NOW - 100)
+        r.call("c1", x + "tool", "deny", ["r"], ok=None)
+        r.call("c2", x + "tool", "ask", ["r"], ok=False)
+        r.add("approval.request", {"approval_id": "a1", "rule_ids": [x], "binding": {"tool": "t", "tool_call_id": "c2"}})
+        r.add("approval.suggested", {"approval_id": "a1", "decision": "approve", "approver_kind": "agent"})
+        r.add("approval", {"approval_id": "a1", "decision": "reject"})
+        r.turn("x1", x + "model", (5, 5, 0, 0))
+        r.add("run.final", {})
+        s = fleet.summarize(r.recs, hostile_rules)
+        s["findings"] = [(NOW - 92, x + "frule", "high", x + "title")]
+        prices = Prices({"currency": "USD", "models": {"*": {"input": 1, "output": 1}}})
+        for span in ("24h", "7d"):
+            out = fleet.build({("default", x + "run"): s}, NOW, span, "UTC", prices)
+            out["range"]["tz"] = x   # as if the server had echoed a hostile zone
+            out.update(not_counted={"failed": [{"id": x + "f", "tenant": x, "why": x}], "pending": [{"id": x + "p", "tenant": x}],
+                                    "unread": [{"id": x + "u", "tenant": x}], "unchecked": 3},
+                       seal={"chain": False, "runs": 1, "records": 9},
+                       prices={"source": x + "src", "currency": "USD", "models": 1})
+            html = self.render(out)["html"]
+            seen = set()
+
+            class Tags(html_parser.HTMLParser):
+                def handle_starttag(self, tag, attrs):
+                    seen.update([tag, *(k for k, _ in attrs)])
+            Tags().feed(html)
+            self.assertFalse(seen & {"img", "script", "onerror", "onload", "onclick"}, seen)
+            self.assertIn("&lt;img", html)
+
+    def test_the_seal_shows_a_bad_chain_with_no_run_in_range_and_the_footers_say_what_they_count(self):
+        out = fleet.build({}, NOW, "24h", "Europe/London")
+        out.update(not_counted={"failed": [], "pending": [], "unread": [], "unchecked": 0},
+                   seal={"chain": False, "runs": 0, "records": 0}, prices=None)
+        html = self.render(out)["html"]
+        self.assertIn('class="seal bad"', html)
+        self.assertIn("no verified runs in this range", html)
+        self.assertIn("times in Europe/London", html)   # the 24 hour line names the zone its hours are in
+        self.assertIn("when the agent reported it", html)
+        out["tools"] = [{"tool": f"t{i}", "calls": 1, "held": 0, "denied": 0, "errors": 0, "p50": None, "p99": None, "timed": 0,
+                         "links": {k: None for k in ("calls", "held", "denied", "errors")}} for i in range(3)]
+        out["tools_total"] = 30
+        self.assertIn("all 30 tools (top 3 shown)", self.render(out)["html"])

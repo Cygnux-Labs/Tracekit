@@ -387,7 +387,7 @@ join signed `why.finding`s to a why log yet: a replay shows as claimed here; `tr
 ### FLEET
 
 **FLEET** (experimental) adds up what your agents did over the last 24 hours, 7 days or 30 days, against the range of
-the same length before it: five tiles (calls, held, denied, errors, cost) with the change and a sparkline, then six
+the same length before it (the 7 D range is the last 6 days and today so far, so the range before it is as long as that): five tiles (calls, held, denied, errors, cost) with the change and a sparkline, then six
 panels. It is an operator-side summary, not evidence: a number links to the runs it counts (the RUNS page, narrowed
 to them), and each run is evidence on its own page.
 
@@ -412,6 +412,9 @@ Held and in Errors, and in the first chart's errors alone; the second chart (own
 | 4 TOKENS AND COST | tokens by model, then agent; each model turn once (a response signed twice, or by the gateway and the transcript reader, counts once) | `model.exchange` responses' `usage` |
 | 5 TOOLS | calls, held, denied, errors, p50 and p99 latency by tool | `policy.decision`, `tool.result` |
 | 6 AI APPROVER vs PEOPLE | per rule, how often the AI approver's verdict and a person's answer agree, over the holds both answered, and how many holds that is of all holds | `approval.suggested` and `approval` of an AI approver, and a person's `approval` |
+
+Runs that are not agent activity are left out of every number: findings runs (their findings count under the run they
+are about) and why-replay runs, which **Not counted** lists.
 
 An issue is **new** when first seen in the range, **regressed** when seen before the comparison range, absent in it and
 seen again in this one, else **ongoing**. "Seen" is within what this store holds. Findings come from final runs only; a

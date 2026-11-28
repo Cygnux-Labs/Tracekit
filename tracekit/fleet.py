@@ -23,13 +23,14 @@ here, and a model the table doesn't name has none, never a guess.
 """
 import collections
 import datetime
+import functools
 import json
 import math
 import threading
 import time
 
 from .why.core import ts_seconds
-from .why.import_v2 import _calls, _call_id
+from .why.import_v2 import _calls, _call_id, held_calls
 
 HELD, DENIED, ERROR = 1, 2, 4   # a call's flags
 RUNS_MAX = 500   # run ids one link carries: a link past it names its first RUNS_MAX
@@ -43,8 +44,9 @@ MATCH_S = 300   # a signed model turn and one the other source signed with the s
 def _turns(records):
     """A run's model turns as (t, model, input, output, cache read, cache write), each counted once: a response signed
     twice, or by the LLM gateway and the transcript tailer under ids of their own (joined by its exchange id, a tool_use
-    id, or the same counts within MATCH_S), is one turn, with the gateway's counts."""
-    turns, seen, pool = [], {}, collections.defaultdict(list)
+    id, or the same counts within MATCH_S), is one turn, with the gateway's counts. Records come in time order, so each
+    pool of turns waiting for the other source's record drops those older than MATCH_S as it is read."""
+    turns, seen, pool = [], {}, collections.defaultdict(collections.deque)   # pool: (counts, gw) -> turns not joined yet
     for r in records:
         e, d = r["event"], r["event"].get("data") or {}
         u = d.get("usage")
@@ -54,16 +56,20 @@ def _turns(records):
         counts = tuple(u.get(k) or 0 for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"))
         keys = [k for k in ["x" + str(d["exchange_id"]) if d.get("exchange_id") is not None else None,
                             *("t" + str(x["id"]) for x in d.get("tool_uses") or ())] if k]
-        mine = pool[counts]
         turn = next((seen[k] for k in keys if k in seen), None)
-        j = (mine.index(turn) if turn in mine else -1) if turn and turn["gw"] != gw else -1 if turn else \
-            next((i for i, p in enumerate(mine) if p["gw"] != gw and abs(p["t"] - t) <= MATCH_S), -1)
-        if j >= 0:
-            turn = mine.pop(j)
+        if turn is not None:
+            turn["joined"] = turn["joined"] or turn["gw"] != gw   # the other source's record: this turn is taken
+        else:
+            other = pool[counts, not gw]
+            while other and (other[0]["joined"] or t - other[0]["t"] > MATCH_S):
+                other.popleft()
+            if other:
+                turn = other.popleft()
+                turn["joined"] = True
         if turn is None:
-            turn = {"t": t, "model": d.get("model") or "?", "n": counts, "gw": gw}
+            turn = {"t": t, "model": d.get("model") or "?", "n": counts, "gw": gw, "joined": False}
             turns.append(turn)
-            mine.append(turn)
+            pool[counts, gw].append(turn)
         elif gw and not turn["gw"]:
             turn.update(t=t, model=d.get("model") or turn["model"], n=counts, gw=True)
         for k in keys:
@@ -87,19 +93,18 @@ def summarize(records, rules):
     answered (`pairs`) and, for a findings run, its signed findings (about `analyzes`). `rules(decision data)`: its
     rules as [{"id", "reason", "section"}] (view.Translator.verdicts)."""
     evs = [r["event"] for r in records]
-    out = {"count": len(records), "agent": None, "analyzes": None, "final": False, "first": ts_seconds(evs[0]["ts"]),
+    out = {"count": len(records), "agent": None, "analyzes": None, "replay_of": None, "final": False, "first": ts_seconds(evs[0]["ts"]),
            "last": ts_seconds(evs[-1]["ts"]), "calls": [], "marks": [], "tokens": _turns(records), "pairs": [],
            "findings": []}
-    asked, verdicts = {}, {}   # approval id -> the rules its request names; -> {"agent": verdict, "person": verdict}
+    verdicts = {}   # approval id -> {"agent": verdict, "person": verdict, "t": when}
     for e in evs:
         t, d = e["type"], e.get("data") or {}
         if t == "run.registered":
             name = (d.get("agent") or {}).get("name")
             out["agent"], out["analyzes"] = name if isinstance(name, str) else None, d.get("analyzes")
+            out["replay_of"] = d.get("replay_of")
         elif t == "run.final":
             out["final"] = True
-        elif t == "approval.request":
-            asked[d.get("approval_id")] = d.get("rule_ids") or []
         elif t in ("approval", "approval.suggested") and d.get("decision") in ("approve", "reject"):
             who = "agent" if d.get("approver_kind") == "agent" else "person"
             if t == "approval" or who == "agent":
@@ -110,9 +115,12 @@ def summarize(records, rules):
             v = d["verdict"]
             out["findings"].append((ts_seconds(e["ts"]), v.get("rule"), SEVERITY.get(v.get("severity"), "low"),
                                     v.get("title") or ""))
+    owners = held_calls(records)[1]   # approval id -> the run_seq of the decision it was asked for
+    decided = {e["run_seq"]: e["data"] for e in evs if e["type"] == "policy.decision"}
     for aid, v in verdicts.items():
-        if "agent" in v and "person" in v:
-            out["pairs"].append((v["t"], asked.get(aid) or ["no rule"], v["agent"] == v["person"]))
+        if "agent" in v and "person" in v:   # filed under the ask rules of the held call, not the flags on it
+            ids = [r["id"] for r in _why(rules(decided[owners[aid]]), "ask")] if owners.get(aid) in decided else ["no rule"]
+            out["pairs"].append((v["t"], ids, v["agent"] == v["person"]))
     calls = _calls(records)
     ran_by = {(c.get("approval") or {}).get("ran_by"): c for c in calls.values()}
     result = {}   # a held call's -> the result of the retry that ran under its approval
@@ -136,8 +144,6 @@ def summarize(records, rules):
     return out
 
 
-
-
 def findings(alerts, records):
     """A run's findings from the viewer's analysis of it (StoreFeed._findings' alerts), as summarize keeps signed ones:
     (time, rule, severity, title), placed at the first record each cites, else the run's last."""
@@ -151,24 +157,31 @@ def findings(alerts, records):
     return out
 
 
-def _tz(name):
+@functools.lru_cache(maxsize=1)
+def _zones():
     import zoneinfo
-    try:
+    return zoneinfo.available_timezones()
+
+
+def _tz(name):
+    """(the zone, its name): `name` only if it is one this machine has under that exact name, else UTC."""
+    if name in _zones():
+        import zoneinfo
         return zoneinfo.ZoneInfo(name), name
-    except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):   # lean: UTC when this machine has no tz data
-        return datetime.timezone.utc, "UTC"
+    return datetime.timezone.utc, "UTC"   # lean: UTC too when this machine has no tz data
 
 
 def window(now, span, tz):
-    """(start, previous start, bucket starts) of the range `span` ending at `now`: the last N whole local days, today
-    partial, for 7d and 30d; the last 24 clock hours for 24h. The previous range is as long, directly before."""
+    """(start, previous start, bucket starts) of the range `span` ending at `now`: the last 24 hours (24h, in clock hours,
+    the first and last partial), or the last N local days, today so far (7d and 30d). The previous range is as long as
+    this one is so far, directly before it, so a trend compares like with like."""
     if span == "24h":
-        starts = [(int(now // 3600) - 23 + i) * 3600 for i in range(24)]
-        return starts[0], starts[0] - 86400, starts
+        since = now - 86400
+        return since, since - 86400, [(int(since // 3600) + i) * 3600 for i in range(25)]
     n = RANGES[span] // 86400
     today = datetime.datetime.fromtimestamp(now, tz).date()
-    day = lambda i: datetime.datetime.combine(today - datetime.timedelta(days=n - 1 - i), datetime.time(), tz).timestamp()
-    return day(0), day(-n), [day(i) for i in range(n)]
+    day = lambda i: datetime.datetime.combine(today - datetime.timedelta(days=n - 1 - i), datetime.time(), tz).timestamp()   # noqa: E731
+    return day(0), day(0) - (now - day(0)), [day(i) for i in range(n)]
 
 
 def _pct(sorted_ms, p):
@@ -205,7 +218,7 @@ def build(runs, now, span, tz_name, prices=None):
     since, prev, starts = window(now, span, tz)
     until = now
     day = lambda t: bisect.bisect_right(starts, t) - 1   # noqa: E731
-    mine = {k: s for k, s in runs.items() if not s["analyzes"]}   # an analysis run is no agent's run
+    mine = {k: s for k, s in runs.items() if not s["analyzes"] and not s["replay_of"]}   # no agent's runs: analysis and replay
     sets, names, at = collections.defaultdict(set), [], {}   # (what, *scope) -> the runs it counts; the runs linked
 
     def link(*key):
@@ -226,6 +239,9 @@ def build(runs, now, span, tz_name, prices=None):
     # token counts: by model, by agent and model, by bucket and model, and by model in the previous range
     by_model, by_agent, by_day, before_model = (collections.defaultdict(lambda: [0, 0, 0, 0]) for _ in range(4))
     turns = collections.Counter()
+    for k, s in runs.items():
+        if s["replay_of"] and s["first"] < until and s["last"] >= since:
+            sets["replays",].add(k)
     for k, s in mine.items():
         a = s["agent"] or "?"
         if s["first"] < until and s["last"] >= since:
@@ -328,7 +344,7 @@ def build(runs, now, span, tz_name, prices=None):
         "buckets": [{**{k: b[k] for k in ("calls", "held", "denied", "errors", "ok", "err", "den", "hld")},
                      "cost": day_cost[i] if prices else None, "runs": link("calls", "day", i)}
                     for i, b in enumerate(buckets)],
-        "links": {k: link(k) for k in ("calls", "held", "denied", "errors")},
+        "links": {k: link(k) for k in ("calls", "held", "denied", "errors", "runs")},
         "agents": sorted(({"agent": a, "runs": link("runs", a), "last": c["last"], "turns": turns[a],
                            "cost": by_cost[a] if prices and a in by_cost else None, "unpriced": by_unpriced[a],
                            **{k: c[k] for k in ("calls", "held", "denied", "errors", "tokens")},
@@ -357,7 +373,7 @@ def build(runs, now, span, tz_name, prices=None):
     out["timed"] = sum(len(v) for v in latency.values())
     out["findings"] = sum(len([x for x in v if since <= x[0] < until]) for k, v in seen.items() if k[0] == "finding")
     inrange = [s for s in mine.values() if s["first"] < until and s["last"] >= since]
-    out.update(runs=len(inrange), records=sum(s["count"] for s in inrange), open=link("open"))
+    out.update(runs=len(inrange), records=sum(s["count"] for s in inrange), open=link("open"), replays=link("replays"))
     return out
 
 
@@ -372,8 +388,10 @@ class Page:
     def __call__(self, span="7d", tz="UTC"):
         span, tz = span if span in RANGES else "7d", _tz(tz)[1]
         with self.lock:
+            now = time.monotonic()
+            self.kept = {k: v for k, v in self.kept.items() if now - v[0] <= self.ttl}   # nothing older than ttl stays
             at, body = self.kept.get((span, tz), (0.0, None))
-            if body is None or time.monotonic() - at > self.ttl:
+            if body is None:
                 runs, rest = self.feed.fleet_state()
                 out = build(runs, time.time(), span, tz, self.prices)
                 out["not_counted"] = rest
@@ -381,5 +399,5 @@ class Page:
                 out["prices"] = self.prices and {"source": self.source, "currency": self.prices.currency,
                                                  "models": len(self.prices.models)}
                 body = json.dumps(out, ensure_ascii=False)
-                self.kept[span, tz] = time.monotonic(), body
+                self.kept[span, tz] = now, body
             return body

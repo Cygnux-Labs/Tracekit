@@ -1134,8 +1134,10 @@ class StoreFeed:
         # lean: one tuple per call and model turn of every run verified, in memory; a store of millions of calls needs
         # them summed per day instead
         self.fleet_runs = {}
+        self.fleet_found = {}   # (tenant, run_id) -> the viewer's own findings of the run, kept across its re-summaries
         self.verifying = threading.BoundedSemaphore(2)   # /api/rows checks at once
-        self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
+        self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else [],
+                                            cfg.get("data_dir") and os.path.join(cfg["data_dir"], "policies")))
         # why runs are not checked (the watch thread ended, or the store can't be checked): the page then says
         # verification stopped
         self.stopped = None
@@ -1435,6 +1437,7 @@ class StoreFeed:
             self.runs[key] = state
             if code or not fleet_run:
                 self.fleet_runs.pop(key, None)
+                self.fleet_found.pop(key, None)   # it is analysed again if it verifies again
             else:
                 self.fleet_runs[key] = fleet_run
             if code:   # its records, and the reports and findings of when it verified
@@ -1463,7 +1466,7 @@ class StoreFeed:
                    "review": dict(rv, findings=found[-1].pop("summary"))}
             with self.lock:
                 if key in self.fleet_runs:
-                    self.fleet_runs[key]["findings"] = fleet.findings(found, records)
+                    self.fleet_found[key] = fleet.findings(found, records)
                 self._append([dict(x, tenant=tenant) for x in found + [row]], key)
 
     def _mirrors(self):
@@ -1640,7 +1643,8 @@ class StoreFeed:
         """(the summaries of the runs that verified and are not waiting for a re-check, what FLEET leaves out): the
         runs that failed, the runs no checkpoint covers yet, how many the viewer has not checked, and the chain."""
         with self.lock:
-            ok = {k: s for k, s in self.fleet_runs.items() if (self.runs.get(k) or {}).get("count") == s["count"]
+            ok = {k: dict(s, findings=s["findings"] + self.fleet_found.get(k, []))
+                  for k, s in self.fleet_runs.items() if (self.runs.get(k) or {}).get("count") == s["count"]
                   and not self.runs[k]["failed"] and not self.runs[k].get("again")}
             runs = {k: st for k, st in self.runs.items() if k[1] != SIGNER_RUN[1]}
             failed = [{"tenant": k[0], "id": k[1], "why": st["failed"]} for k, st in runs.items() if st["failed"]]
@@ -2047,9 +2051,15 @@ def main(argv=None):
         print(f"tracekit view: --transcripts {transcripts}: no such folder (Claude Code keeps its transcripts in "
               "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)", file=sys.stderr)
         return 2
+    if a.prices and (a.ledger is not None or a.bundle):
+        print("tracekit view: --prices is for a signer's store; `tracekit observe --prices FILE` prices the v1 ledger",
+              file=sys.stderr)
+        return 2
     try:
         prices = a.prices and Prices.load(a.prices)
-    except (OSError, ValueError) as e:   # json.JSONDecodeError is a ValueError
+        for model in prices.models if prices else ():   # each entry is priced once now: a bad table fails here
+            prices.cost(model, {"input_tokens": 1, "output_tokens": 1, "cache_read_tokens": 1, "cache_write_tokens": 1})
+    except (OSError, ValueError, TypeError, AttributeError) as e:   # json.JSONDecodeError is a ValueError
         print(f"tracekit view: --prices {a.prices}: {e}", file=sys.stderr)
         return 2
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a stop runs atexit too: the temp dirs go
