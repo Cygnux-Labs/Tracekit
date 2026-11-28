@@ -1,8 +1,8 @@
 {
-  "policy_hash": "sha256:b6671b30bf3bfbfa6582c261c755eb2b2d75b8c33ae0e0d9755771ad87b90849",
+  "policy_hash": "sha256:d58551605521a68c191f95e0841d15239881343a2d266046094db86762933e2a",
   "engines": [
     "re2@1.1.20251105",
-    "regex@2026.11.15"
+    "regex@2026.9.29"
   ],
   "classes": {
     "browser": {
@@ -36,8 +36,8 @@
       "fp": 0
     },
     "mcp": {
-      "deny": 37,
-      "caught": 37,
+      "deny": 43,
+      "caught": 43,
       "benign": 72,
       "fp": 0
     },
@@ -60,9 +60,9 @@
       "fp": 0
     },
     "shell": {
-      "deny": 624,
-      "caught": 624,
-      "benign": 422,
+      "deny": 633,
+      "caught": 633,
+      "benign": 426,
       "fp": 0
     },
     "sql": {
@@ -74,9 +74,9 @@
   },
   "packs": {
     "server": {
-      "deny": 1123,
-      "caught": 1123,
-      "benign": 1045,
+      "deny": 1138,
+      "caught": 1138,
+      "benign": 1049,
       "fp": 1
     },
     "dev": {
@@ -455,6 +455,12 @@
     "deny/mcp:35": "ask TK-A041 TK-A086 TK-F006",
     "deny/mcp:36": "ask TK-A041 TK-A086 TK-F006",
     "deny/mcp:37": "ask TK-A041 TK-A086 TK-F006",
+    "deny/mcp:38": "ask TK-C012 TK-F006",
+    "deny/mcp:39": "ask TK-C012 TK-F006",
+    "deny/mcp:40": "ask TK-C012 TK-F006",
+    "deny/mcp:41": "ask TK-C012 TK-F006",
+    "deny/mcp:42": "ask TK-C012 TK-F006",
+    "deny/mcp:43": "ask TK-C012 TK-F006",
     "deny/messaging:1": "ask TK-M004 TK-F006",
     "deny/messaging:2": "ask TK-M004 TK-F006",
     "deny/messaging:3": "ask TK-M004 TK-F006",
@@ -1170,6 +1176,15 @@
     "deny/shell:622": "deny TK-D012",
     "deny/shell:623": "deny TK-D012",
     "deny/shell:624": "deny TK-D012",
+    "deny/shell:625": "ask TK-A042",
+    "deny/shell:626": "ask TK-A042",
+    "deny/shell:627": "ask TK-A042",
+    "deny/shell:628": "ask TK-A042",
+    "deny/shell:629": "ask TK-A042",
+    "deny/shell:630": "ask TK-A042",
+    "deny/shell:631": "ask TK-A042",
+    "deny/shell:632": "ask TK-A042 TK-F001 TK-F012 TK-F013",
+    "deny/shell:633": "ask TK-A042 TK-F001 TK-F012 TK-F013",
     "deny/sql:1": "deny TK-DB001 TK-A041",
     "deny/sql:2": "deny TK-DB001 TK-A041",
     "deny/sql:3": "deny TK-DB001 TK-A041",
@@ -2171,6 +2186,10 @@
     "benign/shell:420": "allow",
     "benign/shell:421": "allow",
     "benign/shell:422": "allow",
+    "benign/shell:423": "allow",
+    "benign/shell:424": "allow",
+    "benign/shell:425": "allow",
+    "benign/shell:426": "allow",
     "benign/sql:1": "allow",
     "benign/sql:2": "allow",
     "benign/sql:3": "allow",
@@ -2296,6 +2315,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0009487666034155598,
+  "benign_fp_rate": 0.000945179584120983,
   "ok": true
 }

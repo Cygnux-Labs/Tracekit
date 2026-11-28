@@ -5078,6 +5078,80 @@ class CodingPack(unittest.TestCase):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-A025", "TK-A027"} & set(d["rule_ids"]), d)
 
+    def test_an_mcp_tool_whose_method_action_or_operation_argument_says_delete_is_held_by_the_cloud_packs(self):
+        """TK-C012: a tool that takes a `method` argument (GitHub's label_write, projects_write) deletes through it, so
+        its name never says delete. TK-C011's words, as the value's first word or after a `_` or `-`, in every tool
+        name form, anywhere in the call's JSON; the coding pack, which has no TK-C011, doesn't hold it."""
+        r = {"owner": "acme", "repo": "api"}
+        held = (("mcp:github/label_write", {**r, "name": "bug", "method": "delete"}),
+                ("mcp:github/discussion_comment_write", {**r, "method": "delete", "comment_id": "DC_1"}),
+                ("mcp:github/projects_write", {"owner": "acme", "method": "delete_project_item", "item_id": 7}),
+                ("mcp:github/pull_request_review_write", {**r, "pullNumber": 3, "method": "delete_pending"}),
+                ("mcp:github/manage_notification_subscription", {"notificationID": "1", "action": "delete"}),
+                ("mcp__github__label_write", {"method": "delete"}), ("mcp__github_label_write", {"method": "delete"}),
+                ("mcp:db/run", {"a": 1, "z": 2, "operation": "bulkDelete"}), ("mcp:db/run", {"method": "BulkDelete"}),
+                ("mcp:db/run", {"method": "destroy-all"}), ("mcp:db/run", {"method": "terminate"}),
+                ("mcp:db/run", {"method": "drop_table"}), ("mcp:db/run", {"action": "DropTable"}),
+                ("mcp:db/run", {"method": "purge"}), ("mcp:db/run", {"method": "remove_member"}),
+                ("mcp:db/run", {"method": "wipe"}), ("mcp:db/run", {"method": "truncate"}),
+                ("mcp:db/run", {"method": "truncate_table"}), ("mcp:db/run", {"action": "reset_database"}),
+                ("mcp:db/run", {"action": "resetBranch"}), ("mcp:db/run", {"action": "migrate-reset"}),
+                ("mcp:db/run", {"method": "DELETE"}), ("mcp:db/run", {"method": "DELETE_ITEM"}),
+                ("mcp:db/run", {"filter": {"method": "delete"}}))
+        not_held = (("mcp:github/label_write", {**r, "name": "bug", "method": "create"}),
+                    ("mcp:github/issue_write", {**r, "method": "update", "issue_number": 1, "title": "delete the docs"}),
+                    ("mcp:github/issue_read", {**r, "method": "get"}), ("mcp:github/label_write", {"method": "list"}),
+                    ("mcp:github/label_write", {"method": "undelete"}), ("mcp:db/run", {"method": "deleted"}),
+                    ("mcp:db/run", {"method": "reset_password"}), ("mcp:db/run", {"method": "truncate_text"}),
+                    ("mcp:db/run", {"method": "dropdown"}), ("mcp:db/run", {"name": "delete", "note": "method delete"}),
+                    ("mcp:db/run", {"query": "{\"method\":\"delete\"}"}),
+                    ("mcp:db/run", {"method": ["delete"]}), ("mcp:db/run", {"method": {"a": "delete"}}),
+                    ("mcp:db/run", {"method": None}), ("mcp:db/run", {"method": 3}),
+                    ("web_fetch", {"method": "delete", "url": "https://x.example"}))
+        for pack, engine, e in self.every_pack():
+            for tool, args in held + not_held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    want = pack != "coding.yaml" and (tool, args) in held
+                    self.assertEqual("TK-C012" in d["rule_ids"], want, d)
+                    if want:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+
+    def test_a_hosting_cli_run_through_npx_at_a_version_yarn_or_pnpm_asks_to_delete(self):
+        """TK-A042: `npx wrangler@3 delete`, `yarn wrangler delete` and the like were allowed, as were more than four
+        options before `delete`; the Cloudflare API's delete of a Worker or a Pages project had only the generic
+        network flags. Each CLI TK-A042 names, run through a package manager, is read as its own command."""
+        every = (("npx wrangler@latest delete", "npx wrangler@3 pages project delete p", "npx -y wrangler@3.1.0 delete",
+                  "npx --yes wrangler@3 -c a.toml --env prod delete", "bunx wrangler@3 delete",
+                  "pnpm dlx wrangler@3 delete", "yarn dlx wrangler@3 delete", "yarn dlx wrangler delete",
+                  "yarn wrangler delete", "pnpm wrangler delete", "yarn --silent wrangler delete",
+                  "pnpm -C app wrangler delete", "yarn run wrangler delete", "pnpm exec wrangler delete",
+                  "pnpm exec wrangler@3 delete", "npm exec wrangler delete", "npm exec -- wrangler@3 delete",
+                  "yarn exec wrangler delete", "yarn wrangler pages project delete p",
+                  "wrangler -c a.toml -e b -n c --x d --y e --z f delete",
+                  "npx vercel@latest remove p", "npx vercel@33 project rm p", "yarn vercel remove p", "pnpm vercel rm p",
+                  "npx netlify-cli@17 sites:delete abc", "npx netlify-cli sites:delete abc",
+                  "npx netlify@1 sites:delete abc", "yarn netlify sites:delete abc",
+                  "pnpm netlify api deleteSite --data x", "npx ntl@1 sites:delete abc", "bunx vercel@1 remove p",
+                  "npx gh@2 repo delete x", "pnpm exec glab repo delete x", "yarn hub delete x",
+                  "curl -X DELETE https://api.cloudflare.com/client/v4/accounts/abc123/workers/scripts/my-worker",
+                  "curl -X DELETE https://api.cloudflare.com/client/v4/accounts/abc123/pages/projects/my-proj",
+                  "curl -s -H 'Authorization: Bearer $T' -X DELETE https://api.cloudflare.com/client/v4/accounts/a/workers/scripts/w?force=true",
+                  "http DELETE https://api.cloudflare.com/client/v4/accounts/abc123/workers/scripts/my-worker",
+                  "wget --method=DELETE https://api.cloudflare.com/client/v4/accounts/abc123/pages/projects/p"))
+        self.every_pack_verdicts([(c, "TK-A042") for c in every])
+        for pack, engine, e in self.every_pack():
+            for command in ("npx wrangler@3 deploy", "yarn wrangler dev", "pnpm exec wrangler tail", "pnpm wrangler deploy",
+                            "npx wrangler@3 pages project list", "npx vercel@33 deploy", "yarn vercel --prod",
+                            "pnpm add -D wrangler", "yarn remove wrangler", "pnpm rm wrangler", "yarn run build",
+                            "npx wrangler@3 tail --format delete", "pnpm install wrangler", "yarn add vercel",
+                            "curl https://api.cloudflare.com/client/v4/accounts/abc123/workers/scripts/my-worker",
+                            "curl -X PUT https://api.cloudflare.com/client/v4/accounts/abc123/workers/scripts/my-worker",
+                            "curl -X DELETE https://api.cloudflare.com/client/v4/accounts/a/workers/scripts/w/secrets/s",
+                            "curl -X DELETE https://api.cloudflare.com/client/v4/accounts/a/pages/projects/p/deployments/d"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-A042", e.decide("Bash", {"command": command})["rule_ids"])
+
     def test_a_remote_ref_organization_or_group_deleted_through_the_api_asks(self):
         """TK-A002 and TK-A042 (1.5.3 sweep): a branch or tag deleted through GitHub's or GitLab's API, and a whole
         organization or group, were allowed; a GET, another method or a sub-resource (a member) still isn't held."""

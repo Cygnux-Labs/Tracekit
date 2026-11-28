@@ -35,3 +35,9 @@
 {"tool": "mcp__postgres__query", "args": {"query": "SELECT 1;\tDROP TABLE users"}, "expect": "ask", "note": "a tab escape before the DROP"}
 {"tool": "mcp__postgres__query", "args": {"query": "SELECT 1;\n    DROP TABLE users;"}, "expect": "ask", "note": "indented SQL, 4 spaces"}
 {"tool": "mcp__postgres__query", "args": {"query": "SELECT 1;\n        DROP TABLE users;"}, "expect": "ask", "note": "indented SQL, 8 spaces"}
+{"tool": "mcp:github/label_write", "args": {"method": "delete", "name": "bug", "owner": "acme", "repo": "api"}, "expect": "ask", "note": "a delete chosen by an MCP tool's method argument"}
+{"tool": "mcp:github/projects_write", "args": {"item_id": 7, "method": "delete_project_item", "owner": "acme", "owner_type": "org", "project_number": 1}, "expect": "ask", "note": "a delete chosen by an MCP tool's method argument"}
+{"tool": "mcp:github/pull_request_review_write", "args": {"method": "delete_pending", "owner": "acme", "pullNumber": 3, "repo": "api"}, "expect": "ask", "note": "a delete chosen by an MCP tool's method argument"}
+{"tool": "mcp:github/manage_notification_subscription", "args": {"action": "delete", "notificationID": "1"}, "expect": "ask", "note": "a delete chosen by an MCP tool's action argument"}
+{"tool": "mcp__github__discussion_comment_write", "args": {"comment_id": "DC_1", "method": "delete"}, "expect": "ask", "note": "a delete chosen by an MCP tool's method argument"}
+{"tool": "mcp:db/admin", "args": {"operation": "dropTable", "table": "orders"}, "expect": "ask", "note": "a delete chosen by an MCP tool's operation argument"}

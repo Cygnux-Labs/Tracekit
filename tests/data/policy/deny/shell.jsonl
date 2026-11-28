@@ -622,3 +622,12 @@
 {"tool": "Bash", "args": {"command": "python3 -m tracekit tips approve L-1"}, "expect": "deny", "note": "the module form of the same answer (TK-D012)"}
 {"tool": "Bash", "args": {"command": "sh -c 'tracekit tips approve L-1'"}, "expect": "deny", "note": "the answer inside a nested shell (TK-D012)"}
 {"tool": "Bash", "args": {"command": "tracekit grant list"}, "expect": "deny", "note": "every tracekit grant the agent runs is denied, list included (TK-D012)"}
+{"tool": "Bash", "args": {"command": "npx wrangler@latest delete"}, "expect": "ask", "note": "wrangler delete through npx at a version"}
+{"tool": "Bash", "args": {"command": "npx wrangler@3 pages project delete myproj --yes"}, "expect": "ask", "note": "wrangler pages project delete through npx at a version"}
+{"tool": "Bash", "args": {"command": "yarn wrangler delete"}, "expect": "ask", "note": "wrangler delete run by yarn"}
+{"tool": "Bash", "args": {"command": "pnpm wrangler delete"}, "expect": "ask", "note": "wrangler delete run by pnpm"}
+{"tool": "Bash", "args": {"command": "pnpm dlx wrangler@3 delete"}, "expect": "ask", "note": "wrangler delete through pnpm dlx at a version"}
+{"tool": "Bash", "args": {"command": "npx vercel@33 remove myproj --yes"}, "expect": "ask", "note": "vercel remove through npx at a version"}
+{"tool": "Bash", "args": {"command": "wrangler -c a.toml -e b -n c --x d --y e --z f delete"}, "expect": "ask", "note": "wrangler delete after six options"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE -H 'Authorization: Bearer t' https://api.cloudflare.com/client/v4/accounts/0123abcd/workers/scripts/my-worker"}, "expect": "ask", "note": "deleting a Worker through Cloudflare's API"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE -H 'Authorization: Bearer t' https://api.cloudflare.com/client/v4/accounts/0123abcd/pages/projects/my-site"}, "expect": "ask", "note": "deleting a Pages project through Cloudflare's API"}

@@ -8,7 +8,7 @@
 # tabs, newlines or returns separates words (before the program too), and a scan for a later word ends with the value,
 # so many values each rescan only their own text; aws reads a long option's unique prefix (--rec is --recursive).
 
-version: '2026.11-server-cloud-18'
+version: '2026.11-server-cloud-19'
 description: server-hosted agents, cloud CLIs and cloud MCP tools
 unknown_tools: ask
 
