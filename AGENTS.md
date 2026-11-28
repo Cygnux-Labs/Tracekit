@@ -81,6 +81,8 @@ There is no typecheck step.
 - CI runs the suite in parallel (`-n auto -m "not serial"`, pytest-xdist), then the tests marked `serial` on their
   own. A test that times work against a wall-clock or CPU-time budget, asserts the fallback regex engine's 1 s isn't
   spent, or waits on a tight deadline gets `@pytest.mark.serial`; one that reads process-wide state resets it itself.
+  A CPU-time budget is set on a laptop and multiplied by `machine_scale()` (tests/factories.py), how much slower this
+  machine runs a reference search: CI's runners are 2-3.5x slower, and a fixed second fails there.
 
 ## Local traps
 
