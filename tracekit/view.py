@@ -38,10 +38,12 @@ bundle once it verifies (what `tracekit observe` runs), on this server, token an
     tracekit view [--dev | --config signer.yaml | --data-dir DIR | --ledger [HOME] | --bundle FILE] [--log-vkey VKEY]
                   [--host H] [--port N] [--tls-cert FILE --tls-key FILE | --insecure-http] [--why DIR]
                   [--allow-program SPEC] [--ingest-token TOKEN] [--webhook URL] [--approval ID] [--transcripts DIR]
+                  [--prices FILE]
 
 `--approval ID` adds `#approval=ID` to the printed link: the page opens the call that approval held. The TIPS page
 (tracekit/tips.py) reads the store's rows and, with the dev store or `--transcripts DIR`, Claude Code's transcripts,
-read-only, for the token only.
+read-only, for the token only. The FLEET page (tracekit/fleet.py, experimental) adds up the runs that verified over 24 hours,
+7 days or 30 days against the range before; `--prices FILE` prices its tokens.
 """
 import argparse
 import atexit
@@ -71,7 +73,7 @@ from http.client import HTTPException
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
-from . import findings_text, findings_v2, grants, lessons, parsers
+from . import findings_text, findings_v2, fleet, grants, lessons, parsers
 from .bundle_v2 import bundle, export
 from .format import checkpoint
 from .format.records import RecordSigner
@@ -87,6 +89,7 @@ from .signer.rpc_schema import RPCError
 from .signer.service import data_dir_at, dev_data_dir, dev_witnesses, load_config, lookup, read_vkeys, reader
 from .storage.base import StorageChanged, StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
+from .usage import Prices
 from .verify import anchoring, cosignature_failure, v2
 from .why.server import Store
 
@@ -447,6 +450,12 @@ class Translator(observe.Translator):
         known = self.reasons.get(d.get("policy_hash"), {})
         return [{"id": i, "reason": known.get(i, {}).get("reason") or ENGINE_RULES.get(i, ""),
                  **{k: v for k, v in known.get(i, {}).items() if k == "remedy"}} for i in d.get("rule_ids") or []]
+
+    def verdicts(self, d):
+        """rules(d), each with its `section` in the policy the decision was made under (deny, ask or flag; a rule in
+        shadow is a flag), None for an engine check or when the viewer doesn't have that policy."""
+        secs = self.reads(d).get("secs") or {}
+        return [{**r, "section": secs.get(r["id"])} for r in self.rules(d)]
 
     def feed(self, rec):
         e = rec["event"]
@@ -1121,8 +1130,14 @@ class StoreFeed:
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
         self.rowcache = collections.OrderedDict()   # (tenant, run_id, its covered records) -> rows: the newest ROWCACHE_MAX
+        # (tenant, run_id) -> fleet.summarize of the run as it verified: what the FLEET page adds up
+        # lean: one tuple per call and model turn of every run verified, in memory; a store of millions of calls needs
+        # them summed per day instead
+        self.fleet_runs = {}
+        self.fleet_found = {}   # (tenant, run_id) -> the viewer's own findings of the run, kept across its re-summaries
         self.verifying = threading.BoundedSemaphore(2)   # /api/rows checks at once
-        self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
+        self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else [],
+                                            cfg.get("data_dir") and os.path.join(cfg["data_dir"], "policies")))
         # why runs are not checked (the watch thread ended, or the store can't be checked): the page then says
         # verification stopped
         self.stopped = None
@@ -1396,6 +1411,10 @@ class StoreFeed:
             rows = [x for r in records[state["shown"]:] for x in self.tr.feed(r)]   # translated: later rows need it
             new += [] if hidden else rows
             rv = review(records, rep, "verified")
+            try:
+                fleet_run = key[1] != SIGNER_RUN[1] and fleet.summarize(records, self.tr.verdicts)
+            except (KeyError, TypeError, ValueError):   # a record FLEET can't read: the run shows, and is listed there
+                fleet_run = None
             summary = (f"tenant {tenant} · the signer's own records" if run_id == SIGNER_RUN[1] else
                        f"tenant {tenant} · agent {rv['agent'] or '?'} · {rv['state']} · decisions "
                        + (", ".join(f"{v} {n}" for v, n in sorted(rv["decisions"].items())) or "none")
@@ -1416,6 +1435,11 @@ class StoreFeed:
             new[-1].update(signer=True, agent="signer")
         with self.lock:
             self.runs[key] = state
+            if code or not fleet_run:
+                self.fleet_runs.pop(key, None)
+                self.fleet_found.pop(key, None)   # it is analysed again if it verifies again
+            else:
+                self.fleet_runs[key] = fleet_run
             if code:   # its records, and the reports and findings of when it verified
                 for i, x in enumerate(self.records):
                     if x is not observe.RETRACTED and (x.get("tenant"), x.get("session_id")) == key:
@@ -1441,6 +1465,8 @@ class StoreFeed:
             row = {**self.tr._base(e, {}, "tk_run"), "analysis": True,
                    "review": dict(rv, findings=found[-1].pop("summary"))}
             with self.lock:
+                if key in self.fleet_runs:
+                    self.fleet_found[key] = fleet.findings(found, records)
                 self._append([dict(x, tenant=tenant) for x in found + [row]], key)
 
     def _mirrors(self):
@@ -1612,6 +1638,21 @@ class StoreFeed:
             while len(self.rowcache) > ROWCACHE_MAX:
                 self.rowcache.popitem(last=False)
         return body
+
+    def fleet_state(self):
+        """(the summaries of the runs that verified and are not waiting for a re-check, what FLEET leaves out): the
+        runs that failed, the runs no checkpoint covers yet, how many the viewer has not checked, and the chain."""
+        with self.lock:
+            ok = {k: dict(s, findings=s["findings"] + self.fleet_found.get(k, []))
+                  for k, s in self.fleet_runs.items() if (self.runs.get(k) or {}).get("count") == s["count"]
+                  and not self.runs[k]["failed"] and not self.runs[k].get("again")}
+            runs = {k: st for k, st in self.runs.items() if k[1] != SIGNER_RUN[1]}
+            failed = [{"tenant": k[0], "id": k[1], "why": st["failed"]} for k, st in runs.items() if st["failed"]]
+            pending = [{"tenant": k[0], "id": k[1]} for k, st in runs.items() if not st["count"] and not st["failed"]]
+            unread = [{"tenant": k[0], "id": k[1]} for k, st in runs.items()
+                      if st["count"] and not st["failed"] and not st.get("again") and k not in ok]
+        _, problems, _ = self.verify()
+        return ok, {"failed": failed, "pending": pending, "unread": unread, "unchecked": self.checking(), "chain": not problems}
 
     def checking(self, tenant=None):
         """How many of the store's runs (of `tenant`, else of all) this viewer has not checked yet (on start it checks
@@ -1997,6 +2038,9 @@ def main(argv=None):
     ap.add_argument("--transcripts", metavar="DIR", help="Claude Code transcripts the TIPS page reads, read-only "
                                                          "(default with the dev store: $CLAUDE_CONFIG_DIR/projects or "
                                                          "~/.claude/projects)")
+    ap.add_argument("--prices", metavar="FILE", help="a JSON price table (as `tracekit cost --prices` takes it): the "
+                                                     "FLEET page then shows dollars for the models it names; with "
+                                                     "none it shows tokens only")
     a = ap.parse_args(argv)
     if a.approval and not re.fullmatch(r"([a-z0-9-]+\.)?apr-[0-9a-f]{32}", a.approval):
         print(f"tracekit view: --approval takes an approval id (apr- and 32 hex digits), not {a.approval!r}",
@@ -2006,6 +2050,19 @@ def main(argv=None):
     if transcripts and not os.path.isdir(transcripts):
         print(f"tracekit view: --transcripts {transcripts}: no such folder (Claude Code keeps its transcripts in "
               "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)", file=sys.stderr)
+        return 2
+    if a.prices and (a.ledger is not None or a.bundle):
+        print("tracekit view: --prices is for a signer's store; `tracekit observe --prices FILE` prices the v1 ledger",
+              file=sys.stderr)
+        return 2
+    try:
+        prices = a.prices and Prices.load(a.prices)
+        for model in prices.models if prices else ():   # each entry is priced once now: a bad table fails here
+            if not math.isfinite(prices.cost(model, {"input_tokens": 1, "output_tokens": 1, "cache_read_tokens": 1,
+                                                     "cache_write_tokens": 1})):   # NaN would reach the page's JSON
+                raise ValueError(f"{model}: a price that isn't a finite number")
+    except (OSError, ValueError, TypeError, AttributeError, ArithmeticError) as e:   # "per": 0 divides by zero
+        print(f"tracekit view: --prices {a.prices}: {e}", file=sys.stderr)
         return 2
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a stop runs atexit too: the temp dirs go
     from .cli import experimental
@@ -2067,6 +2124,8 @@ def main(argv=None):
                     if os.path.isdir(os.path.join(cfg["data_dir"], WHY_DIR)) else "--why"
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
                                                         dev_analysis() if dev else None, signer)
+            if feed:   # FLEET: the verified runs' summaries
+                feed.fleet = fleet.Page(feed, prices, a.prices and os.path.basename(a.prices))
             if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them;
                 # Codex's sessions too in dev mode, from $CODEX_HOME (else ~/.codex) plus sessions
                 from . import audit, tips
