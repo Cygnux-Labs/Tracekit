@@ -1840,6 +1840,35 @@ class OpenHandsTools(unittest.TestCase):
                 typed, d = decide(command)
                 self.assertEqual((typed, d["verdict"]), (None, verdict))
 
+    def test_openclaw_exec_is_code_mode_only_when_code_is_all_it_carries(self):
+        # a Code Mode exec carries `code` and, if anything, a `command` equal to it (all 52 calls recorded on OpenClaw
+        # 2026.11.10); any other exec is the Bash command it names, whatever stray `code` key it carries
+        code = "await tools.read({path: '/w/a'})"
+        for ti, want in (({"command": "ls", "yieldMs": 1000}, "Bash"),
+                         ({"code": code, "command": code, "title": "t"}, "code_mode"),
+                         ({"code": code, "title": "t"}, "code_mode"),
+                         ({"code": "x", "command": "rm -rf ~"}, "Bash"),
+                         ({"code": 5, "command": "rm -rf ~"}, "Bash")):
+            with self.subTest(ti=ti):
+                self.assertEqual(agent_hooks.tool("openclaw", "exec", ti)[0], want)
+
+    def test_openclaw_process_input_is_typed_text_and_keys_are_marked_typed(self):
+        t = lambda ti: agent_hooks.tool("openclaw", "process", ti)
+        self.assertEqual(t({"action": "write", "sessionId": "p", "data": "a\r"})[1]["command"], "a\n")
+        self.assertEqual(t({"action": "paste", "sessionId": "p", "text": "ls\n"})[0], "Bash")
+        name, ti = t({"action": "send-keys", "sessionId": "p", "keys": ["h", "i", "Enter"]})
+        self.assertEqual((name, ti["command"], ti["typed"]), ("Bash", "hi\n", True))
+        self.assertIs(t({"action": "send-keys", "sessionId": "p", "keys": ["Tab"]})[1]["typed"], True)
+        name, ti = t({"action": "submit", "sessionId": "p"})
+        self.assertEqual((name, ti["command"], ti["typed"]), ("Bash", "\n", True))
+        for action in ("kill", "list", "poll", "log", "clear", "remove"):
+            self.assertEqual(t({"action": action, "sessionId": "p"})[0], "process")
+
+    def test_openclaw_apply_patch_is_an_edit_of_every_file_it_names(self):
+        patch = "*** Begin Patch\n*** Add File: /w/a\n+x\n*** Delete File: /w/.env\n*** End Patch"
+        name, ti = agent_hooks.tool("openclaw", "apply_patch", {"input": patch})
+        self.assertEqual((name, ti["file_path"], ti["paths"]), ("Edit", "/w/a", ["/w/a", "/w/.env"]))
+
     def test_apply_patch_is_an_edit_of_every_file_it_names(self):
         tool, ti = agent_hooks.tool("openhands", "apply_patch", {"patch": PATCH.format(".env"), "kind": "ApplyPatchAction"})
         self.assertEqual((tool, ti["file_path"], ti["paths"]), ("Edit", "notes.txt", ["notes.txt", ".env"]))
@@ -3607,7 +3636,7 @@ class Installer(unittest.TestCase):
     def test_install_merge_idempotent_uninstall(self):
         d = tempfile.mkdtemp()
         try:
-            for h in (x for x in agent_hooks.HARNESSES if x not in (*agent_hooks.PLUGIN_TOOLS, "cline", "gptme", "jcode", "kiro")):   # JSON (Kiro's file is Tracekit's own)
+            for h in (x for x in agent_hooks.HARNESSES if x not in (*agent_hooks.PLUGIN_TOOLS, "cline", "gptme", "jcode", "kiro", "openclaw")):   # JSON (Kiro's file is Tracekit's own)
                 path = agent_hooks.config_path(h, d)
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 mine = {"hooks": {"SessionStart" if h != "cursor" else "sessionStart": [{"hooks": [{"type": "command", "command": "echo mine"}]}
@@ -3782,7 +3811,7 @@ class Installer(unittest.TestCase):
         from tracekit.install import SettingsError
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        for h in (x for x in agent_hooks.HARNESSES if x not in (*agent_hooks.PLUGIN_TOOLS, "cline", "gptme", "jcode", "kiro")):   # JSON configs (Kiro's file is Tracekit's own)
+        for h in (x for x in agent_hooks.HARNESSES if x not in (*agent_hooks.PLUGIN_TOOLS, "cline", "gptme", "jcode", "kiro", "openclaw")):   # JSON configs (Kiro's file is Tracekit's own)
             ev, bad = {"cursor": "preToolUse", "codex": "PreToolUse", "gemini": "BeforeTool", "goose": "PreToolUse", "qwen": "PreToolUse",
                        "droid": "PreToolUse", "antigravity": "PreToolUse", "crush": "PreToolUse",
                        "devin": "PreToolUse", "openhands": "PreToolUse", "codebuddy": "PreToolUse",

@@ -361,6 +361,51 @@ class Mapping(HarnessCase):
         # Kilo's tool sources: kilocode/tool/browser-open.ts, tool/repo_clone.ts, kilo-memory/src/tool.ts)
         self.check("kilo")
 
+    def test_openclaw(self):
+        # recorded on OpenClaw 2026.11.10 (6ea542f) with a stub plugin logging before_tool_call, then redacted; the
+        # plugin sends it as tool.execute.before (agent_hooks.PRE has no before_tool_call)
+        self.check("openclaw")
+
+    def test_openclaw_denies_calls_it_cant_decide_before_the_signer(self):
+        # a call that sends nothing Tracekit decides it on, and typed text a line editor would act on, is denied in
+        # the hook (as Devin's and Copilot's are), and before_tool_call, which PRE doesn't name, is never read as allowed
+        base = {"session_id": "oc-1", "cwd": "/w", "hook_event_name": "tool.execute.before"}
+        for name, ti in (("apply_patch", {"input": "no headers here"}), ("read", {}), ("web_fetch", {}),
+                         ("exec", {"command": ""}),
+                         ("process", {"action": "write", "sessionId": "proc-1", "data": "rmx\x7f -rf ~\n"}),
+                         ("process", {"action": "write", "sessionId": "proc-1"})):
+            with self.subTest(tool=name, ti=ti):
+                self.sent.clear()
+                code, _, err = self.hook("openclaw", dict(base, tool_name=name, tool_use_id="tc-d", tool_input=ti))
+                self.assertEqual(code, 2, err)
+                self.assertIn("Blocked by Tracekit: OpenClaw's", err)
+                self.assertEqual(self.sent, [])
+        self.sent.clear()
+        code, _, err = self.hook("openclaw", dict(base, hook_event_name="before_tool_call", tool_name="exec",
+                                                  tool_use_id="tc-e", tool_input={"command": "ls"}))
+        self.assertNotEqual(code, 0, err)   # exit 1, not 2: PRE doesn't name it, so run() takes its post-event path;
+        # the plugin blocks on any exit but 0
+        self.assertEqual(self.sent, [])
+
+    def test_openclaw_keystrokes_are_held_by_the_real_policy(self):
+        # send-keys and submit reach the engine as Bash marked typed (agent_hooks.tool): the v2 engine holds a call
+        # so marked (TK-SHELL-PARSE), where a plain process write of harmless text is allowed
+        decisions = self.set_signer_policy(load_policy())
+        base = {"session_id": "oc-1", "cwd": "/w", "hook_event_name": "tool.execute.before", "tool_name": "process"}
+        for n, (ti, verdict) in enumerate((
+                ({"action": "send-keys", "sessionId": "proc-1", "keys": ["h", "i", "Enter"]}, "ask"),
+                ({"action": "send-keys", "sessionId": "proc-1", "keys": ["Tab"]}, "ask"),
+                ({"action": "submit", "sessionId": "proc-1"}, "ask"),
+                ({"action": "write", "sessionId": "proc-1", "data": "echo hi\n"}, "allow"))):
+            with self.subTest(ti=ti):
+                if verdict == "ask":
+                    self.approve_when_asked()
+                code, _, err = self.hook("openclaw", dict(base, tool_use_id=f"tc-k{n}", tool_input=ti))
+                self.assertEqual(code, 0, err)
+                self.assertEqual(decisions[-1]["verdict"], verdict)
+                if verdict == "ask":
+                    self.assertIn("TK-SHELL-PARSE", decisions[-1]["rule_ids"])
+
     def test_goose(self):
         self.check("goose")
 
@@ -1744,7 +1789,7 @@ class Installer(unittest.TestCase):
     def test_init_dev_v2_replaces_v1_and_uninstall_removes_it(self):
         d = ac.tmpdir(self)
         with mock.patch("os.getcwd", return_value=d):
-            for harness in agent_hooks.HARNESSES:
+            for harness in (h for h in agent_hooks.HARNESSES if h != "openclaw"):   # its installer comes after the draft
                 with self.subTest(harness=harness):
                     project = None if harness in ("gptme", "jcode") else d   # their user config only
                     path = agent_hooks.config_path(harness, project)
