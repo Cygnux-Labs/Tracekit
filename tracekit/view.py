@@ -38,10 +38,12 @@ bundle once it verifies (what `tracekit observe` runs), on this server, token an
     tracekit view [--dev | --config signer.yaml | --data-dir DIR | --ledger [HOME] | --bundle FILE] [--log-vkey VKEY]
                   [--host H] [--port N] [--tls-cert FILE --tls-key FILE | --insecure-http] [--why DIR]
                   [--allow-program SPEC] [--ingest-token TOKEN] [--webhook URL] [--approval ID] [--transcripts DIR]
+                  [--prices FILE]
 
 `--approval ID` adds `#approval=ID` to the printed link: the page opens the call that approval held. The TIPS page
 (tracekit/tips.py) reads the store's rows and, with the dev store or `--transcripts DIR`, Claude Code's transcripts,
-read-only, for the token only.
+read-only, for the token only. The FLEET page (tracekit/fleet.py, experimental) adds up the runs that verified over 24 hours,
+7 days or 30 days against the range before; `--prices FILE` prices its tokens.
 """
 import argparse
 import atexit
@@ -1401,7 +1403,10 @@ class StoreFeed:
             rows = [x for r in records[state["shown"]:] for x in self.tr.feed(r)]   # translated: later rows need it
             new += [] if hidden else rows
             rv = review(records, rep, "verified")
-            fleet_run = key[1] != SIGNER_RUN[1] and fleet.summarize(records, self.tr.rules)
+            try:
+                fleet_run = key[1] != SIGNER_RUN[1] and fleet.summarize(records, self.tr.rules)
+            except (KeyError, TypeError, ValueError):   # a record FLEET can't read: the run shows, and is listed there
+                fleet_run = None
             summary = (f"tenant {tenant} · the signer's own records" if run_id == SIGNER_RUN[1] else
                        f"tenant {tenant} · agent {rv['agent'] or '?'} · {rv['state']} · decisions "
                        + (", ".join(f"{v} {n}" for v, n in sorted(rv["decisions"].items())) or "none")
@@ -1634,8 +1639,10 @@ class StoreFeed:
             runs = {k: st for k, st in self.runs.items() if k[1] != SIGNER_RUN[1]}
             failed = [{"tenant": k[0], "id": k[1], "why": st["failed"]} for k, st in runs.items() if st["failed"]]
             pending = [{"tenant": k[0], "id": k[1]} for k, st in runs.items() if not st["count"] and not st["failed"]]
+            unread = [{"tenant": k[0], "id": k[1]} for k, st in runs.items()
+                      if st["count"] and not st["failed"] and not st.get("again") and k not in ok]
         _, problems, _ = self.verify()
-        return ok, {"failed": failed, "pending": pending, "unchecked": self.checking(), "chain": not problems}
+        return ok, {"failed": failed, "pending": pending, "unread": unread, "unchecked": self.checking(), "chain": not problems}
 
     def checking(self, tenant=None):
         """How many of the store's runs (of `tenant`, else of all) this viewer has not checked yet (on start it checks

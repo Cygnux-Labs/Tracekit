@@ -12,8 +12,6 @@ import time
 import unittest
 from unittest import mock
 
-import pytest
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from factories import iso, v2rec, wait_for  # noqa: E402
@@ -205,6 +203,11 @@ class Build(unittest.TestCase):
                          {"priced-1": (12.0, True), "unpriced": (None, False)})
         self.assertEqual((out["tokens"]["cost"], out["tokens"]["unpriced"], out["agents"][0]["cost"]), (12.0, 505, 12.0))
         self.assertEqual(out["buckets"][-1]["cost"], 12.0)
+        self.assertEqual((out["agents"][0]["tokens"], out["tokens"]["link"]["n"]), (2_000_505, 1))
+        r2 = Run("r2", "b", NOW - 90)   # an agent whose only model has no price has no cost, not a zero one
+        r2.turn("x3", "unpriced", (50, 5, 0, 0))
+        out = fleet.build({**runs, ("default", "r2"): r2.summary()}, NOW, "7d", "UTC", prices)
+        self.assertEqual({a["agent"]: (a["cost"], a["unpriced"]) for a in out["agents"]}, {"a": (12.0, 505), "b": (None, 55)})
 
     def test_a_link_names_the_runs_it_counts_and_is_bounded(self):
         rs = []
@@ -360,3 +363,50 @@ class Store(unittest.TestCase):
         self.assertEqual(self.get(c, "/api/fleet", SESSION)[0], 403)
         self.assertTrue(self.get(c, "/api/snapshot")[1]["fleet"])
         self.assertNotIn("fleet", self.get(c, "/api/snapshot", SESSION)[1])
+
+
+class Page(unittest.TestCase):
+    NAMES = ["esc", "plural", "fmtD", "fmtDur", "WFMODELS", "wfModelMark", "tipTicks", "fmtInt", "fmtTok", "fleetUsd", "fleetMs",
+             "fleetLabel", "renderFleetPage"]
+
+    def render(self, data, prices=True):
+        from test_view import page_js
+        from test_view_ui import needs_node
+        needs_node(self)
+        return json.loads(page_js(self.NAMES, """
+            const html = {}, $ = id => html[id] ??= { textContent: "" }, put = (id, h) => { html[id] = h; };
+            let PAGE = "fleet", FLEETON = true, FLEET = %s, FLEETERR = "", FLEETRANGE = "7d", FLEETASKED = "7d", fleetKey = null, FLINKS = [], RUNFILTER = null;
+            const loadFleet = () => {}; renderFleetPage();
+            process.stdout.write(JSON.stringify({ html: html.fleetp, links: FLINKS, sum: $("fleetsum").textContent }));""" % json.dumps(data)))
+
+    def test_the_page_draws_the_apis_numbers_and_its_links_name_runs(self):
+        r = Run("r1", "claude-code", NOW - 100)
+        r.call("a", "Read", ok=True).call("b", "rm", "deny", ["T-RM"]).call("c", "pay", "ask", ["T-PAY"], ok=False)
+        r.turn("x1", "claude-opus-5", (1000, 100, 0, 0))
+        out = fleet.build({("default", "r1"): r.summary()}, NOW, "7d", "UTC", Prices({"models": {"claude-*": {"input": 5, "output": 25}}}))
+        out.update(not_counted={"failed": [{"id": "bad1", "tenant": "default", "why": "x"}], "pending": [], "unread": [], "unchecked": 0},
+                   seal={"chain": True, "runs": out["runs"], "records": out["records"]},
+                   prices={"source": "p.json", "currency": "USD", "models": 1})
+        got = self.render(out)
+        for text in ("Denied: why T-RM", "claude-code", "claude-opus-5", "$0.0075", "1 run failed verification", "p.json",
+                     "1 run verified · 8 signed records · chain ok", "No AI approver decisions"):
+            self.assertIn(text, got["html"])
+        self.assertEqual(got["sum"].split(" · ")[:2], ["1 agent", "1 run"])
+        # every link carries run ids the API named, and the failed runs' own
+        self.assertTrue(got["links"])
+        self.assertIn(["bad1"], [x["ids"] for x in got["links"]])
+        self.assertTrue(all(i in {"r1", "bad1"} for x in got["links"] for i in x["ids"]))
+        # without a price table the page says so and shows no dollars
+        out["prices"] = None
+        none = fleet.build({("default", "r1"): r.summary()}, NOW, "7d", "UTC")
+        out.update({k: none[k] for k in ("tokens", "models", "agents", "buckets")})
+        text = self.render(out)["html"]
+        self.assertIn("no price table", text)
+        self.assertNotIn("$", text)
+
+    def test_the_page_has_a_fleet_tab_only_where_the_server_has_it(self):
+        page = observe.read_text(observe.UI)
+        self.assertIn('"tips", "fleet"]', page)
+        self.assertIn('(p !== "fleet" || FLEETON)', page)
+        self.assertIn("FLEETON = !!snap.fleet", page)
+        self.assertIn('id="fleetp"', page)

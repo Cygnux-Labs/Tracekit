@@ -250,7 +250,9 @@ def build(runs, now, span, tz_name, prices=None):
                 _add(by_day[day(t), model], n)
                 turns["all"] += 1
                 turns[a] += 1
+                agents[a]["tokens"] += sum(n)
                 sets["model", model].add(k)
+                sets["model", "all"].add(k)
                 sets["agent", a, "tokens"].add(k)
     # issues: a finding, or a held or denied call, grouped across runs by its rule; a findings run's findings are about
     # the run it analyzes, which must be counted
@@ -319,7 +321,7 @@ def build(runs, now, span, tz_name, prices=None):
                     for i, b in enumerate(buckets)],
         "links": {k: link(k) for k in ("calls", "held", "denied", "errors")},
         "agents": sorted(({"agent": a, "runs": link("runs", a), "last": c["last"], "turns": turns[a],
-                           "cost": by_cost[a] if prices else None, "unpriced": by_unpriced[a],
+                           "cost": by_cost[a] if prices and a in by_cost else None, "unpriced": by_unpriced[a],
                            **{k: c[k] for k in ("calls", "held", "denied", "errors", "tokens")},
                            "links": {k: link(k, "agent", a) for k in ("calls", "held", "denied", "errors")}}
                           for a, c in agents.items() if a is not None and (c["runs"] or c["calls"])),

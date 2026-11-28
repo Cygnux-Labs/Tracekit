@@ -384,6 +384,52 @@ join signed `why.finding`s to a why log yet: a replay shows as claimed here; `tr
   200 that matter most: a confirmed cause, then those before stopped calls, then the most cited). Each is named by
   where it was read: its run, record and time, with **OPEN** for that record.
 
+### FLEET
+
+**FLEET** (experimental) adds up what your agents did over the last 24 hours, 7 days or 30 days, against the range of
+the same length before it: five tiles (calls, held, denied, errors, cost) with the change and a sparkline, then six
+panels. It is an operator-side summary, not evidence: a number links to the runs it counts (the RUNS page, narrowed
+to them), and each run is evidence on its own page.
+
+**Only verified runs count.** Every number comes from the signed records of runs this viewer verified, up to the
+checkpoint that covers them. A run that fails verification, that no checkpoint covers yet, or that the viewer is
+checking again after a store change is never counted: the line under the panels, **Not counted**, lists each with a
+link, with the runs not yet final (counted up to their newest checkpoint) and where the cost came from. The seal reads
+"N runs verified · N signed records · chain ok", or says a run failed.
+
+**How a call is counted.** A call is a `policy.decision` record; the agent's retry of a held call, which ran under that
+call's approval, is that call. It is placed in a day (an hour for 24 H) by its decision's time, in the time zone of
+your browser (UTC when the server has no data for it; the range line says which). PER DAY puts each call in one bar, by
+the first that holds: errored (its `tool.result` says `ok: false`), else denied, else held, else ok, so the bars add up
+to the calls. The tiles and every table count a call in each class it belongs to, so a call held and then errored is in
+Held and in Errors, and in the first chart's errors alone; the second chart (own scale) draws the tiles' counts.
+
+| Panel | Counts | From |
+|---|---|---|
+| 1 PER DAY | calls by day (or hour), by class; a bar opens that day's runs | `policy.decision`, `tool.result` |
+| 2 ISSUES | findings, and held or denied calls, grouped by rule across runs, with severity (findings' own; denied high, held med), run count and example runs | `policy.decision` rule ids; the viewer's analysis of final runs (`tracekit analyze --v2`, dev signer) and signed findings runs |
+| 3 AGENTS | runs, calls, held, denied, errors, tokens, cost and last seen by the name each run registered under (the agent's own claim) | `run.registered`, `policy.decision`, `model.exchange` |
+| 4 TOKENS AND COST | tokens by model, then agent; each model turn once (a response signed twice, or by the gateway and the transcript reader, counts once) | `model.exchange` responses' `usage` |
+| 5 TOOLS | calls, held, denied, errors, p50 and p99 latency by tool | `policy.decision`, `tool.result` |
+| 6 AI APPROVER vs PEOPLE | per rule, how often the AI approver's verdict and a person's answer agree, over the holds both answered, and how many holds that is of all holds | `approval.suggested` and `approval` of an AI approver, and a person's `approval` |
+
+An issue is **new** when first seen in the range, **regressed** when seen before the comparison range, absent in it and
+seen again in this one, else **ongoing**. "Seen" is within what this store holds. Findings come from final runs only; a
+run not yet final has none, and the panel says when there are none.
+
+**Latency is the signer's.** It is the time of a call's `tool.result` record less the time of its `policy.decision`
+record, both stamped by the signer when it recorded them, never the `tool.result`'s `duration_ms`, which the agent
+reports. A call that was held (a person's wait is no tool's latency), denied or has no result is left out; the panel's
+footer says how many of the calls have one.
+
+**Cost needs a price table.** Tracekit ships no prices here. Start the viewer with `--prices FILE` (the file
+`tracekit cost --prices` takes, [usage.py](../tracekit/usage.py)) and the page shows dollars for the models the table
+names and "-" for any other, never a guess; without it the page shows tokens only and says so. Cost is the price table
+times signed token counts, not an invoice.
+
+Where a store has no such records (no AI approver decisions, no model exchanges, no findings), the panel says so
+instead of showing zeros. `/api/fleet?range=24h|7d|30d&tz=ZONE` answers the page, for the token only.
+
 ### TIPS
 
 **TIPS** reads the last 7 days. First, **LESSONS**: what your coding agents keep relearning, which a person approves
@@ -618,6 +664,7 @@ instead; `?token=` on an `/api/` path is refused (401), so the token never sits 
 | `/api/stream?from=N` | `text/event-stream`: one `data:` line per record from index `N` on, as they are recorded |
 | `/api/rows?tenant=T&run=R` | `{rows}`: one run's rows from its bundle as verified (exported from the store, verified, then translated), for a run whose records left the live view (the page asks for it when you select such a run); checked again only once the run's own records grow, refused (404) once the viewer's own re-check fails the run, and answered 503 with `Retry-After` while two other runs are being checked (only a check reads the store; a run the viewer hasn't verified yet is 404); an OIDC session reads its tenant's runs only |
 | `/api/why/workspace`, `/api/why/runs/<id>` | the why logs, with `--why` ([below](#why)) |
+| `/api/fleet?range=24h\|7d\|30d&tz=ZONE` | the FLEET page ([above](#fleet)): the range's counts by day, issues, agents, tools, models, the AI approver's agreement and what was not counted; the token only, never an OIDC session |
 | `/api/tips` | the TIPS page ([above](#tips)): what was read, the window, the price table's date and the three tips; the token only, never an OIDC session (it reads local transcripts and every tenant's runs), worked out again at most once a minute, or now with `?fresh=1` |
 
 The run pages and their API (`/runs`, `/api/runs`, `/api/run`, `/api/bundle`) are the central viewer's, served only
