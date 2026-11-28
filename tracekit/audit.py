@@ -25,7 +25,7 @@ from .agent_hooks import AGENT_NAMES, UnreadableCall, _blocked, tool as hook_too
 from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
-from .integrations.harness_hooks import _codex_tool
+from .integrations.harness_hooks import _codex_nested, _codex_tool
 from .report import DECISIONS, _counts, _days, _wait, call_text, share_rules, when
 from .policy2.compile import ENGINE_REASONS
 from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, evaluate, load_policy
@@ -168,13 +168,19 @@ def _claude_code(root: str, since_ts: float, unreadable: list):
             f.close()
 
 
+_NESTED_UNREAD = ("a nested call the reader can't read",)   # a reader's item: counted, never decided
+
+
 def _codex(root: str, since_ts: float, unreadable: list):
     """Read Codex rollouts as (time, session, tool, args), or None for an unreadable line.
 
     A response_item holds the Responses API item returned by the model. _codex_tool builds the PreToolUse payload
-    Codex would give its hook; audit decides that form.
+    Codex would give its hook; audit decides that form. Code Mode's nested tool calls are recorded only as the
+    `item_completed` events of a rollout (_codex_nested maps them): each not already a response_item's call, by id, is
+    yielded with a marker, or as _NESTED_UNREAD where it can't be read, so audit counts both.
     """
     seen: set[bytes] = set()
+    seen_nested: set[str] = set()
     for path, session in _iter_transcripts(root, unreadable):
         if not os.path.basename(path).startswith("rollout-"):
             continue
@@ -182,13 +188,23 @@ def _codex(root: str, since_ts: float, unreadable: list):
         if err:
             unreadable.append({"path": path, "error": err})
             continue
+        called: set[str] = set()   # the call ids of the file's response_items
+        nested = []
         try:
             for _n, entry in transcript_entries(f, final=True):
                 if entry is None:
                     yield None
                     continue
+                payload = entry.get("payload")
+                if entry.get("type") == "event_msg" and isinstance(payload, dict) and payload.get("type") == "item_completed":
+                    at = _entry_time(entry)
+                    if (at is None or at.timestamp() >= since_ts) and isinstance(payload.get("item"), dict):
+                        nested.append((at, payload["item"]))
+                    continue
                 if entry.get("type") != "response_item":
                     continue
+                if isinstance(payload, dict) and isinstance(payload.get("call_id"), str):
+                    called.add(payload["call_id"])
                 at = _entry_time(entry)
                 if at is not None and at.timestamp() < since_ts:
                     continue
@@ -216,6 +232,19 @@ def _codex(root: str, since_ts: float, unreadable: list):
                 if key is not None:
                     seen.add(key)
                 yield at, session, tool, args
+            for at, item in nested:
+                nested_id = item.get("id")
+                if isinstance(nested_id, str) and (nested_id in called or nested_id in seen_nested):
+                    continue   # a call the response_items hold, or this one again
+                try:
+                    mapped = _codex_nested(item)
+                except RecursionError:
+                    mapped = False
+                if mapped is None:
+                    continue
+                if isinstance(nested_id, str):
+                    seen_nested.add(nested_id)
+                yield _NESTED_UNREAD if mapped is False else (at, session, *mapped, True)
         except OSError as e:
             unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
         finally:
@@ -805,7 +834,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
     # lean: every call is kept in memory (about 1 KB each, 2 KB with --json, measured on 158k calls; --show text is
     # capped at report.CALL_WIDTH); stream the report's lines instead if a real transcript folder outgrows that
     calls_out: list[dict] = []
-    skipped_malformed = 0
+    skipped_malformed = nested_read = nested_unread = 0
     agents: dict[str, dict] = {}
 
     for name, folder, read in sources:
@@ -815,7 +844,11 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
             if item is None:
                 skipped_malformed += 1
                 continue
-            at, session, tool, args = item
+            if item is _NESTED_UNREAD:
+                nested_unread += 1
+                continue
+            at, session, tool, args, *nested = item
+            nested_read += bool(nested)
             blocked = None
             if hook:
                 try:   # as the live hook: a call it denies before mapping (a tool whose calls it can't see),
@@ -888,10 +921,18 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         # the policy's section of each rule: an engine check has none
         "sections": {r["id"]: sec for sec, r, *_ in engine.rules if r["id"] in by_rule},
         "skipped_malformed": skipped_malformed,
+        "nested_calls": {"read": nested_read, "unread": nested_unread},
         "unreadable": unreadable,
         "calls": calls,
     }
     return report
+
+
+def _nested_line(report: dict) -> str:
+    """How many of Codex Code Mode's nested calls the reader decided (counted among the calls) and how many it could
+    not read (counted in none), so an undercount is never silent."""
+    n = report["nested_calls"]
+    return f"Codex Code Mode nested calls: {n['read']:,} read, {n['unread']:,} not readable (not decided)"
 
 
 def format_report(report: dict, as_json: bool = False, every: bool = False) -> str:
@@ -935,6 +976,8 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
                     lines.append(f"    {cause}: {m}  ({why})")
     lines.append("")
     lines.append(f"skipped malformed lines: {report['skipped_malformed']}")
+    if any(report["nested_calls"].values()):
+        lines.append(_nested_line(report))
     lines.append(f"unreadable files: {len(report['unreadable'])}")
     shown = [c for c in report["calls"] if every or c["verdict"] in ("deny", "ask")]
     if shown:
@@ -1008,6 +1051,7 @@ def share(report: dict) -> str:
              f"{report['disclaimer']}: {s:,} {kind} session{'s' * (s != 1)}",
              f"Tool calls: {sum(n.values()):,}   " + _counts({k: n.get(k, 0) for k in DECISIONS}),
              *_by_day(report),
+             *([_nested_line(report)] if any(report["nested_calls"].values()) else []),
              "Calls by decision and rule (one call can match several rules):" + " none" * (not by_rule),
              *share_rules(by_rule),
              # a TK-SHELL-PARSE hold's cause, by name alone and only a name in the engine's own table, anything

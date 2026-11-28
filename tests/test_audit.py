@@ -1006,6 +1006,84 @@ class TestAudit(unittest.TestCase):
                              (expected[0], decision["verdict"], decision.get("rule_ids") or []))
         self.assertIn("coding-agent session", audit.share(report))
 
+    # Code Mode's nested tool calls. The fixture is built from codex-rs's types at rust-v0.171.0 (protocol.rs
+    # ItemCompletedEvent, items.rs TurnItem, ext/items ExtensionItem), not recorded from a Codex session.
+    CODE_MODE = Path(__file__).parent / "data" / "audit" / "codex_code_mode_rollout.jsonl"
+
+    def _code_mode(self, extra=()):
+        shutil.copy(self.CODE_MODE, self.root / "rollout-code-mode.jsonl")
+        if extra:
+            with (self.root / "rollout-code-mode.jsonl").open("a", encoding="utf-8") as f:
+                f.write("".join(json.dumps(e) + "\n" for e in extra))
+        return audit.audit(str(self.root), agent="codex")
+
+    def test_codex_code_mode_nested_items_are_decided_as_the_hook_decides_them(self):
+        report = self._code_mode()
+        self.assertEqual([(c["tool"], c["verdict"]) for c in report["calls"]], [
+            ("Bash", "allow"), ("Bash", "deny"), ("Bash", "deny"), ("Edit", "deny"),
+            ("mcp__github__delete_file", "ask"), ("Read", "deny")])
+        nested = [c for c in report["calls"]][1:]
+        self.assertIn("TK-D003", nested[0]["rule_ids"])   # git push --force, CommandExecution
+        self.assertIn("TK-D001", nested[1]["rule_ids"])   # sudo ls: a CommandExecution that failed, still decided
+        self.assertIn("TK-D005", nested[2]["rule_ids"])   # FileChange: the .env it updates
+        self.assertIn("TK-C011", nested[3]["rule_ids"])   # McpToolCall
+        self.assertIn("TK-S004", nested[4]["rule_ids"])   # ImageView: a key file, as a Read
+        self.assertEqual(report["nested_calls"], {"read": 5, "unread": 2})
+
+    def test_codex_code_mode_nested_items_map_as_codex_tool_maps_the_calls(self):
+        for item, call in (
+                ({"type": "CommandExecution", "id": "a", "source": "agent", "command": ["/bin/zsh", "-lc", "rm -rf /"]},
+                 {"type": "function_call", "name": "exec_command", "arguments": json.dumps({"cmd": "rm -rf /"})}),
+                ({"type": "CommandExecution", "id": "a", "source": "agent", "command": ["git", "status", "-s"]},
+                 {"type": "function_call", "name": "exec_command", "arguments": json.dumps({"cmd": "git status -s"})}),
+                ({"type": "FileChange", "id": "b", "changes": {"/p/a.txt": {"type": "add", "content": "x"}}},
+                 {"type": "custom_tool_call", "name": "apply_patch",
+                  "input": "*** Begin Patch\n*** Add File: /p/a.txt\n+x\n*** End Patch"}),
+                ({"type": "McpToolCall", "id": "c", "server": "fs", "tool": "read_file", "arguments": {"path": "n"}},
+                 {"type": "function_call", "namespace": "mcp__fs__", "name": "read_file",
+                  "arguments": json.dumps({"path": "n"})}),
+                ({"type": "ImageView", "id": "d", "path": "file:///p/My%20Pic.png"},
+                 {"type": "function_call", "name": "view_image", "arguments": json.dumps({"path": "/p/My Pic.png"})})):
+            with self.subTest(item=item["type"]):
+                self.assertEqual(harness_hooks._codex_nested(item), harness_hooks._codex_tool(call))
+
+    def test_codex_code_mode_an_item_a_response_item_holds_or_repeats_is_counted_once(self):
+        report = self._code_mode()
+        commands = [c for c in report["calls"] if c["tool"] == "Bash"]
+        self.assertEqual(len(commands), 3)   # ls -la (once, by its call_id), git push (twice in the file), sudo ls
+        again = self._code_mode([{"type": "event_msg", "timestamp": "2026-11-20T10:01:00Z", "payload": {
+            "type": "item_completed", "item": {"type": "CommandExecution", "id": "exec-1-2", "source": "agent",
+                                               "command": ["/bin/zsh", "-lc", "sudo ls"], "status": "failed"}}}])
+        self.assertEqual((len(again["calls"]), again["nested_calls"]), (6, {"read": 5, "unread": 2}))
+
+    def test_codex_code_mode_an_item_it_cannot_read_is_counted_never_dropped_or_crashing(self):
+        report = self._code_mode([
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "CommandExecution", "id": "x1",
+                                                                              "command": "not a list"}}},
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "FileChange", "id": "x2",
+                                                                              "changes": {"/p": "not an object"}}}},
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "McpToolCall", "id": "x3"}}},
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "ImageView", "id": "x4",
+                                                                              "path": "https://example.invalid/a.png"}}},
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": "not an object"}},
+            {"type": "event_msg", "payload": {"type": "item_completed", "item": {"id": "x5"}}},
+            {"type": "event_msg", "payload": {"type": "item_started", "item": {"type": "CommandExecution"}}}])
+        self.assertEqual(len(report["calls"]), 6)
+        self.assertEqual(report["nested_calls"], {"read": 5, "unread": 2 + 5})   # the fixture's two, and x1-x5
+
+    def test_codex_code_mode_the_report_and_share_say_how_many_nested_calls_were_read(self):
+        report = self._code_mode()
+        line = "Codex Code Mode nested calls: 5 read, 2 not readable (not decided)"
+        self.assertIn(line, audit.format_report(report))
+        self.assertIn(line, audit.share(report))
+        shutil.rmtree(self.root)
+        self.root.mkdir()
+        _write_jsonl(self.root / "rollout-plain.jsonl", [_rollout({"type": "function_call", "name": "exec_command",
+                                                                  "call_id": "p", "arguments": json.dumps({"cmd": "ls"})})])
+        plain = audit.audit(str(self.root), agent="codex")
+        self.assertEqual(plain["nested_calls"], {"read": 0, "unread": 0})
+        self.assertNotIn("nested calls", audit.format_report(plain) + audit.share(plain))
+
     def test_codex_reader_duplicate_malformed_since_and_no_hook(self):
         new = {"type": "function_call", "name": "exec_command", "call_id": "new",
                "arguments": json.dumps({"cmd": "ls"})}
