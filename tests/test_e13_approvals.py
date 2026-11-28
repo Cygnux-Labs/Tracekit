@@ -54,6 +54,12 @@ class Signer(unittest.TestCase):
         self.s.close()
         self.s = self.open()
 
+    def final(self, aid):
+        """Close the run of `pending` and let it go final: its approval `aid` is gone."""
+        self.s.close_run({"request_id": "close", **self.run})
+        self.s.sweep(now=time.monotonic() + svc.GRACE_S + 1)
+        self.assertNotIn(aid, self.s.log.approvals)
+
     def pending(self, tool="pay", raw='{"to": "acct-42", "cents": 1500}'):
         """A run of this process whose call tc-1 waits for approval; its approval_id."""
         n = uuid.uuid4().hex
@@ -104,6 +110,51 @@ class TestBinding(Signer):
         self.restart()
         self.assertEqual(self.decide(aid)["state"], "approved")
         self.assertTrue(self.consume()["ok"])
+
+    def test_retry_of_approval_after_run_final_returns_cached_response(self):
+        aid = self.pending("mail")
+        req = {"request_id": "approval-retry-after-final", "approval_id": aid, "decision": "approve"}
+        first = self.s.call(APPROVER, "approval_decide", req)
+        self.final(aid)
+        self.assertEqual(self.s.call(APPROVER, "approval_decide", req), first)
+
+    def test_another_identity_replaying_an_answers_request_id_after_run_final_is_refused(self):
+        aid = self.pending("mail")
+        req = {"request_id": "approval-retry-after-final", "approval_id": aid, "decision": "approve"}
+        self.s.call(APPROVER, "approval_decide", req)
+        self.final(aid)
+        for who in (STRANGER, GLASS):   # the cache is keyed by who answered: another identity's same id is a new answer
+            with self.subTest(who=who.subject):
+                self.refused("unknown_approval", self.s.call, who, "approval_decide", dict(req))
+
+    def test_retry_with_another_answer_after_run_final_is_a_conflict(self):
+        aid = self.pending("mail")
+        req = {"request_id": "approval-retry-after-final", "approval_id": aid, "decision": "approve"}
+        self.s.call(APPROVER, "approval_decide", req)
+        self.final(aid)
+        self.refused("conflict", self.s.call, APPROVER, "approval_decide", {**req, "decision": "reject"})
+
+    def test_retry_of_abandon_after_run_final_returns_cached_response(self):
+        aid = self.pending()
+        req = {"request_id": "abandon-retry-after-final", **self.run, "approval_id": aid, "reason": "state lost"}
+        first = self.s.approval_abandon(req)
+        self.final(aid)
+        self.assertEqual(self.s.approval_abandon(req), first)
+
+    def test_a_new_abandon_after_run_final_is_refused_as_unknown(self):
+        """Only a retry reaches the writer: a new abandon isn't counted as the final run's late activity."""
+        aid = self.pending()
+        self.final(aid)
+        self.refused("unknown_approval", self.s.approval_abandon,
+                     {"request_id": "abandon-after-final", **self.run, "approval_id": aid, "reason": "state lost"})
+
+    def test_retry_of_approval_after_a_restart_is_refused(self):
+        aid = self.pending("mail")
+        req = {"request_id": "approval-retry-after-restart", "approval_id": aid, "decision": "approve"}
+        self.s.call(APPROVER, "approval_decide", req)
+        self.final(aid)
+        self.restart()
+        self.refused("unknown_approval", self.s.call, APPROVER, "approval_decide", req)
 
     def test_a_consumed_approval_covers_only_the_approved_arguments(self):
         self.decide(self.pending("mail"))
@@ -501,6 +552,14 @@ class TestWeb(Signer):
                "passkey": self.assertion(aid, auth)}
         first = self.s.call(BRIDGE, "approval_decide", req)
         self.assertEqual(self.s.call(BRIDGE, "approval_decide", dict(req)), first)
+
+    def test_a_viewer_answer_retried_after_its_run_ends_is_refused(self):
+        """The cache holds a viewer's answer under the person it names, with no tenant: only _visible checks that."""
+        aid = self.pending("wire")
+        req = {"request_id": "web-1", "approval_id": aid, "on_behalf": ALICE, "decision": "reject"}
+        self.s.call(BRIDGE, "approval_decide", req)
+        self.final(aid)
+        self.refused("unknown_approval", self.s.call, BRIDGE, "approval_decide", dict(req))
 
     def test_a_retry_evicted_from_the_cache_still_needs_its_passkey(self):
         self.register()

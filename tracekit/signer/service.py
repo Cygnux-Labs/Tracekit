@@ -4427,6 +4427,13 @@ class SignerService:
         answers for the OIDC person `identity` (`on_behalf`)."""
         if self._is_agent(identity):
             return self._agent_answer(identity, req)
+        method = "approval_decide" if groups is None else ON_BEHALF
+        # a retry gets its first answer even once the run is final and the approval gone (#765); not a viewer's
+        # (`bridge`): its cache key is the person's, with no tenant, and only _visible checks the tenant
+        if bridge is None and (identity.scheme, identity.subject, req["request_id"]) in self.log.done:
+            found, out = self.log.cached(identity, method, req)
+            if found:
+                return out
         if req["decision"] == "escalate":
             raise RPCError("invalid_request", "escalate is an agent approver's answer: a person approves or rejects")
         aid = req["approval_id"]
@@ -4503,7 +4510,7 @@ class SignerService:
                     run, a["requester"]) and not self._agent_session(identity, run["tenant"], allowed=False)
             tx.emit(run, "approval", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"])
             return {"approval_id": aid, "state": a["state"], "self_approved": same}
-        out = self.log.submit(identity, "approval_decide" if groups is None else ON_BEHALF, req, fn, run_key)
+        out = self.log.submit(identity, method, req, fn, run_key)
         if out["state"] == "rejected":
             self._drop_args(aid)
         with self._cond:
@@ -5120,10 +5127,11 @@ class SignerService:
 
     def _approval_abandon(self, identity, req):
         key, aid = self._authorize(identity, req), req["approval_id"]
-        self._approval(key, aid)
+        if (identity.scheme, identity.subject, req["request_id"]) not in self.log.done:   # a retry: the writer answers it
+            self._approval(key, aid)
 
         def fn(tx, run):
-            a = self.log.approvals[aid]
+            a = self._approval(key, aid)
             # takes no caller: an approval of a gateway's call expires on its own, or with its run
             self._hold(run["calls"].get(a["tool_call_id"]), (None, None), a["tool_call_id"])
             if a["state"] not in LIVE:

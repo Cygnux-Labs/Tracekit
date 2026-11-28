@@ -224,6 +224,15 @@ class TestGrant(Bridge):
         return self.s.call(who, "approval_decide_on_behalf", {"request_id": uuid.uuid4().hex, "approval_id": aid,
                                                                "decision": "approve", "approver": approver, **kw})
 
+    def test_a_retry_after_the_run_ends_gets_its_first_answer(self):
+        aid, me = self.pending(), CallerIdentity("uid", str(os.getuid()), True)
+        req = {"request_id": "retry", "approval_id": aid, "decision": "approve", "approver": "slack:T0TEAM/U0APPROVER"}
+        first = self.s.call(me, "approval_decide_on_behalf", req)
+        self.s.call(AGENT, "close_run", {"request_id": "close", **self.run})
+        self.s.sweep(now=time.monotonic() + svc.GRACE_S + 1)
+        self.assertNotIn(aid, self.s.log.approvals)
+        self.assertEqual(self.s.call(me, "approval_decide_on_behalf", dict(req)), first)
+
     def test_on_behalf_is_never_a_default(self):
         aid = self.pending()
         with self.assertRaises(RPCError) as cm:
