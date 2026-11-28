@@ -948,16 +948,61 @@ class HookStartsTheTailer(unittest.TestCase):
         self.client.register_run.return_value = {"run_id": "run-2", "run_token": "tok-2"}
         self.assertEqual(self.decide(closed=True)["offsets"], seen)
 
-    def test_a_session_that_goes_on_with_no_state_reads_on_from_where_its_transcript_ends(self):
-        """A SessionEnd removes the session's state; Claude Code then went on with the session (a message to it, a usage
-        limit's reset) with no SessionStart. Its new run had no tailer until a compaction's SessionStart started one
-        from the transcript's first line: every earlier run's call was a hook_missing gap again (2,840 in one run)."""
+    def end_session(self, **fields):
+        p = {"hook_event_name": "SessionEnd", "session_id": "s1", "reason": "other", **fields}
+        with mock.patch.object(self.cc, "system_config", return_value=None):
+            self.assertEqual(self.cc._handle(self.client, p, "SessionEnd", "s1", None), 0)
+
+    def test_session_continuing_without_a_start_reads_from_session_end(self):
         path = self.transcript(PROMPT, TOOL_USE, RESULT)
-        p = {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "transcript_path": path, "prompt": "go on"}
+        end = os.path.getsize(path)
+        sub = os.path.join(self.d, "t", "subagents", "agent-a1.jsonl")
+        os.makedirs(os.path.dirname(sub))
+        with open(sub, "wb") as f:
+            f.write(line(PROMPT))
+        self.start(path=path)
+        self.transcript(line(NEXT)[:-1])  # SessionEnd falls before the next record's newline
+        self.end_session(transcript_path=os.path.join(self.d, "other.jsonl"))
+        self.assertFalse(os.path.exists(self.cc._state("s1")))
+        self.transcript(b"\n", PROMPT)
+        self.client.register_run.return_value = {"run_id": "run-2", "run_token": "tok-2"}
         popen = self.popen()
-        with mock.patch.object(self.cc.subprocess, "Popen", popen), \
-                mock.patch.object(self.cc, "system_config", return_value=None):
-            self.cc._handle(self.client, p, "UserPromptSubmit", "s1", None)
+        self.assertEqual(self.prompt(path, popen), 0)
+        handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
+        self.assertEqual(handle["run_id"], "run-2")
+        expected = {path: end, sub: len(line(PROMPT))}
+        self.assertEqual(handle["offsets"], expected)
+        with open(self.cc._state("s1", self.cc.ENDED), encoding="utf-8") as f:
+            self.assertEqual(json.load(f), expected)
+
+    def test_session_end_without_state_uses_the_payload_transcript(self):
+        path = self.transcript(PROMPT)
+        self.end_session(transcript_path=path)
+        with open(self.cc._state("s1", self.cc.ENDED), encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {path: os.path.getsize(path)})
+
+    def test_session_resume_or_fork_starts_at_registration_even_with_an_end_marker(self):
+        path = self.transcript(PROMPT, TOOL_USE)
+        for source in ("resume", "fork"):
+            with self.subTest(source=source):
+                files.write_json(self.cc._state(source, self.cc.ENDED), {path: len(line(PROMPT))})
+                popen = self.start(sid=source, path=path, source=source)
+                handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
+                self.assertEqual(handle["offsets"], {path: os.path.getsize(path)})
+
+    def test_session_with_an_old_end_marker_starts_at_registration(self):
+        path = self.transcript(PROMPT, TOOL_USE)
+        files.write_json(self.cc._state("s1", self.cc.ENDED), {})
+        popen = self.popen()
+        self.assertEqual(self.prompt(path, popen), 0)
+        handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
+        self.assertEqual(handle["offsets"], {path: os.path.getsize(path)})
+
+    def test_session_with_a_different_transcript_starts_at_registration(self):
+        path = self.transcript(PROMPT, TOOL_USE)
+        files.write_json(self.cc._state("s1", self.cc.ENDED), {os.path.join(self.d, "other.jsonl"): len(line(PROMPT))})
+        popen = self.popen()
+        self.assertEqual(self.prompt(path, popen), 0)
         handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
         self.assertEqual(handle["offsets"], {path: os.path.getsize(path)})
 
