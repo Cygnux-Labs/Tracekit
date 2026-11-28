@@ -37,6 +37,7 @@
       --row-line: #121210;
       --row-hover: #12100b;
       --track: #141310;
+      --ok: #3a3830;
       --lane-a: #0b0b0a;
       --lane-b: #080807;
       --life: #1a1a17;
@@ -87,6 +88,7 @@
         --row-line: #e8e4da;
         --row-hover: #f3ead9;
         --track: #e6e2d8;
+      --ok: #cfcabd;
         --lane-a: #f1eee7;
         --lane-b: #f7f5f0;
         --life: #d2cdc1;
@@ -134,6 +136,7 @@
       --row-line: #e8e4da;
       --row-hover: #f3ead9;
       --track: #e6e2d8;
+      --ok: #cfcabd;
       --lane-a: #f1eee7;
       --lane-b: #f7f5f0;
       --life: #d2cdc1;
@@ -2567,7 +2570,7 @@
     }
 
     /* pages (body pg-*): DESK is today's grid; a run is its agents and tool mix, one view, and the inspector (DETAIL);
-       RUNS, APPROVALS, PERMISSIONS, INFLUENCE and TIPS take the whole width. The panels are the same: only where they sit */
+       RUNS, APPROVALS, PERMISSIONS, INFLUENCE, TIPS and FLEET take the whole width. The panels are the same: only where they sit */
     body:not(.pg-desk) main>.p,
     body:not(.pg-desk) .ticker {
       display: none
@@ -2590,7 +2593,8 @@
     body.pg-permissions main>.p.whyv,
     body.pg-horizon main>.p.hzp,
     body.pg-influence main>.p.whyv,
-    body.pg-tips main>.p.tipsp {
+    body.pg-tips main>.p.tipsp,
+    body.pg-fleet main>.p.fleetp {
       display: flex
     }
 
@@ -2605,7 +2609,8 @@
     .pg-permissions main,
     .pg-horizon main,
     .pg-influence main,
-    .pg-tips main {
+    .pg-tips main,
+    .pg-fleet main {
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: minmax(0, 1fr);
       grid-template-areas: "page"
@@ -2615,6 +2620,7 @@
     .apprp,
     .hzp,
     .tipsp,
+    .fleetp,
     .pg-permissions .whyv,
     .pg-influence .whyv {
       grid-area: page
@@ -2623,7 +2629,8 @@
     .runsp,
     .apprp,
     .hzp,
-    .tipsp {
+    .tipsp,
+    .fleetp {
       display: none
     }
 
@@ -4659,6 +4666,555 @@
         right: 10px
       }
     }
+
+    /* FLEET: a range bar, five tiles and six panels over the verified runs (tracekit/fleet.py); every selector sits under
+       #fleetp, which brings --ok (the chart's quiet bar) for both themes */
+    #fleetp {
+      padding: 8px;
+      font-variant-numeric: tabular-nums
+    }
+
+    #fleetp a {
+      color: var(--text);
+      text-decoration: none;
+      border-bottom: 1px dotted var(--faint);
+      cursor: pointer
+    }
+
+    #fleetp a:hover {
+      color: var(--amber);
+      border-bottom-color: var(--amber)
+    }
+
+    #fleetp .bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 0 8px;
+      flex-wrap: wrap
+    }
+
+    #fleetp .seg {
+      display: flex
+    }
+
+    #fleetp .seg button {
+      background: none;
+      border: 1px solid var(--line2);
+      color: var(--muted);
+      padding: 2px 10px;
+      font: inherit;
+      font-size: 11px;
+      letter-spacing: .06em;
+      cursor: pointer
+    }
+
+    #fleetp .seg button+button {
+      border-left: 0
+    }
+
+    #fleetp .seg button.on {
+      color: var(--ink);
+      background: var(--amber);
+      border-color: var(--amber)
+    }
+
+    #fleetp .rng,
+    #fleetp .hint {
+      color: var(--muted)
+    }
+
+    #fleetp .hint {
+      color: var(--faint);
+      font-size: 10.5px
+    }
+
+    #fleetp .sp {
+      flex: 1
+    }
+
+    #fleetp .seal {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--green);
+      border: 1px solid color-mix(in srgb, var(--green) 45%, transparent);
+      padding: 1px 8px;
+      font-size: 11px
+    }
+
+    #fleetp .seal.bad {
+      color: var(--red);
+      border-color: var(--red)
+    }
+
+    #fleetp .grid {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(12, minmax(0, 1fr))
+    }
+
+    #fleetp .c7 {
+      grid-column: span 7
+    }
+
+    #fleetp .c5 {
+      grid-column: span 5
+    }
+
+    #fleetp .fp {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      min-width: 0;
+      display: flex;
+      flex-direction: column
+    }
+
+    #fleetp .fp>h3 {
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--line);
+      font-size: 11px;
+      letter-spacing: .1em;
+      font-weight: 600;
+      flex-wrap: wrap
+    }
+
+    #fleetp .fp>h3 b {
+      background: var(--amber);
+      color: var(--ink);
+      padding: 0 5px
+    }
+
+    #fleetp .fp>h3 small {
+      margin-left: auto;
+      color: var(--muted);
+      font-weight: 400;
+      letter-spacing: 0
+    }
+
+    #fleetp .fb {
+      padding: 10px;
+      flex: 1;
+      min-width: 0
+    }
+
+    #fleetp .fb.flush {
+      padding: 0;
+      overflow-x: auto
+    }
+
+    #fleetp .fb.issues {
+      max-height: 440px;
+      overflow-y: auto
+    }
+
+    #fleetp td,
+    #fleetp th {
+      max-width: none;
+      overflow: visible;
+      text-overflow: clip
+    }
+
+    #fleetp .foot {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      border-top: 1px solid var(--line);
+      color: var(--faint);
+      font-size: 10.5px;
+      flex-wrap: wrap
+    }
+
+    #fleetp .foot svg {
+      color: var(--green);
+      flex: none
+    }
+
+    #fleetp .foot a {
+      margin-left: auto
+    }
+
+    #fleetp .kpis {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 8px
+    }
+
+    #fleetp .k {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      padding: 8px 10px 6px;
+      min-width: 0
+    }
+
+    #fleetp .k .l {
+      color: var(--muted);
+      font-size: 10.5px;
+      letter-spacing: .1em;
+      text-transform: uppercase
+    }
+
+    #fleetp .k .v {
+      font-size: 24px;
+      font-weight: 600;
+      margin: 2px 0;
+      line-height: 1.15
+    }
+
+    #fleetp .k .d {
+      display: flex;
+      gap: 6px;
+      align-items: baseline;
+      font-size: 11px;
+      color: var(--muted);
+      flex-wrap: wrap
+    }
+
+    #fleetp .k svg {
+      display: block;
+      margin-top: 4px
+    }
+
+    #fleetp .good {
+      color: var(--green);
+      font-weight: 600
+    }
+
+    #fleetp .bad {
+      color: var(--red);
+      font-weight: 600
+    }
+
+    #fleetp .neu {
+      color: var(--muted);
+      font-weight: 600
+    }
+
+    #fleetp .legend {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 6px
+    }
+
+    #fleetp .legend i {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      margin-right: 5px;
+      vertical-align: -1px
+    }
+
+    #fleetp .chart svg {
+      display: block;
+      width: 100%;
+      overflow: visible
+    }
+
+    #fleetp .ax {
+      fill: var(--muted);
+      font-size: 10.5px;
+      font-family: var(--mono)
+    }
+
+    #fleetp .gl {
+      stroke: var(--line);
+      stroke-width: 1
+    }
+
+    #fleetp .go {
+      cursor: pointer
+    }
+
+    #fleetp .go:hover {
+      opacity: .75
+    }
+
+    #fleetp table {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 560px
+    }
+
+    #fleetp th {
+      font-weight: 500;
+      color: var(--muted);
+      text-align: right;
+      padding: 5px 10px;
+      border-bottom: 1px solid var(--line);
+      font-size: 10.5px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      white-space: nowrap
+    }
+
+    #fleetp th:first-child,
+    #fleetp td:first-child {
+      text-align: left
+    }
+
+    #fleetp td {
+      padding: 0 10px;
+      height: 34px;
+      text-align: right;
+      border-bottom: 1px solid var(--row-line);
+      white-space: nowrap
+    }
+
+    #fleetp tr:hover td {
+      background: var(--row-hover)
+    }
+
+    #fleetp tr:last-child td {
+      border-bottom: 0
+    }
+
+    #fleetp .z {
+      color: var(--faint)
+    }
+
+    #fleetp .tile {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      color: var(--mc-ink);
+      font-weight: 800;
+      font-size: 11px;
+      vertical-align: middle;
+      margin-right: 8px;
+      flex: none
+    }
+
+    #fleetp .pill {
+      display: inline-block;
+      padding: 0 6px;
+      font-size: 10.5px;
+      letter-spacing: .06em;
+      border: 1px solid;
+      line-height: 16px;
+      text-transform: uppercase
+    }
+
+    #fleetp .s-high {
+      color: var(--red);
+      border-color: var(--red)
+    }
+
+    #fleetp .s-med {
+      color: var(--amber);
+      border-color: var(--amber-dim)
+    }
+
+    #fleetp .s-low {
+      color: var(--muted);
+      border-color: var(--line2)
+    }
+
+    #fleetp .t-new {
+      color: var(--ink);
+      background: var(--cyan);
+      border-color: var(--cyan)
+    }
+
+    #fleetp .t-ongoing {
+      color: var(--muted);
+      border-color: var(--line2)
+    }
+
+    #fleetp .t-regressed {
+      color: var(--ink);
+      background: var(--red);
+      border-color: var(--red)
+    }
+
+    #fleetp .issue {
+      display: grid;
+      grid-template-columns: 54px minmax(0, 1fr) 78px 74px;
+      gap: 4px 10px;
+      align-items: center;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--row-line)
+    }
+
+    #fleetp .issue:hover {
+      background: var(--row-hover)
+    }
+
+    #fleetp .issue:last-child {
+      border-bottom: 0
+    }
+
+    #fleetp .issue .t {
+      font-weight: 600;
+      min-width: 0;
+      overflow-wrap: anywhere
+    }
+
+    #fleetp .issue .r {
+      text-align: right
+    }
+
+    #fleetp .issue .ex {
+      grid-column: 2/-1;
+      color: var(--muted);
+      font-size: 11px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center
+    }
+
+    #fleetp .ex a {
+      color: var(--cyan);
+      border-bottom-color: transparent
+    }
+
+    #fleetp .rule {
+      color: var(--muted);
+      border: 1px solid var(--line2);
+      padding: 0 5px;
+      font-size: 10.5px;
+      margin-left: 6px;
+      font-weight: 400;
+      white-space: nowrap
+    }
+
+    #fleetp .sub {
+      color: var(--muted);
+      font-size: 10.5px;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      margin: 10px 0 4px
+    }
+
+    #fleetp .sub:first-child {
+      margin-top: 0
+    }
+
+    #fleetp .mbar {
+      display: grid;
+      grid-template-columns: minmax(0, 150px) minmax(60px, 1fr) 80px;
+      gap: 10px;
+      align-items: center;
+      height: 26px
+    }
+
+    #fleetp .tr {
+      height: 10px;
+      background: var(--track);
+      position: relative
+    }
+
+    #fleetp .tr i {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0
+    }
+
+    #fleetp .nm {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis
+    }
+
+    #fleetp .mbar .v,
+    #fleetp .agr .v {
+      text-align: right
+    }
+
+    #fleetp .agr {
+      display: grid;
+      grid-template-columns: 62px minmax(0, 1fr) 92px;
+      gap: 4px 10px;
+      align-items: center;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--row-line)
+    }
+
+    #fleetp .agr .tr {
+      grid-column: 1/3
+    }
+
+    #fleetp .empty {
+      color: var(--muted);
+      padding: 14px 10px
+    }
+
+    #fleetp .hon {
+      margin-top: 8px;
+      border: 1px dashed var(--line2);
+      padding: 7px 10px;
+      color: var(--muted);
+      display: flex;
+      gap: 6px 14px;
+      flex-wrap: wrap;
+      align-items: center;
+      background: var(--panel)
+    }
+
+    #fleetp .hon b {
+      color: var(--yellow);
+      font-weight: 600
+    }
+
+    @media (max-width: 900px) {
+      .p.fleetp {
+        max-height: none
+      }
+    }
+
+    @media (max-width: 1100px) {
+
+      #fleetp .c7,
+      #fleetp .c5 {
+        grid-column: span 12
+      }
+
+      #fleetp .kpis {
+        grid-template-columns: repeat(3, minmax(0, 1fr))
+      }
+    }
+
+    @media (max-width: 600px) {
+      #fleetp .kpis {
+        grid-template-columns: repeat(2, minmax(0, 1fr))
+      }
+
+      #fleetp .k .v {
+        font-size: 20px
+      }
+
+      #fleetp .issue {
+        grid-template-columns: 50px minmax(0, 1fr) auto
+      }
+
+      #fleetp .issue .r {
+        display: none
+      }
+
+      #fleetp .issue .ex {
+        grid-column: 1/-1
+      }
+
+      #fleetp .mbar {
+        grid-template-columns: minmax(0, 96px) minmax(40px, 1fr) 70px
+      }
+
+      #fleetp .hint {
+        display: none
+      }
+    }
   </style>
 </head>
 
@@ -4785,6 +5341,10 @@
         <h2>TIPS<span class="hzsub">what each step cost, and how to cut it</span><small id="tipssum"></small></h2>
         <div class="body" id="tipsp"></div>
       </section>
+      <section class="p fleetp">
+        <h2>FLEET<span class="hzsub">what the agents did, from the runs that verified</span><small id="fleetsum"></small></h2>
+        <div class="body" id="fleetp"></div>
+      </section>
       <section class="p hzp" id="hzp">
         <h2>EVENT HORIZON<span class="hzsub">where your agents went: the project, this machine and the outside
             world</span><small>every mark is a record</small></h2>
@@ -4878,10 +5438,11 @@
               gap, back to live (also ESC)</td>
           </tr>
           <tr>
-            <td>DESK · RUNS · LIVE · APPROVALS · PERMISSIONS · HORIZON · INFLUENCE · TIPS</td>
+            <td>DESK · RUNS · LIVE · APPROVALS · PERMISSIONS · HORIZON · INFLUENCE · TIPS · FLEET</td>
             <td>The pages (header): every panel at once; every run; the newest open run; held calls nobody answered yet;
               every decision that was not a plain allow; where the agents went; with why logs, what content reached
-              which tools; what each step cost and how to cut it. Back and Forward step through what you opened</td>
+              which tools; what each step cost and how to cut it; what the agents did over 24 hours, 7 days or 30 days, counting
+              only the runs that verified (experimental). Back and Forward step through what you opened</td>
           </tr>
           <tr>
             <td>1–7 · OVERVIEW · CALLS · TIMELINE · GRAPH · WHY · AGENTS · EVIDENCE</td>
@@ -5320,7 +5881,7 @@
       for (const p of [...PAGES, "run"]) document.body.classList.toggle("pg-" + p, PAGE === p);
       for (const v of RVIEWS) document.body.classList.toggle("rv-" + v, PAGE === "run" && RV === v);
       document.body.classList.toggle("callslog", CALLSLOG);
-      renderTop(); renderPages(); renderWaiting(); renderTicker(); renderNeeds(); renderRunsPage(); renderApprovalsPage(); renderTipsPage(); renderHorizon();
+      renderTop(); renderPages(); renderWaiting(); renderTicker(); renderNeeds(); renderRunsPage(); renderApprovalsPage(); renderTipsPage(); renderFleetPage(); renderHorizon();
       renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderWaterfall(); renderReason(); renderFiles();
       if (WTAB === "node" && !WNODE) WTAB = "detail";
       document.body.classList.toggle("wd", WTAB !== "detail");   // before the graph, which scrolls its node into view
@@ -5334,7 +5895,7 @@
     /* ---------------- pages and a run's views (v7): the same panels, placed per page ---------------- */
     // PAGE: a global page, or "run": one run's agents and tool mix, one of its views (RV) and the inspector (DETAIL).
     // RV "waterfall" is the run's TIMELINE (an old link's view=timeline was the why log's events: CALLS shows them)
-    const PAGES = ["desk", "runs", "live", "approvals", "permissions", "horizon", "influence", "tips"];
+    const PAGES = ["desk", "runs", "live", "approvals", "permissions", "horizon", "influence", "tips", "fleet"];
     const RVIEWS = ["overview", "calls", "waterfall", "graph", "why", "agents", "evidence"], RVNAME = { waterfall: "TIMELINE" };
     let PAGE = "desk", RV = "calls", CALLSLOG = false;
     // a view by any of its names, old (links, the why views' own buttons) or new; MAP was HORIZON's first name
@@ -5357,7 +5918,7 @@
     // the header: the global pages (APPROVALS counts the holds waiting), and on a run's page its views, keys 1–7
     function renderPages() {
       const n = ENDED ? 0 : waitingCount(), on = p => p === "live" ? PAGE === "run" && RUNS.get(scope)?.state === "open" : PAGE === p;
-      put("pages", PAGES.filter(p => (p !== "influence" || WHY) && (p !== "tips" || TIPSON)).map(p => `<button type="button" data-page="${esc(p)}" class="${on(p) ? "on" : ""}">${esc(p.toUpperCase())}${p === "approvals" && n ? `<span class="n">${esc(n)}</span>` : ""}</button>`).join(""));
+      put("pages", PAGES.filter(p => (p !== "influence" || WHY) && (p !== "tips" || TIPSON) && (p !== "fleet" || FLEETON)).map(p => `<button type="button" data-page="${esc(p)}" class="${on(p) ? "on" : ""}">${esc(p.toUpperCase())}${p === "approvals" && n ? `<span class="n">${esc(n)}</span>` : ""}</button>`).join(""));
       $("rviews").hidden = PAGE !== "run";
       put("rviews", RVIEWS.map((v, i) => `<button type="button" data-rv="${esc(v)}" class="${RV === v ? "on" : ""}">${esc(RVNAME[v] || v.toUpperCase())}<kbd>${esc(i + 1)}</kbd></button>`).join(""));
     }
@@ -5376,8 +5937,8 @@
     // RUNS: every run with its counts and verdict, newest first, each opening its page; then the why logs' runs
     function renderRunsPage() {
       if (PAGE !== "runs") return;
-      const list = [...RUNS.values()].sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
-      put("runsp", `<table class="wt"><thead><tr><th>RUN</th><th>AGENT</th><th>STARTED (${esc(TZ)})</th><th>LENGTH</th><th>STATE</th><th>CALLS</th><th>BLOCKED</th><th>HELD</th><th>FLAGGED</th><th>GAPS</th><th>VERDICT</th></tr></thead><tbody>`
+      const list = [...RUNS.values()].filter(r => !RUNFILTER || RUNFILTER.ids.has(r.id)).sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
+      put("runsp", (RUNFILTER ? `<p class="dim" style="padding:0 8px">${esc(`Showing ${plural(list.length, "run")} from FLEET: ${RUNFILTER.label}` + (RUNFILTER.n > RUNFILTER.ids.size ? ` (the newest ${RUNFILTER.ids.size} of ${RUNFILTER.n})` : "") + (list.length < RUNFILTER.ids.size ? "; the rest are not in this viewer's list" : ""))} <button type="button" class="cp" data-flclear="">SHOW ALL</button></p>` : "") + `<table class="wt"><thead><tr><th>RUN</th><th>AGENT</th><th>STARTED (${esc(TZ)})</th><th>LENGTH</th><th>STATE</th><th>CALLS</th><th>BLOCKED</th><th>HELD</th><th>FLAGGED</th><th>GAPS</th><th>VERDICT</th></tr></thead><tbody>`
         + list.map(r => {
           const d = r.decisions || {}, gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
           return `<tr class="row" data-openrun="${esc(r.id)}" tabindex="0"><td title="${esc(r.id)}">${esc(r.id.slice(0, 8))}${r.tenant && r.tenant !== "default" ? `<br><span class="dim">tenant ${esc(r.tenant)}</span>` : ""}</td><td class="s-flag">${esc(r.agent || "run")}</td><td class="dim">${esc(t0 ? fmtD(t0) + " " + fmtT(t0) : "")}</td><td class="dim">${esc(t1 ? runLength(r) : "")}</td><td>${esc(r.state || "")}</td>`
@@ -5561,6 +6122,156 @@
       const L = TIPS.lessons?.ok ? TIPS.lessons : null;
       $("tipssum").textContent = (L ? `${plural(L.waiting.length, "lesson")} waiting · ${L.active.length} in use · ` : "")
         + `${TIPS.tips.filter(t => t.ok).length} of ${TIPS.tips.length} tips with enough data · operator-side, not evidence`;
+    }
+    /* ---------------- FLEET: what the agents did, from the runs that verified (fleet.py, over /api/fleet) ---------------- */
+    // FLEETON: the server has it (its snapshot says so, to the token); FLEET: its answer for FLEETRANGE (24h, 7d or 30d);
+    // FLINKS: the run lists the page's numbers open on RUNS, which RUNFILTER then narrows to
+    let FLEETON = false, FLEET = null, FLEETERR = "", FLEETRANGE = "7d", FLEETASKED = "", fleetKey = null, FLINKS = [], RUNFILTER = null;
+    const FLEETZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } })();
+    async function loadFleet() {
+      const asked = FLEETASKED = FLEETRANGE; FLEETERR = "";
+      try { const d = await getJSON("api/fleet?range=" + asked + "&tz=" + encodeURIComponent(FLEETZONE)); if (asked === FLEETRANGE) FLEET = d; } catch (e) { FLEETERR = e.message || String(e); }
+      schedule();
+    }
+    setInterval(() => { if (PAGE === "fleet" && FLEETON && FLEET) loadFleet(); }, 30000);
+    const fmtInt = n => Number(n).toLocaleString("en-US");
+    const fmtTok = n => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e4 ? (n / 1e3).toFixed(1) + "K" : fmtInt(n);
+    const fleetUsd = (n, cur) => { try { return new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: n < 1 ? 4 : 2 }).format(n); } catch { return cur + " " + n.toFixed(2); } };
+    const fleetMs = ms => ms == null ? "–" : ms >= 1000 ? (ms / 1000).toFixed(1) + " s" : ms + " ms";
+    // a day or hour of the range in the zone the server counted days in
+    const fleetLabel = (R, t, long) => { try { return new Intl.DateTimeFormat("en-GB", { timeZone: R.tz, ...(R.bucket === "hour" ? { hour: "2-digit", minute: "2-digit", hour12: false } : long ? { day: "numeric", month: "short" } : { weekday: "short", day: "numeric" }) }).format(t * 1000); } catch { return fmtD(t); } };
+    function renderFleetPage() {
+      if (PAGE !== "fleet") return;
+      // only with the token, as TIPS: a sign-in's 403 would end the page's session
+      if (!FLEETON) return put("fleetp", `<div class="empty">No FLEET here: it needs tracekit view on a signer's store, opened with the link it printed.</div>`);
+      if (!FLEET) {
+        if (FLEETERR) return put("fleetp", `<div class="empty">${esc("FLEET could not be read: " + FLEETERR)} <button type="button" class="cp" data-fr="${esc(FLEETRANGE)}">READ AGAIN</button></div>`);
+        if (FLEETASKED !== FLEETRANGE) loadFleet();
+        return put("fleetp", `<div class="empty">Adding up the verified runs…</div>`);
+      }
+      if (fleetKey === FLEET) return;
+      fleetKey = FLEET;
+      const F = FLEET, R = F.range, T = F.totals, P = F.previous, cur = F.prices && F.prices.currency, names = F.names, n = R.starts.length;
+      FLINKS = [];
+      const fidx = (l, label) => FLINKS.push({ label, ids: l.runs.map(i => names[i].id), n: l.n }) - 1;
+      // a number that opens the runs it counts (a link naming none: the number alone)
+      const flink = (l, label, text, style) => l ? `<a data-fl="` + (fidx(l, label)) + `" title="${esc(plural(l.n, "run"))}"` + (style ? ` style="${esc(style)}"` : "") + `>${esc(text)}</a>` : `<span class="z">${esc(text)}</span>`;
+      const cnt = (l, label, v, color) => v ? flink(l, label, fmtInt(v), color && `color:var(--` + (color) + `)`) : `<span class="z">0</span>`;
+      const seal = `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 .8 10.6 2.6v3.3c0 2.6-1.9 4.4-4.6 5.3C3.3 10.3 1.4 8.5 1.4 5.9V2.6z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M3.9 6.1 5.4 7.6 8.2 4.6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>`;
+      const foot = (text, link) => `<div class="foot">` + (seal) + `<span>${esc(text)}</span>` + (link || "") + `</div>`;
+      const day = (t, long) => fleetLabel(R, t, long ?? true);
+      const range = R.bucket === "hour" ? `the last 24 hours (from ` + (fleetLabel(R, R.since)) + ` to now, times in ` + (R.tz) + `) · vs the 24 hours before`
+        : `` + (day(R.starts[0])) + ` – ` + (day(R.until - 1)) + ` · vs ` + (day(R.previous)) + ` – ` + (day(R.since - 1)) + ` · days in ` + (R.tz) + ``;
+      const sealText = (F.seal.runs ? plural(F.seal.runs, "run") + " verified · " + plural(F.seal.records, "signed record") : "no verified runs in this range") + (F.seal.chain ? (F.seal.runs ? " · chain ok" : "") : " · chain: a problem, see RUNS");
+      // 1: the tiles
+      const series = k => F.buckets.map(b => b[k] || 0);
+      const spark = (arr, color) => {
+        const mx = Math.max(1, ...arr), h = 22, pts = arr.map((v, i) => ((arr.length < 2 ? 0 : i * 100 / (arr.length - 1)).toFixed(1)) + "," + (h - 2 - v / mx * (h - 4)).toFixed(1)).join(" ");
+        return `<svg width="100%" height="` + (h) + `" viewBox="0 0 100 ` + (h) + `" preserveAspectRatio="none" aria-hidden="true"><polyline points="` + (pts) + `" fill="none" stroke="` + (color) + `" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
+      };
+      const trend = (c, p, lowGood) => {
+        if (!p) return `<span class="neu">` + (c ? "new" : "–") + `</span>`;
+        const d = (c - p) / p * 100, up = d >= 0, cls = d === 0 || lowGood == null ? "neu" : up ? "bad" : "good";
+        return `<span class="` + (cls) + `">` + (d === 0 ? "0%" : (up ? "▲ +" : "▼ −") + Math.abs(d).toFixed(1) + "%") + `</span>`;
+      };
+      const tile = (label, value, c, p, lowGood, arr, color, was) => `<div class="k"><div class="l">${esc(label)}</div><div class="v">` + (value) + `</div><div class="d">` + (trend(c, p, lowGood)) + `<span>${esc("vs " + was)}</span></div>` + (spark(arr, color)) + `</div>`;
+      const costTile = F.prices ? tile("Cost", flink(F.tokens.link, "model exchanges", fleetUsd(F.tokens.cost, cur)), F.tokens.cost, F.tokens.previous_cost, true, series("cost"), "var(--cyan)", fleetUsd(F.tokens.previous_cost, cur))
+        : `<div class="k"><div class="l">Cost</div><div class="v"><span class="z">–</span></div><div class="d"><span>${esc(fmtTok(F.tokens.total) + " tokens · no price table")}</span></div></div>`;
+      const kpis = `<div class="kpis">` + tile("Calls", flink(F.links.calls, "calls", fmtInt(T.calls)), T.calls, P.calls, null, series("calls"), "var(--muted)", fmtInt(P.calls))
+        + tile("Held", flink(F.links.held, "held calls", fmtInt(T.held)), T.held, P.held, true, series("held"), "var(--amber)", fmtInt(P.held))
+        + tile("Denied", flink(F.links.denied, "denied calls", fmtInt(T.denied)), T.denied, P.denied, true, series("denied"), "var(--red)", fmtInt(P.denied))
+        + tile("Errors", flink(F.links.errors, "errored calls", fmtInt(T.errors)), T.errors, P.errors, true, series("errors"), "var(--magenta)", fmtInt(P.errors)) + costTile + `</div>`;
+      // 2: per day (or hour): the classes add up to the calls, then the tiles' own counts on a scale of their own
+      const step = Math.ceil(n / 8), slot = 100 / n;
+      const bars = (H, pick, colors, nm, grouped) => {
+        const most = Math.max(1, ...F.buckets.map(b => grouped ? Math.max(...pick.map(f => f(b))) : pick.reduce((s, f) => s + f(b), 0))), top = tipTicks(most, 2);
+        while (top[top.length - 1] < most) top.push(+(top[top.length - 1] + (top[1] || 1)).toPrecision(12));   // the axis reaches the tallest bar
+        const hi = top[top.length - 1] || 1, y = v => H - 18 - v / hi * (H - 26);
+        let out = `<svg height="` + (H) + `" style="margin-left:34px;width:calc(100% - 34px)" role="img" aria-label="${esc(nm.join(", ") + " per " + R.bucket)}">`;
+        top.forEach(t => { out += `<line class="gl" x1="0" x2="100%" y1="` + (y(t)) + `" y2="` + (y(t)) + `"/><text class="ax" x="-6" y="` + (y(t) + 3.5) + `" text-anchor="end">${esc(fmtInt(t))}</text>`; });
+        F.buckets.forEach((b, i) => {
+          const cx = (i + .5) * slot, lab = day(R.starts[i], false), w = slot * (grouped ? .8 : .62);
+          out += `<g` + (b.runs ? ` class="go" data-fl="` + (fidx(b.runs, lab + ": runs with calls")) + `"` : "") + `><title>${esc(`` + (lab) + `: ` + (fmtInt(b.calls)) + ` calls · ` + (b.held) + ` held · ` + (b.denied) + ` denied · ` + (b.errors) + ` errors`)}</title><rect x="` + ((i * slot).toFixed(2)) + `%" width="` + (slot.toFixed(2)) + `%" y="0" height="` + (H - 18) + `" fill="transparent"/>`;
+          let acc = 0;
+          pick.forEach((f, j) => {
+            const v = f(b), h = v / hi * (H - 26), m = pick.length;
+            if (!v) return;
+            const x = grouped ? cx - w / 2 + j * w / m : cx - w / 2, yy = grouped ? H - 18 - h : H - 18 - acc - h;
+            acc += h;
+            out += `<rect x="` + (x.toFixed(2)) + `%" width="` + ((grouped ? w / m : w).toFixed(2)) + `%" y="` + (yy.toFixed(1)) + `" height="` + (h.toFixed(1)) + `" fill="` + (colors[j]) + `"/>`;
+          });
+          out += `</g>`;
+          if (i % step === 0) out += `<text class="ax" x="` + (cx.toFixed(2)) + `%" y="` + (H - 4) + `" text-anchor="middle">${esc(lab)}</text>`;
+        });
+        return out + `</svg>`;
+      };
+      const heldErr = T.held - F.buckets.reduce((s, b) => s + b.hld, 0);
+      const perDay = `<div class="legend"><span><i style="background:var(--ok)"></i>ok</span><span><i style="background:var(--magenta)"></i>errors</span><span><i style="background:var(--amber)"></i>held</span><span><i style="background:var(--red)"></i>denied</span><span class="hint">click a bar: its runs</span></div>`
+        + `<div class="chart">` + bars(170, [b => b.ok, b => b.err, b => b.hld, b => b.den], ["var(--ok)", "var(--magenta)", "var(--amber)", "var(--red)"], ["ok", "errors", "held", "denied"], false) + `</div>`
+        + `<div class="hint">A call is in one bar: errored, else denied, else held, else ok` + (heldErr > 0 ? `; ${esc(plural(heldErr, "held call"))} then errored ` + (heldErr === 1 ? "is" : "are") + ` errors here and still in Held` : "") + `.</div>`
+        + `<div class="sub">Held, denied, errors (the tiles' counts, on their own scale)</div>`
+        + `<div class="chart">` + bars(110, [b => b.held, b => b.denied, b => b.errors], ["var(--amber)", "var(--red)", "var(--magenta)"], ["held", "denied", "errors"], true) + `</div>`;
+      // 3: issues
+      const sevName = { high: "high", med: "med", low: "low" };
+      const issues = F.issues.length ? F.issues.map(x => `<div class="issue"><span class="pill s-${esc(x.severity)}">${esc(sevName[x.severity] || x.severity)}</span><span class="t">${esc(x.title)}<span class="rule">${esc(x.rule)}</span></span>`
+        + `<span><span class="pill t-${esc(x.status)}">${esc(x.status)}</span></span><span class="r">` + (flink(x.runs, x.title, plural(x.runs.n, "run"))) + `</span>`
+        + `<span class="ex">${esc(x.agents.join(", "))} · e.g. ` + (x.examples.map(i => `<a data-openrun="${esc(names[i].id)}">${esc(names[i].id.slice(0, 8))}</a>`).join(" ")) + `</span></div>`).join("")
+        : `<div class="empty">No findings and no held or denied calls in this range. Findings come from final runs only (the viewer analyses a run once it is final, with the dev signer; or a findings run: tracekit analyze --v2).</div>`;
+      // 4: agents
+      const mark = m => { const k = wfModelMark(m); return `<span class="tile" style="background:` + (k ? `var(--mc-${esc(k.tone)})` : "var(--line2)") + `">${esc(k ? k.letter : String(m).slice(0, 1).toUpperCase())}</span>`; };
+      const agoText = t => { const s = Date.now() / 1000 - t; return s < 60 ? "just now" : fmtDur(s) + " ago"; };
+      const agents = F.agents.length ? `<table><thead><tr><th>Agent</th><th>Runs</th><th>Calls</th><th>Held</th><th>Denied</th><th>Errors</th><th>Tokens</th><th>Cost</th><th>Last seen</th></tr></thead><tbody>`
+        + F.agents.map(a => `<tr><td>${esc(a.agent)}</td><td>` + (flink(a.runs, a.agent + ": runs", fmtInt(a.runs ? a.runs.n : 0))) + `</td><td>` + (cnt(a.links.calls, a.agent + ": calls", a.calls)) + `</td><td>` + (cnt(a.links.held, a.agent + ": held calls", a.held, "amber")) + `</td><td>` + (cnt(a.links.denied, a.agent + ": denied calls", a.denied, "red")) + `</td><td>` + (cnt(a.links.errors, a.agent + ": errored calls", a.errors, "magenta")) + `</td>`
+          + `<td>` + (a.tokens ? esc(fmtTok(a.tokens)) : `<span class="z">0</span>`) + `</td><td>` + (a.cost == null ? `<span class="z">–</span>` : esc(fleetUsd(a.cost, cur) + (a.unpriced ? " +" : ""))) + `</td><td class="rng">${esc(agoText(a.last))}</td></tr>`).join("")
+        + `<tr style="font-weight:600"><td>total</td><td>${esc(fmtInt(F.runs))}</td><td>${esc(fmtInt(T.calls))}</td><td>${esc(fmtInt(T.held))}</td><td>${esc(fmtInt(T.denied))}</td><td>${esc(fmtInt(T.errors))}</td><td>${esc(fmtTok(F.tokens.total))}</td><td>` + (F.prices ? esc(fleetUsd(F.tokens.cost, cur)) : `<span class="z">–</span>`) + `</td><td></td></tr></tbody></table>`
+        : `<div class="empty">No agent has a verified call in this range.</div>`;
+      // 5: tokens and cost
+      const costed = !!F.prices, share = (v, all) => all ? Math.max(1, v / all * 100) : 0;
+      const modelAll = costed ? Math.max(0, ...F.models.map(m => m.cost || 0)) : Math.max(0, ...F.models.map(m => m.tokens.reduce((s, x) => s + x, 0)));
+      const byModel = F.models.map(m => { const tk = m.tokens.reduce((s, x) => s + x, 0), k = wfModelMark(m.model), v = costed ? m.cost : tk;
+        return `<div class="mbar"><span class="nm">` + (mark(m.model)) + `${esc(m.model)}</span><span class="tr"><i style="width:` + (share(v || 0, modelAll)) + `%;background:` + (k ? `var(--mc-${esc(k.tone)})` : "var(--faint)") + `"></i></span><span class="v">` + (flink(m.runs, m.model + ": runs with model exchanges", costed ? (m.cost == null ? "–" : fleetUsd(m.cost, cur)) : fmtTok(tk))) + `</span></div>`
+          + `<div class="hint" style="margin:-4px 0 4px 26px">${esc(`` + (fmtTok(m.tokens[0])) + ` in · ` + (fmtTok(m.tokens[1])) + ` out · ` + (fmtTok(m.tokens[2])) + ` cache read · ` + (fmtTok(m.tokens[3])) + ` cache write`)}` + (costed && !m.priced ? " · no price: no cost" : "") + `</div>`; }).join("");
+      const agentTok = F.agents.filter(a => a.tokens), agentAll = Math.max(0, ...agentTok.map(a => costed ? a.cost || 0 : a.tokens));
+      const byAgent = agentTok.slice().sort((a, b) => (costed ? (b.cost || 0) - (a.cost || 0) : 0) || b.tokens - a.tokens).map(a => `<div class="mbar" style="grid-template-columns:minmax(0,92px) minmax(60px,1fr) 80px"><span class="nm">${esc(a.agent)}</span><span class="tr"><i style="width:` + (share(costed ? a.cost || 0 : a.tokens, agentAll)) + `%;background:var(--cyan)"></i></span><span class="v">${esc(costed ? (a.cost == null ? "–" : fleetUsd(a.cost, cur)) : fmtTok(a.tokens))}</span></div>`).join("");
+      const cost = F.models.length ? `<div class="sub">By model</div>` + (byModel) + `<div class="sub">By agent</div>` + (byAgent) + `<div class="hint" style="margin-top:6px">${esc(costed ? `total ` + (fleetUsd(F.tokens.cost, cur)) + `` + (F.tokens.unpriced ? ` + ` + (fmtTok(F.tokens.unpriced)) + ` tokens with no price` : "") + ` · ` + (fmtTok(F.tokens.total)) + ` tokens` : `` + (fmtTok(F.tokens.total)) + ` tokens · no price table, so no cost: start tracekit view with --prices FILE`)}</div>`
+        : `<div class="empty">No model exchange with token counts in this range: a gateway, an SDK integration or the transcript reader signs them.</div>`;
+      // 6: tools
+      const hi = Math.max(1000, ...F.tools.map(t => t.p99 || 0)), tmax = 10 ** Math.ceil(Math.log10(hi)), lx = ms => (Math.log10(Math.max(1, Math.min(ms, tmax))) / Math.log10(tmax) * 100).toFixed(2);
+      const tools = F.tools.length ? `<table style="min-width:640px"><thead><tr><th>Tool</th><th>Calls</th><th>Held</th><th>Denied</th><th>Errors</th><th>p50</th><th>p99</th><th style="text-align:left;min-width:150px">latency</th></tr></thead><tbody>`
+        + F.tools.map(t => `<tr><td>${esc(t.tool)}</td><td>` + (cnt(t.links.calls, t.tool + ": calls", t.calls)) + `</td><td>` + (cnt(t.links.held, t.tool + ": held calls", t.held, "amber")) + `</td><td>` + (cnt(t.links.denied, t.tool + ": denied calls", t.denied, "red")) + `</td><td>` + (cnt(t.links.errors, t.tool + ": errored calls", t.errors, "magenta")) + `</td><td>${esc(fleetMs(t.p50))}</td><td>${esc(fleetMs(t.p99))}</td>`
+          + `<td style="text-align:left">` + (t.p50 == null ? `<span class="z">no timed call</span>` : `<svg width="100%" height="20" style="display:block;min-width:140px" aria-hidden="true"><line x1="0" x2="100%" y1="10" y2="10" stroke="var(--line)"/><line x1="` + (lx(t.p50)) + `%" x2="` + (lx(t.p99)) + `%" y1="10" y2="10" stroke="var(--amber-dim)" stroke-width="2"/><circle cx="` + (lx(t.p50)) + `%" cy="10" r="3.5" fill="var(--cyan)"/><circle cx="` + (lx(t.p99)) + `%" cy="10" r="3.5" fill="var(--amber)"/></svg>`) + `</td></tr>`).join("")
+        + `<tr style="font-weight:600"><td>${esc(F.tools_total > F.tools.length ? "all " + F.tools_total + " tools (top " + F.tools.length + " shown)" : "total")}</td><td>${esc(fmtInt(T.calls))}</td><td>${esc(fmtInt(T.held))}</td><td>${esc(fmtInt(T.denied))}</td><td>${esc(fmtInt(T.errors))}</td><td colspan="3" style="text-align:left;font-weight:400" class="hint"><span style="color:var(--cyan)">●</span> p50 &nbsp;<span style="color:var(--amber)">●</span> p99 &nbsp;1 ms – ${esc(fleetMs(tmax))}, log scale</td></tr></tbody></table>`
+        : `<div class="empty">No tool calls in this range.</div>`;
+      // 7: the AI approver against people
+      const A = F.approver, pct = (a, b) => b ? Math.round(a / b * 100) : 0;
+      const approver = A.both ? `<div style="padding:4px 10px">` + A.rules.map(r => { const p = pct(r.agree, r.n), low = p < 75, c = low ? "amber" : "green";
+        return `<div class="agr"><span>${esc(r.rule)}</span><span class="rng nm" title="${esc(r.reason)}">${esc(r.reason)}</span><span class="v">${esc(`` + (r.agree) + ` of ` + (r.n) + ``)}</span><span class="tr"><i style="width:` + (p) + `%;background:var(--` + (c) + `)"></i></span><span class="v" style="color:var(--` + (c) + `)">` + (p) + `%` + (low ? " low" : "") + `</span></div>`; }).join("")
+        + `<div class="hint" style="padding:6px 0">${esc(`overall ` + (A.agree) + ` of ` + (A.both) + ` agree (` + (pct(A.agree, A.both)) + `%) · ` + (A.both) + ` of the ` + (A.holds) + ` holds in this range have both an AI approver's verdict and a person's`)}</div></div>`
+        : `<div class="empty">No AI approver decisions in this range that a person also answered (${esc(plural(A.holds, "hold"))} in all).</div>`;
+      // the line under the panels: what no number above counts
+      const nc = F.not_counted;
+      const listLink = (l, label, text) => { FLINKS.push({ label, ids: l.map(x => x.id), n: l.length }); return `<a data-fl="` + (FLINKS.length - 1) + `">${esc(text)}</a>`; };
+      const left = [];
+      if (F.replays) left.push(`<span>${esc(plural(F.replays.n, "why-replay run"))}: a replay of a run, not agent activity, so not counted</span>` + (flink(F.replays, "why-replay runs", "see runs")));
+      if (F.open) left.push(`<span>${esc(plural(F.open.n, "run"))} not final: counted up to the newest checkpoint, with no findings yet</span>` + (flink(F.open, "runs not final", "see runs")) + ``);
+      if (nc.failed.length) left.push(`<span>${esc(plural(nc.failed.length, "run"))} failed verification: left out of every number on this page</span>` + (listLink(nc.failed, "runs that failed verification", "see runs")) + ``);
+      if (nc.pending.length) left.push(`<span>${esc(plural(nc.pending.length, "run"))} not covered by a checkpoint yet: not counted</span>` + (listLink(nc.pending, "runs no checkpoint covers yet", "see runs")) + ``);
+      if (nc.unread.length) left.push(`<span>${esc(plural(nc.unread.length, "run"))} verified but with a record FLEET cannot read: not counted</span>` + (listLink(nc.unread, "runs FLEET cannot read", "see runs")) + ``);
+      if (nc.unchecked) left.push(`<span>${esc(plural(nc.unchecked, "run"))} not checked by this viewer yet: not counted</span>`);
+      left.push(`<span>${esc(F.prices ? `Cost is the price table ` + (F.prices.source || "") + ` (` + (plural(F.prices.models, "model")) + `, ` + (F.prices.currency) + `) × signed token counts, not your invoice` : "No cost: this viewer has no price table (--prices FILE); tokens are shown")}</span>`);
+      const hon = `<div class="hon"><b>Not counted</b>` + (left.join(`<span>·</span>`)) + `</div>`;
+      const seg = `<div class="seg">` + [["24h", "24 H"], ["7d", "7 D"], ["30d", "30 D"]].map(([k, t]) => `<button type="button" data-fr="` + (k) + `" class="` + (R.span === k ? "on" : "") + `">` + (t) + `</button>`).join("") + `</div>`;
+      const panel = (cls, num, title, sub, body, flush, ft) => `<section class="fp ` + (cls) + `"><h3><b>` + (num) + `</b>${esc(title)}<small>${esc(sub)}</small></h3><div class="fb` + (flush ? " flush" : "") + `` + (flush === "issues" ? " issues" : "") + `">` + (body) + `</div>` + (ft) + `</section>`;
+      put("fleetp", `<div class="bar">` + (seg) + `<span class="rng">${esc(range)}</span><span class="sp"></span><span class="seal` + (F.seal.chain ? "" : " bad") + `">` + (seal) + `<span>${esc(sealText)}</span></span></div>` + kpis
+        + `<div class="grid">`
+        + panel("c7", 1, R.bucket === "hour" ? "PER HOUR" : "PER DAY", "a call is counted once", perDay, false, foot(`from ` + (fmtInt(T.calls)) + ` policy.decision records, one per call, and the tool.result of each call that ran`, flink(F.links.calls, "calls", `open ` + (plural(F.links.calls ? F.links.calls.n : 0, "run")) + ``)))
+        + panel("c5", 2, "ISSUES", "findings and held or denied calls, by rule", issues, "issues", foot(`from ` + (fmtInt(F.findings)) + ` findings and the ` + (fmtInt(T.held + T.denied)) + ` held or denied policy.decision records, grouped by rule across runs` + (F.issues_total > F.issues.length ? `; the first ` + (F.issues.length) + ` of ` + (F.issues_total) + `` : "") + ``, ""))
+        + panel("c7", 3, "AGENTS", `` + (plural(F.agents.length, "agent")) + ` · ` + (plural(F.runs, "run")) + ``, agents, true, foot("from run.registered and policy.decision records of the verified runs; the agent is the name each run registered under, the agent's own claim" + (F.agents.some(a => a.cost != null && a.unpriced) ? "; a + after a cost: the agent also used models with no price" : ""), flink(F.links.runs, "runs in this range", "open runs")))
+        + panel("c5", 4, "TOKENS AND COST", "by model, then agent", cost, false, foot(`from ` + (plural(F.tokens.turns, "model.exchange response")) + ` (their signed token counts), each model turn once`, ""))
+        + panel("c7", 5, "TOOLS", "latency p50 / p99, log scale", tools, true, foot(`latency of ` + (fmtInt(F.timed)) + ` of ` + (fmtInt(T.calls)) + ` calls: the time between a call's policy.decision and its tool.result records as the signer stamped them (the result's time is when the agent reported it, not the agent's own timing figure); held, denied and result-less calls are left out`, ""))
+        + panel("c5", 6, "AI APPROVER vs PEOPLE", "per rule, where both decided", approver, true, foot(`from ` + (plural(A.both, "hold")) + ` with an AI approver's and a person's signed approval records`, flink(A.disagree, "holds the AI approver and a person answered differently", "open disagreements")))
+        + `</div>` + hon);
+      $("fleetsum").textContent = `` + (plural(F.agents.length, "agent")) + ` · ` + (plural(F.runs, "run")) + ` · experimental · operator-side, not evidence`;
     }
     // the calls held for a person (decided ask) in every run the page has, with what came of each (PERMISSIONS' words)
     let heldKey = [], heldList = [];
@@ -7960,7 +8671,7 @@
         if (ALL.length) { if (R) stopRun(true); ALL.length = 0; RUNS.clear(); WD.clear(); LOADED.clear(); selected = null; reset(); }
         DROPPED = snap.dropped || 0; MAXREC = snap.max || MAXREC;
         foldsOf(snap.records, FOLDS);   // the snapshot's retries are filed with their held calls as it is read, no read again
-        toasting = false; snap.records.forEach(accept); toasting = true; tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; SIGNER = snap.signer || null; TIPSON = !!snap.tips; SNAPPED = true; loadWhy(); schedule();
+        toasting = false; snap.records.forEach(accept); toasting = true; tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; SIGNER = snap.signer || null; TIPSON = !!snap.tips; FLEETON = !!snap.fleet; SNAPPED = true; loadWhy(); schedule();
         followLink();
         es = new EventSource("api/stream?from=" + encodeURIComponent(snap.next));
         es.onmessage = e => { try { accept(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
@@ -8888,7 +9599,7 @@
       $("wvsum").textContent = [many(groups.length, "kind") + " of content", many(S2.length, "source"), many(T.length, "tool")].join(" · ");
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-wfby],[data-wfs],[data-wfc],[data-wft],[data-wfx],[data-wfclr],[data-wfnew],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-inhint],[data-icard],[data-iquiet],[data-ifk],[data-ift],[data-ifl],[data-tipsre],[data-lrec]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-wfby],[data-wfs],[data-wfc],[data-wft],[data-wfx],[data-wfclr],[data-wfnew],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-inhint],[data-icard],[data-iquiet],[data-ifk],[data-ift],[data-ifl],[data-tipsre],[data-fr],[data-fl],[data-flclear],[data-lrec]"); if (!t) return;
       e.preventDefault();
       // INFLUENCE's flow and answer: content, a line or an answer opens its row and marks it (a line to "+N more": every
       // tool in the row), a tool is marked in every row, and empty space clears the mark
@@ -8903,8 +9614,11 @@
       if (t.dataset.iquiet !== undefined) { IQ.open = !IQ.open; wvKey = ""; return schedule(); }
       if (t.dataset.inmore) { INFLMORE.has(t.dataset.inmore) ? INFLMORE.delete(t.dataset.inmore) : INFLMORE.add(t.dataset.inmore); wvKey = ""; return schedule(); }
       if (t.dataset.ingrp) { INFL.has(t.dataset.ingrp) ? INFL.delete(t.dataset.ingrp) : INFL.add(t.dataset.ingrp); wvKey = ""; return schedule(); }
-      if (t.dataset.page) { show(t.dataset.page); wvKey = ""; return schedule(); }
+      if (t.dataset.page) { RUNFILTER = null; show(t.dataset.page); wvKey = ""; return schedule(); }
       if (t.dataset.tipsre !== undefined) { TIPS = null; TIPSERR = ""; tipsKey = null; loadTips(true); return schedule(); }
+      if (t.dataset.fr) { FLEETRANGE = t.dataset.fr; FLEET = null; fleetKey = null; loadFleet(); return schedule(); }
+      if (t.dataset.fl) { const l = FLINKS[+t.dataset.fl]; RUNFILTER = l && { label: l.label, ids: new Set(l.ids), n: l.n }; show("runs"); return schedule(); }
+      if (t.dataset.flclear !== undefined) { RUNFILTER = null; return schedule(); }
       if (t.dataset.lrec) {   // a lesson's evidence: its run's tape, at the signed record when the live view holds it
         setScope(t.dataset.lrec); show("calls");
         const r = ALL.find(r => r.session_id === t.dataset.lrec && r.v2?.run_seq === +t.dataset.lseq);
