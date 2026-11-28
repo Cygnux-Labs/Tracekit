@@ -41,3 +41,4 @@
 {"tool": "mcp:github/manage_notification_subscription", "args": {"action": "delete", "notificationID": "1"}, "expect": "ask", "note": "a delete chosen by an MCP tool's action argument"}
 {"tool": "mcp__github__discussion_comment_write", "args": {"comment_id": "DC_1", "method": "delete"}, "expect": "ask", "note": "a delete chosen by an MCP tool's method argument"}
 {"tool": "mcp:db/admin", "args": {"operation": "dropTable", "table": "orders"}, "expect": "ask", "note": "a delete chosen by an MCP tool's operation argument"}
+{"tool": "mcp:github/label_write", "args": {"method": "dElete", "name": "bug", "owner": "acme", "repo": "api"}, "expect": "ask", "note": "a delete chosen by an MCP tool's method argument, in mixed case"}
