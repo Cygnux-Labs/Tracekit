@@ -157,7 +157,7 @@ AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "op
                "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush",
                "devin": "devin", "cline": "cline", "gptme": "gptme", "openhands": "openhands",
                "copilot": "copilot", "codebuddy": "codebuddy-code", "jcode": "jcode", "kiro": "kiro-cli",
-               "interpreter": "open-interpreter"}
+               "interpreter": "open-interpreter", "openclaw": "openclaw"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
@@ -273,6 +273,10 @@ CRUSH_PATH_TOOLS = ("lsp_rename", "ls", "grep", "glob")   # they read `path`, th
 DEVIN_TOOLS = {"exec": "Bash", "write_to_process": "Bash", "read": "Read", "write": "Write", "edit": "Edit",
                "apply_patch": "Edit", "grep": "Grep", "glob": "Glob", "webfetch": "WebFetch"}
 DEVIN_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
+# OpenClaw's built-in tools (recorded on 2026.11.10). exec is Bash unless it is Code Mode (see tool()); process and
+# terminal are not listed: tool() names them by their `action`
+OPENCLAW_TOOLS = {"exec": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
+                  "web_fetch": "WebFetch"}
 # a key Devin's read, write or edit may read its path from. Devin is closed source, and its decoder may match a key
 # ignoring case, as Go's encoding/json does (K and ſ fold to k and s; so does str.casefold): the key casefolded and
 # without `_` ends in path, paths or file
@@ -1093,6 +1097,36 @@ def tool(harness, name, ti):
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
         return tools.get(name, name), ti
+    if harness == "openclaw":
+        action = ti.get("action")
+        if name == "exec":
+            # Code Mode: `code` is text and `command`, if sent, is the same text (all 52 recorded calls). The outer call
+            # keeps its own name; each inner call fires its own before_tool_call. Any other exec with a `code` key
+            # is decided as the Bash command it carries, never skipped for a stray key
+            code = ti.get("code")
+            if isinstance(code, str) and ti.get("command") in (None, code):
+                return "code_mode", ti
+        elif name in ("read", "write", "edit"):
+            path = ti.get("path")
+            ti["paths"] = [path] if isinstance(path, str) and path else []
+            ti["file_path"] = ti["paths"][0] if ti["paths"] else None
+        elif name == "apply_patch":   # Codex's patch format, in `input`
+            files = _patch_files(str(ti.get("input") or ""))
+            ti["paths"], ti["file_path"] = files, files[0] if files else None
+        elif name == "process" and action in ("write", "paste"):   # text typed into a running process, as Devin's
+            text = ti.get("data" if action == "write" else "text")   # write_to_process
+            ti["command"] = text.replace("\r", "\n") if isinstance(text, str) else None
+            return "Bash", ti
+        elif name == "process" and action == "send-keys":   # printable keys read as text, Enter as a line end; always
+            keys = ti.get("keys")   # marked typed, so the v2 engine holds it, a named key (Tab, Esc, Ctrl) included
+            ti["command"] = "".join({"Enter": "\n", "Space": " "}.get(k, k) for k in keys) \
+                if isinstance(keys, list) and all(isinstance(k, str) for k in keys) else None
+            ti["typed"] = True
+            return "Bash", ti
+        elif name == "process" and action == "submit":   # sends Enter to input the hook can't see
+            ti["command"], ti["typed"] = "\n", True
+            return "Bash", ti
+        return OPENCLAW_TOOLS.get(name, name), ti
     if harness == "goose":
         if name == "read_image":
             # decided by scheme, as goose's url::Url::parse reads the source: tabs and newlines dropped, outer spaces and
@@ -1451,6 +1485,21 @@ def normalise(harness, p):
             return dict(out, hook_event_name="UserPromptSubmit", prompt=p.get("prompt"), source="prompt")
         if ev == "session.deleted":   # OpenCode 2.x: the session was deleted
             return dict(out, hook_event_name="SessionEnd", reason="session deleted")
+        return None
+    if harness == "openclaw":
+        # the plugin sends OpenClaw's before_tool_call / after_tool_call as tool.execute.before / .after (PRE holds
+        # those names: an event named otherwise would be read as a post-event and its call allowed), toolName as
+        # tool_name, params as tool_input, toolCallId as tool_use_id and the context's sessionId as session_id
+        if ev in ("before_tool_call", "after_tool_call"):
+            raise ValueError(f"the OpenClaw plugin must send {ev} as tool.execute.before or tool.execute.after")
+        out["session_id"] = p.get("session_id")
+        if ev in ("tool.execute.before", "tool.execute.after"):
+            out["hook_event_name"] = "PreToolUse" if ev == "tool.execute.before" else "PostToolUse"
+            out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
+            out["tool_use_id"] = p.get("tool_use_id")
+            if ev == "tool.execute.after":   # a result is optional in OpenClaw: none given is not success
+                out["tool_response"] = p.get("tool_response")
+            return out
         return None
     if harness == "goose":
         # goose names its event `event`, not `hook_event_name` (the v2 hook's command-line event arrives as the
@@ -1927,6 +1976,23 @@ def _blocked(harness, p, raw="", line=None):
             return (f"Blocked by Tracekit: jcode's mcp connect sets the environment variable {str(odd)[:64]!r}, which "
                     "isn't a shell name, so Tracekit can't decide the command it starts as a shell line; use names "
                     "of letters, digits and _ that don't start with a digit.")
+    if harness == "openclaw":   # a call that sends nothing Tracekit decides it on is denied here, as Devin's and Kiro's are
+        mapped, ti = tool(harness, name, p.get("tool_input"))
+        need = None
+        if name in ("read", "write", "edit", "apply_patch") and not (isinstance(ti.get("file_path"), str)
+                                                                    and ti["file_path"]):
+            need = "path" if name != "apply_patch" else "file header (*** Add, Update or Delete File:) in its input"
+        elif name == "web_fetch" and not (isinstance(ti.get("url"), str) and ti["url"]):
+            need = "url"
+        elif mapped == "Bash" and not (isinstance(ti.get("command"), str) and ti["command"]):
+            need = "command or text"
+        if need:
+            return (f"Blocked by Tracekit: OpenClaw's {name[:64]} call names no {need}, which Tracekit decides it "
+                    "on, so it can't decide this call.")
+        if name == "process" and ti.get("action") in ("write", "paste"):   # typed into a running process, as Devin's
+            why = _typed("OpenClaw's", "process " + ti["action"], ti["command"], devin=True)
+            if why:
+                return why
     return _blocked_tool(harness, name, raw)
 
 

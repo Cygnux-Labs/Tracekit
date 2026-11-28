@@ -1,0 +1,341 @@
+[
+  {
+    "name": "plain exec (background) is a Bash command",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "exec",
+      "tool_use_id": "tc-1",
+      "tool_input": {
+        "command": "sleep 300",
+        "background": true,
+        "title": "sleep 300 background"
+      }
+    },
+    "decision": "allow",
+    "request": {
+      "tool": "Bash",
+      "tool_call_id": "tc-1",
+      "args": {
+        "command": "sleep 300",
+        "background": true,
+        "title": "sleep 300 background"
+      }
+    },
+    "exit": 0,
+    "stdout": ""
+  },
+  {
+    "name": "read is a Read of its path",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "read",
+      "tool_use_id": "tc-2",
+      "tool_input": {
+        "path": "/w/oc-test.txt"
+      }
+    },
+    "decision": "allow",
+    "request": {
+      "tool": "Read",
+      "tool_call_id": "tc-2",
+      "args": {
+        "path": "/w/oc-test.txt",
+        "paths": [
+          "/w/oc-test.txt"
+        ],
+        "file_path": "/w/oc-test.txt"
+      }
+    },
+    "exit": 0,
+    "stdout": ""
+  },
+  {
+    "name": "write is a Write of its path",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "write",
+      "tool_use_id": "tc-3",
+      "tool_input": {
+        "path": "/w/oc-test.txt",
+        "content": "goodbye\nline two\n"
+      }
+    },
+    "decision": "allow",
+    "request": {
+      "tool": "Write",
+      "tool_call_id": "tc-3",
+      "args": {
+        "path": "/w/oc-test.txt",
+        "content": "goodbye\nline two\n",
+        "paths": [
+          "/w/oc-test.txt"
+        ],
+        "file_path": "/w/oc-test.txt"
+      }
+    },
+    "exit": 0,
+    "stdout": ""
+  },
+  {
+    "name": "edit denied by rule is a denied Edit of its path",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "edit",
+      "tool_use_id": "tc-4",
+      "tool_input": {
+        "path": "/w/.env",
+        "edits": [
+          {
+            "oldText": "a",
+            "newText": "b"
+          }
+        ]
+      }
+    },
+    "decision": "deny",
+    "request": {
+      "tool": "Edit",
+      "tool_call_id": "tc-4",
+      "args": {
+        "path": "/w/.env",
+        "edits": [
+          {
+            "oldText": "a",
+            "newText": "b"
+          }
+        ],
+        "paths": [
+          "/w/.env"
+        ],
+        "file_path": "/w/.env"
+      }
+    },
+    "exit": 2,
+    "stdout": ""
+  },
+  {
+    "name": "apply_patch is an Edit of every file its patch names",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "apply_patch",
+      "tool_use_id": "tc-5",
+      "tool_input": {
+        "input": "*** Begin Patch\n*** Update File: /w/a.py\n@@\n-a\n+b\n*** End Patch"
+      }
+    },
+    "decision": "allow",
+    "request": {
+      "tool": "Edit",
+      "tool_call_id": "tc-5",
+      "args": {
+        "input": "*** Begin Patch\n*** Update File: /w/a.py\n@@\n-a\n+b\n*** End Patch",
+        "paths": [
+          "/w/a.py"
+        ],
+        "file_path": "/w/a.py"
+      }
+    },
+    "exit": 0,
+    "stdout": ""
+  },
+  {
+    "name": "web_fetch is a WebFetch of its url",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "web_fetch",
+      "tool_use_id": "tc-6",
+      "tool_input": {
+        "url": "https://example.com"
+      }
+    },
+    "decision": "allow",
+    "request": {
+      "tool": "WebFetch",
+      "tool_call_id": "tc-6",
+      "args": {
+        "url": "https://example.com"
+      }
+    },
+    "exit": 0,
+    "stdout": ""
+  },
+  {
+    "name": "web_search passes through under its own name",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "web_search",
+      "tool_use_id": "tc-7",
+      "tool_input": {
+        "query": "OpenClaw"
+      }
+    },
+    "decision": "allow",
+    "request": {
+      "tool": "web_search",
+      "tool_call_id": "tc-7",
+      "args": {
+        "query": "OpenClaw"
+      }
+    },
+    "exit": 0,
+    "stdout": ""
+  },
+  {
+    "name": "a Code Mode exec is recorded as code_mode, not Bash",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "exec",
+      "tool_use_id": "tc-8",
+      "tool_input": {
+        "code": "return await read({ path: \"/w/oc-test.txt\" });",
+        "title": "Read /w/oc-test.txt",
+        "command": "return await read({ path: \"/w/oc-test.txt\" });"
+      }
+    },
+    "decision": "allow",
+    "request": {
+      "tool": "code_mode",
+      "tool_call_id": "tc-8",
+      "args": {
+        "code": "return await read({ path: \"/w/oc-test.txt\" });",
+        "title": "Read /w/oc-test.txt",
+        "command": "return await read({ path: \"/w/oc-test.txt\" });"
+      }
+    },
+    "exit": 0,
+    "stdout": ""
+  },
+  {
+    "name": "process write is a Bash command of its text",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "process",
+      "tool_use_id": "tc-9",
+      "tool_input": {
+        "action": "write",
+        "sessionId": "proc-1",
+        "data": "echo hi\n"
+      }
+    },
+    "decision": "allow",
+    "request": {
+      "tool": "Bash",
+      "tool_call_id": "tc-9",
+      "args": {
+        "action": "write",
+        "sessionId": "proc-1",
+        "data": "echo hi\n",
+        "command": "echo hi\n"
+      }
+    },
+    "exit": 0,
+    "stdout": ""
+  },
+  {
+    "name": "process send-keys is held, as Bash of its keys read as text",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "process",
+      "tool_use_id": "tc-10",
+      "tool_input": {
+        "action": "send-keys",
+        "sessionId": "proc-1",
+        "keys": [
+          "h",
+          "i",
+          "Enter"
+        ]
+      }
+    },
+    "decision": "ask",
+    "request": {
+      "tool": "Bash",
+      "tool_call_id": "tc-10",
+      "args": {
+        "action": "send-keys",
+        "sessionId": "proc-1",
+        "keys": [
+          "h",
+          "i",
+          "Enter"
+        ],
+        "command": "hi\n",
+        "typed": true
+      }
+    },
+    "exit": 0,
+    "stdout": ""
+  },
+  {
+    "name": "process submit is held, as Bash of an Enter",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "process",
+      "tool_use_id": "tc-11",
+      "tool_input": {
+        "action": "submit",
+        "sessionId": "proc-1"
+      }
+    },
+    "decision": "ask",
+    "request": {
+      "tool": "Bash",
+      "tool_call_id": "tc-11",
+      "args": {
+        "action": "submit",
+        "sessionId": "proc-1",
+        "command": "\n",
+        "typed": true
+      }
+    },
+    "exit": 0,
+    "stdout": ""
+  },
+  {
+    "name": "process kill stays process",
+    "payload": {
+      "session_id": "oc-1",
+      "cwd": "/w",
+      "hook_event_name": "tool.execute.before",
+      "tool_name": "process",
+      "tool_use_id": "tc-12",
+      "tool_input": {
+        "action": "kill",
+        "sessionId": "proc-1"
+      }
+    },
+    "decision": "allow",
+    "request": {
+      "tool": "process",
+      "tool_call_id": "tc-12",
+      "args": {
+        "action": "kill",
+        "sessionId": "proc-1"
+      }
+    },
+    "exit": 0,
+    "stdout": ""
+  }
+]
