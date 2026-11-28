@@ -3046,7 +3046,7 @@ def package_bins(name, args, word):
 
 
 def bun_exec(args):
-    """The scripts `bun exec` may run in Bun Shell, after bun's options: its first word, and all its words
+    """The scripts `bun exec` may run in Bun Shell, after bun's options and a `--`: its first word, and all its words
     joined as `sh -c` joins them (Bun's help doesn't say which it takes), or []."""
     i = 0
     while i < len(args) and args[i].startswith("-"):
@@ -3054,6 +3054,8 @@ def bun_exec(args):
     if args[i:i + 1] != ["exec"]:
         return []
     words = args[i + 1:]
+    while words[:1] == ["--"] or words[:1] and words[0].startswith("-") and words[0] != "-":
+        words = words[1:]
     return list(dict.fromkeys([words[0], " ".join(words)])) if words else []
 
 
