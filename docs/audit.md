@@ -78,7 +78,7 @@ One reader per agent, each with its default folder:
 | Agent | Default folder |
 |---|---|
 | `claude` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
-| `codex` | `$CODEX_HOME/sessions` when it is set, else `~/.codex/sessions` |
+| `codex` | `$CODEX_HOME/sessions` when it is set, else `~/.codex/sessions`; its Code Mode's nested tool calls are read too |
 | `cursor` | `~/.cursor/projects` |
 | `cline` | `$CLINE_SESSION_DATA_DIR`, else `$CLINE_DATA_DIR/sessions`, else `~/.cline/data/sessions` (`$CLINE_DIR` moves `~/.cline`); and, for tasks from before Cline 4.0, `saoudrizwan.claude-dev/tasks` in VS Code's global storage: `~/Library/Application Support/Code/User/globalStorage` (macOS), `~/.config/Code/User/globalStorage` (Linux), `%APPDATA%\Code\User\globalStorage` (Windows) |
 | `gemini` | `$GEMINI_CLI_HOME/.gemini/tmp` when it is set, else `~/.gemini/tmp` |
@@ -104,6 +104,8 @@ and MCP tools arrive as `mcp__<server>__<tool>`), then decided as Tracekit's Cod
 (`apply_patch` as an `Edit` of the files its patch names). Calls without a matching PreToolUse hook, such as
 `write_stdin`, are skipped. Repeated calls with the same id and mapped contents count once; calls with no valid id
 are counted without deduplication.
+
+Codex's Code Mode gives the model one `exec` tool whose script calls the real tools, and a rollout records those nested calls only as `event_msg` lines of type `item_completed`, not as `response_item` calls. The reader decides each of them as the hook did: a `CommandExecution` as `Bash` (the `-lc` script of its argv), a `FileChange` as an `Edit` of its files, a `McpToolCall` as `mcp__<server>__<tool>` and an `ImageView` as a `Read` of its path; a call that failed or was declined is decided too, as the hook decided it before it ran, and a command the user typed themselves, or input to a running one, is skipped. An item whose id a `response_item` call holds, or that the file repeats, counts once. An item the reader can't read (an `Extension` item, a kind it doesn't know, a shape it doesn't expect) is counted as not readable, never dropped: the report and `--share` say "Codex Code Mode nested calls: N read, M not readable (not decided)" (`nested_calls` in `--json`) whenever the rollouts hold any.
 
 Cursor's reader reads the agent transcripts Cursor writes for each chat, of its IDE's agent and of the `cursor-agent`
 CLI: `<project>/agent-transcripts/<id>/<id>.jsonl` under its folder (an older build's flat `<id>.jsonl`, and a
