@@ -1725,6 +1725,7 @@ class Installer(unittest.TestCase):
                     'await hooks.prompt(draft);   // a concurrent submission of the same id runs the hook again\n'
                     'fail = true;\n'
                     'await hooks.prompt({ ...draft, messageID: "msg_2" });   // resolves: the prompt goes in\n'
+                    'await hooks.prompt({ sessionID: "oc2-s", messageID: "msg_3" });   // the hook throws: resolves too\n'
                     'cleanup();\n'
                     'await new Promise((done) => setTimeout(done, 50));\n'
                     'process.stdout.write(JSON.stringify({ hooks: Object.keys(hooks).sort(), subscribed, aborted, sent,\n'
@@ -1740,6 +1741,7 @@ class Installer(unittest.TestCase):
                                 "prompt": "keep away from prod"})])
         self.assertEqual(got["v1"], ["tool.execute.after", "tool.execute.before"])   # 1.x: tool hooks only, as before
         self.assertIn("[tracekit] hook error (Error: no python)", p.stderr)
+        self.assertIn("[tracekit] the prompt was not recorded (TypeError", p.stderr)
 
     def test_init_dev_v2_replaces_v1_and_uninstall_removes_it(self):
         d = ac.tmpdir(self)
