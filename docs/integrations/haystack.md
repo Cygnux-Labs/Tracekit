@@ -10,10 +10,10 @@ waits for a person); at `after_tool` it records each outcome. Haystack 3 runs to
 ## Install
 
 ```bash
-pip install tracekit-ai "haystack-ai>=3.4,<4"
+pip install tracekit-ai "haystack-ai>=3.5,<4"
 ```
 
-Tested with Haystack 3.4 and 3.5, which need Python 3.11+. A later 3.x installs and the hook says once that it is
+Tested with Haystack 3.5, which needs Python 3.11+. A later 3.x installs and the hook says once that it is
 untested; CI runs the newest 3.x on every change. `OpenAIChatGenerator` comes with `haystack-ai`; other model
 providers come in their integration packages. The hook itself needs none.
 
