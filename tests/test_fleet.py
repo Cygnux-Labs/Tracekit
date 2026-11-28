@@ -357,8 +357,9 @@ class Prices_(unittest.TestCase):
             with open(path, "w") as f:
                 json.dump(body, f)
         self.assertEqual(view.main(["--data-dir", d, "--prices", bad]), 2)
-        self.assertEqual(view.main(["--ledger", "--prices", ok]), 2)
-        self.assertEqual(view.main(["--bundle", ok, "--prices", ok]), 2)
+        with mock.patch.object(view, "server", side_effect=OSError("not refused")):   # a viewer that started would serve on
+            self.assertEqual(view.main(["--ledger", "--prices", ok]), 2)
+            self.assertEqual(view.main(["--bundle", ok, "--prices", ok]), 2)
 
 
 class NotCounted(unittest.TestCase):
