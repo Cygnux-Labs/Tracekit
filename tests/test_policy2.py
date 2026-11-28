@@ -1660,6 +1660,9 @@ class Shell(unittest.TestCase):
                 shell.parse(cmd)
 
     def test_arithmetic_subscript_expansions_are_read_or_held(self):
+        # each pack built once: built again for every command, this took 81 s on a laptop and passed CI's 240 s limit
+        engines = [(pack, Engine(pc.build(os.path.join(PACKS, pack))[0], backend))
+                   for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml") for backend in BACKENDS]
         for cmd in ("echo $(( a[${x:-$}(sudo id)] ))", "echo $(( a[${x:-`sudo id`}] ))",
                     "echo $(( a[\\`sudo id\\`] ))"):
             with self.subTest(cmd=cmd):
@@ -1679,11 +1682,9 @@ class Shell(unittest.TestCase):
         for cmd in ("echo $(( i + 1 ))", "echo $(( a[1] ))", "echo $(( ${#arr[@]} - 1 ))",
                     "echo $(( ${arr[0]} * 2 ))", "echo $(( $n / 2 ))", "echo $(( a[i] ))",
                     "echo $(( a[$i] ))", "echo $(( $(nproc) * 2 ))"):
-            for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
-                pol = pc.build(os.path.join(PACKS, pack))[0]
-                for policy_engine in (Engine(pol, backend) for backend in BACKENDS):
-                    with self.subTest(pack=pack, cmd=cmd):
-                        self.assertNotIn("TK-SHELL-PARSE", policy_engine.decide("Bash", {"command": cmd})["rule_ids"])
+            for pack, policy_engine in engines:
+                with self.subTest(pack=pack, cmd=cmd):
+                    self.assertNotIn("TK-SHELL-PARSE", policy_engine.decide("Bash", {"command": cmd})["rule_ids"])
 
         for cmd in ("x='$(id)'; echo $(( a[$x] ))", 'x="$(id)"; echo $(( a[${x}] ))',
                     "x='$(id)'; echo $(( a[${x:-0}] ))", 'x="$(id)"; let "n=a[$x]"',
@@ -1694,11 +1695,9 @@ class Shell(unittest.TestCase):
                     'local -i n="a[${x:-$}(id)]"', 'typeset -i n="a[${x:-$}(id)]"'):
             with self.subTest(cmd=cmd), self.assertRaises(shell.ParseError):
                 shell.parse(cmd)
-            for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
-                pol = pc.build(os.path.join(PACKS, pack))[0]
-                for policy_engine in (Engine(pol, backend) for backend in BACKENDS):
-                    with self.subTest(pack=pack, cmd=cmd):
-                        self.assertIn("TK-SHELL-PARSE", policy_engine.decide("Bash", {"command": cmd})["rule_ids"])
+            for pack, policy_engine in engines:
+                with self.subTest(pack=pack, cmd=cmd):
+                    self.assertIn("TK-SHELL-PARSE", policy_engine.decide("Bash", {"command": cmd})["rule_ids"])
         self.assertIn(["date"], [command["argv"] for command in shell.parse("v=a[`date`]; echo $((v))")])
 
     def test_arithmetic_expansion_without_a_substitution_is_skipped_as_before(self):
