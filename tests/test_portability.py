@@ -213,6 +213,11 @@ class PluginPackage(unittest.TestCase):
             market = json.load(f)   # this repository's marketplace, which existing installs came from
         self.assertEqual(market["plugins"][0]["source"], "./plugin")
         self.assertEqual(market["plugins"][0]["name"], plugin["name"])
+        # the same words as the published copy's marketplace: this one said "Claude Code tool calls" long after the
+        # plugin served Codex, Cursor and Copilot too
+        published = load(".claude-plugin", "marketplace.json")
+        self.assertEqual((market["description"], market["plugins"][0]["description"]),
+                         (published["description"], published["plugins"][0]["description"]))
         # the published copy of plugin/ is its own marketplace, under the same name: tracekit@tracekit everywhere
         claude, codex = load(".claude-plugin", "marketplace.json"), load(".agents", "plugins", "marketplace.json")
         self.assertEqual((claude["name"], claude["plugins"][0]["name"], claude["plugins"][0]["source"]),

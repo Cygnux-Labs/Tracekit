@@ -27,7 +27,7 @@ import regex
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from factories import SLOWER, process_pool  # noqa: E402
+from factories import SLOWER, machine_scale, process_pool  # noqa: E402
 from tracekit import cli  # noqa: E402
 from tracekit.policy import PolicyError, _sre_c, _sre_p  # noqa: E402
 from tracekit.policy2 import classes, compile as pc, engine, shell, source  # noqa: E402
@@ -887,11 +887,7 @@ class Speed(unittest.TestCase):
     RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D011", "TK-DB003", "TK-C010", "TK-A032"}
     # TK-M003 reads a recipient list forward to a whole-company address: ~12 ms on an M-series Mac. Read greedily and
     # backed off over, 64 KiB of a list took 78 ms there and 152-221 ms on CI's macOS runners (#481)
-    RULE_BUDGET_S = {"TK-M003": 0.06}
-    # every budget is for the M-series Mac it was set on, where machine_scale's reference search takes REF_S; another
-    # machine's budgets are scaled by how much slower it runs that search (#517: TK-A040, ~75 ms there, reads eight
-    # options after each redis-cli and took 152-261 ms on CI's Linux runners, over a fixed budget)
-    REF_S = 0.055
+    RULE_BUDGET_S = {"TK-M003": 0.06}   # every budget here is scaled by machine_scale (tests/factories.py)
 
     def fillers(self, rid, pattern):
         n = MAX_SUBJECT - 4
@@ -1379,16 +1375,6 @@ def _over_budget(item, scale):
     return [s for s in speed.fillers(rid, pattern) if speed.search(rx, s, budget) > budget]
 
 
-@functools.lru_cache(maxsize=None)
-def machine_scale():
-    """How many times slower than Speed.REF_S's Mac this machine runs a fixed linear search of 64 KiB on the fallback
-    engine, best of three: at least 1, and at most 4 (CI's runners are 2-3.5x slower), so a busy moment while it is
-    timed can't stretch the budgets past what a slow runner needs. A pattern slow everywhere still fails."""
-    rx = regex.compile(r"(^|\s)(\S{0,256}/)?redis-cli(\s+-\S*(\s+[^-\s]\S*)?){0,8}\s*<<<", regex.ASCII | regex.V0)
-    s = "a/redis-cli -" * ((MAX_SUBJECT - 4) // 13)
-    return min(4.0, max(1.0, min(Speed().search(rx, s, 2.5) for _ in range(3)) / Speed.REF_S))
-
-
 # a parse-budget test's limit on one decision, times machine_scale: these time Python parsing, which a busy runner slows
 # more than machine_scale's regex search shows (CI's 3.12 Linux runner took 1.08 s at scale 1.64 on a loop a laptop
 # decides in 0.3 s). The blowups they catch took 3.6 s or more on a laptop.
@@ -1674,6 +1660,9 @@ class Shell(unittest.TestCase):
                 shell.parse(cmd)
 
     def test_arithmetic_subscript_expansions_are_read_or_held(self):
+        # each pack built once: built again for every command, this took 81 s on a laptop and passed CI's 240 s limit
+        engines = [(pack, Engine(pc.build(os.path.join(PACKS, pack))[0], backend))
+                   for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml") for backend in BACKENDS]
         for cmd in ("echo $(( a[${x:-$}(sudo id)] ))", "echo $(( a[${x:-`sudo id`}] ))",
                     "echo $(( a[\\`sudo id\\`] ))"):
             with self.subTest(cmd=cmd):
@@ -1693,11 +1682,9 @@ class Shell(unittest.TestCase):
         for cmd in ("echo $(( i + 1 ))", "echo $(( a[1] ))", "echo $(( ${#arr[@]} - 1 ))",
                     "echo $(( ${arr[0]} * 2 ))", "echo $(( $n / 2 ))", "echo $(( a[i] ))",
                     "echo $(( a[$i] ))", "echo $(( $(nproc) * 2 ))"):
-            for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
-                pol = pc.build(os.path.join(PACKS, pack))[0]
-                for policy_engine in (Engine(pol, backend) for backend in BACKENDS):
-                    with self.subTest(pack=pack, cmd=cmd):
-                        self.assertNotIn("TK-SHELL-PARSE", policy_engine.decide("Bash", {"command": cmd})["rule_ids"])
+            for pack, policy_engine in engines:
+                with self.subTest(pack=pack, cmd=cmd):
+                    self.assertNotIn("TK-SHELL-PARSE", policy_engine.decide("Bash", {"command": cmd})["rule_ids"])
 
         for cmd in ("x='$(id)'; echo $(( a[$x] ))", 'x="$(id)"; echo $(( a[${x}] ))',
                     "x='$(id)'; echo $(( a[${x:-0}] ))", 'x="$(id)"; let "n=a[$x]"',
@@ -1708,11 +1695,9 @@ class Shell(unittest.TestCase):
                     'local -i n="a[${x:-$}(id)]"', 'typeset -i n="a[${x:-$}(id)]"'):
             with self.subTest(cmd=cmd), self.assertRaises(shell.ParseError):
                 shell.parse(cmd)
-            for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
-                pol = pc.build(os.path.join(PACKS, pack))[0]
-                for policy_engine in (Engine(pol, backend) for backend in BACKENDS):
-                    with self.subTest(pack=pack, cmd=cmd):
-                        self.assertIn("TK-SHELL-PARSE", policy_engine.decide("Bash", {"command": cmd})["rule_ids"])
+            for pack, policy_engine in engines:
+                with self.subTest(pack=pack, cmd=cmd):
+                    self.assertIn("TK-SHELL-PARSE", policy_engine.decide("Bash", {"command": cmd})["rule_ids"])
         self.assertIn(["date"], [command["argv"] for command in shell.parse("v=a[`date`]; echo $((v))")])
 
     def test_arithmetic_expansion_without_a_substitution_is_skipped_as_before(self):
