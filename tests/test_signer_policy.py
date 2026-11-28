@@ -6285,7 +6285,12 @@ class CodingPack(unittest.TestCase):
                         "kubectl config use-context prod", "kubectl config set-cluster x",
                         "gcloud auth login", "gcloud auth list", "gcloud auth revoke",
                         "gcloud auth application-default login", "gcloud config list",
-                        "gcloud compute instances list", "gcloud auth print-access-tokens"):
+                        "gcloud compute instances list", "gcloud auth print-access-tokens",
+                        "gcloud auth print-access-token --help", "gcloud auth print-access-token -h",
+                        "gcloud auth print-identity-token --help",
+                        "gcloud auth application-default print-access-token --help",
+                        "gcloud --project p auth print-access-token --help",
+                        "gcloud auth print-access-token --project p -h"):
             for pack, engine, e in self.every_pack():
                 with self.subTest(pack=pack, engine=engine, command=command):
                     d = e.decide("Bash", {"command": command})

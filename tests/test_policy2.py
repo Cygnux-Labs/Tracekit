@@ -6526,6 +6526,29 @@ class ReadOnce(unittest.TestCase):
         self.assertEqual((d["verdict"], d["rule_ids"], effects.call_count), ("flag", ["E", "T"], 1))
 
 
+class AwsExportCredentials(unittest.TestCase):
+    def test_exported_credentials_wait_for_approval_across_packs_and_engines(self):
+        risky = ("aws configure export-credentials",
+                 "aws configure export-credentials --profile prod --format env",
+                 "aws --profile prod configure export-credentials --format powershell")
+        harmless = ("aws configure list", "aws configure get region",
+                    "aws configure set region eu-west-1")
+        for pack in ("coding", "dev", "server", "strict"):
+            policy, errors = pc.build(os.path.join(PACKS, pack + ".yaml"))
+            self.assertEqual(errors, [])
+            for backend in BACKENDS:
+                evaluator = Engine(policy, backend)
+                for command in risky:
+                    with self.subTest(pack=pack, backend=backend, command=command):
+                        result = evaluator.decide("Bash", {"command": command})
+                        self.assertEqual(result["verdict"], "ask", result)
+                        self.assertIn("TK-A021", result["rule_ids"])
+                for command in harmless:
+                    with self.subTest(pack=pack, backend=backend, command=command):
+                        result = evaluator.decide("Bash", {"command": command})
+                        self.assertNotIn("TK-A021", result["rule_ids"])
+
+
 class QuietFlags(unittest.TestCase):
     """Flags a person needs to see (the 2026-11-14 flag-noise report: 29.8% of the calls on normal projects were
     flagged). Each narrowing leaves a call unflagged that main flagged, and a control keeps its risky form flagged; the
