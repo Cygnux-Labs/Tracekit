@@ -284,7 +284,7 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "npm": (("exec", "x"), _NPM_OPTS, 0),
            "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
            "yarn": (("exec", "dlx"), ("-p", "--package", "-j", "--jobs", "--from", "--include", "--exclude"), 0),
-           "bun": (("x",), ("-p", "--package", *_BUN_VALUED), 0),
+           "bun": (("x", "run"), ("-p", "--package", *_BUN_VALUED), 0),
            "bundle": (("exec",), ("--gemfile",), 0), "rye": (("run",), ("--pyproject",), 0),
            "pixi": (("run", "exec"), ("-e", "--environment", "--manifest-path", "-s", "--spec", "-c", "--channel"), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
@@ -2977,24 +2977,43 @@ def uv_commands(args):
                     yield c, s
 
 
-# the CLIs whose deletes TK-A042 holds, by the package that has the bin (netlify-cli's is netlify)
-PACKAGE_BINS = {b: b for b in ("wrangler", "netlify", "ntl", "vercel", "gh", "glab", "hub")} | {"netlify-cli": "netlify"}
+# the CLIs whose deletes TK-A042 holds, by the name or package that has the bin (netlify-cli's is netlify, Vercel's
+# second name is vc)
+PACKAGE_BINS = {b: b for b in ("wrangler", "netlify", "ntl", "vercel", "gh", "glab", "hub")} | {
+    "netlify-cli": "netlify", "vc": "vercel"}
+# the options of yarn, pnpm and bun that take a value before the bin (RUNNERS' own, without -p: yarn's --parallel)
+_MANAGER_VALUED = {"pnpm": ("-C", "--dir", "-F", "--filter", "--package"),
+                   "yarn": ("--cwd", "--package", "-j", "--jobs", "--from", "--include", "--exclude"),
+                   "bun": tuple(_BUN_VALUED)}
 
 
 def package_bins(name, args):
     """The command a run of a hosting CLI's package is, as (bin, its arguments): the package named at a version or by
     its package name, as npx, bunx, pnpm dlx and yarn dlx name it (`npx wrangler@3 delete`, `bunx vercel@33 rm p`,
-    `npx netlify-cli sites:delete x`), and the bin yarn or pnpm runs by its name (`yarn wrangler delete`, `pnpm -C app
-    vercel rm p`) after their options, each with a value or not, and a `run`. The rules read a command from its
-    name."""
+    `npx netlify-cli sites:delete x`), and the bin yarn, pnpm or bun runs by its name (`yarn wrangler delete`, `pnpm
+    -C app vercel rm p`, `yarn workspace web run wrangler delete`), also at a version (`npx pnpm@9 wrangler delete`),
+    after their options and a `run`, `workspace NAME` or `workspaces foreach`. An option they take a value for (`pnpm
+    --filter vercel remove x`) has the value as its next word; any other may or may not, so it is read both ways. The
+    rules read a command from its name."""
     base = name.partition("@")[0] if "@" in name[1:] else name
     if base in PACKAGE_BINS and PACKAGE_BINS[base] != name:
         yield PACKAGE_BINS[base], args
-    elif name in ("yarn", "pnpm"):
-        for i, a in enumerate(args[:16]):
-            if a in PACKAGE_BINS and all(w.startswith("-") or w == "run" or j and args[j - 1].startswith("-")
-                                         for j, w in enumerate(args[:i])):
-                yield PACKAGE_BINS[a], args[i + 1:]
+    elif base in _MANAGER_VALUED:
+        valued, todo, seen = _MANAGER_VALUED[base], [0], set()
+        while todo:   # each word a bin may be at, once
+            i = todo.pop()
+            if i in seen or i >= min(len(args), 32):
+                continue
+            seen.add(i)
+            a = args[i]
+            if a.casefold() in PACKAGE_BINS:
+                yield PACKAGE_BINS[a.casefold()], args[i + 1:]
+            elif a.startswith("-"):
+                todo += [i + 2] if a in valued else [i + 1] if "=" in a else [i + 1, i + 2]
+            elif a == "workspace" and base == "yarn":
+                todo.append(i + 2)
+            elif a in ("run", "workspaces", "foreach", "recursive", "multi", "m"):
+                todo.append(i + 1)
 
 
 def runner_at(name, args):
