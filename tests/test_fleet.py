@@ -327,10 +327,10 @@ class Zones(unittest.TestCase):
                                                               "unchecked": 0}))
         page = fleet.Page(feed, ttl=0.05)
         for span in fleet.RANGES:
-            for name in ("UTC", "utc", "Utc", "Europe/London", "europe/london", "x" * 100, "Asia/Calcutta"):
-                page(span, name)
+            for name in ("UTC", "utc", "Utc", "Europe/London", "europe/london", "x" * 100, "Asia/Kolkata"):
+                page(span, name)   # (not an old alias like Asia/Calcutta: newer Debian tzdata moves those out)
         self.assertLessEqual(len(page.kept), len(fleet.RANGES) * 3)
-        self.assertEqual(sorted({k[1] for k in page.kept}), ["Asia/Calcutta", "Europe/London", "UTC"])
+        self.assertEqual(sorted({k[1] for k in page.kept}), ["Asia/Kolkata", "Europe/London", "UTC"])
         time.sleep(0.1)
         page("7d", "UTC")
         self.assertEqual(list(page.kept), [("7d", "UTC")])   # what is older than the ttl is gone
@@ -352,12 +352,17 @@ class Findings(unittest.TestCase):
 class Prices_(unittest.TestCase):
     def test_a_bad_price_table_fails_at_startup_and_v1_views_take_none(self):
         d = tmpdir(self)
-        bad, ok = os.path.join(d, "bad.json"), os.path.join(d, "ok.json")
-        for path, body in ((bad, {"models": {"m": {"input": "abc"}}}), (ok, {"models": {"m": {"input": 1}}})):
-            with open(path, "w") as f:
+        ok = os.path.join(d, "ok.json")
+        # a string price; "per": 0, which divides by zero; NaN and Infinity, which would reach the page's JSON
+        bads = [{"models": {"m": {"input": "abc"}}}, {"per": 0, "models": {"m": {"input": 1}}},
+                {"models": {"m": {"input": float("nan")}}}, {"models": {"m": {"output": float("inf")}}}]
+        for i, body in enumerate(bads + [{"models": {"m": {"input": 1}}}]):
+            with open(os.path.join(d, f"bad{i}.json") if i < len(bads) else ok, "w") as f:
                 json.dump(body, f)
-        self.assertEqual(view.main(["--data-dir", d, "--prices", bad]), 2)
         with mock.patch.object(view, "server", side_effect=OSError("not refused")):   # a viewer that started would serve on
+            for i in range(len(bads)):
+                with self.subTest(table=bads[i]):
+                    self.assertEqual(view.main(["--data-dir", d, "--prices", os.path.join(d, f"bad{i}.json")]), 2)
             self.assertEqual(view.main(["--ledger", "--prices", ok]), 2)
             self.assertEqual(view.main(["--bundle", ok, "--prices", ok]), 2)
 

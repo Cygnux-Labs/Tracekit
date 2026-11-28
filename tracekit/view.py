@@ -2058,8 +2058,10 @@ def main(argv=None):
     try:
         prices = a.prices and Prices.load(a.prices)
         for model in prices.models if prices else ():   # each entry is priced once now: a bad table fails here
-            prices.cost(model, {"input_tokens": 1, "output_tokens": 1, "cache_read_tokens": 1, "cache_write_tokens": 1})
-    except (OSError, ValueError, TypeError, AttributeError) as e:   # json.JSONDecodeError is a ValueError
+            if not math.isfinite(prices.cost(model, {"input_tokens": 1, "output_tokens": 1, "cache_read_tokens": 1,
+                                                     "cache_write_tokens": 1})):   # NaN would reach the page's JSON
+                raise ValueError(f"{model}: a price that isn't a finite number")
+    except (OSError, ValueError, TypeError, AttributeError, ArithmeticError) as e:   # "per": 0 divides by zero
         print(f"tracekit view: --prices {a.prices}: {e}", file=sys.stderr)
         return 2
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a stop runs atexit too: the temp dirs go
