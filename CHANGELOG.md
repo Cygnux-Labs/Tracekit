@@ -6,7 +6,7 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 
 A fix release on 1.8.0, with one new view. Policy now reads more of what a call does: a command run through a package runner or manager is
 decided as the command itself, and an MCP tool's delete can be chosen by an argument. The shipped packs change (`coding`
-is `2026.11-v2-113`, `dev` is `2026.11-dev-15`, `server` is `2026.11-server-22`, `strict` is `2026.11-strict-19`,
+is `2026.11-v2-114`, `dev` is `2026.11-dev-15`, `server` is `2026.11-server-22`, `strict` is `2026.11-strict-19`,
 `server-cloud` is `2026.11-server-cloud-19`), so a run's policy hash changes and some calls that were allowed are now
 held. The signer protocol (29) and the bundle format (no new `VERSIONS` row) are unchanged.
 

@@ -1334,7 +1334,7 @@ def _codebuddy_off(home=None):
     """The CodeBuddy Code settings file whose `disableAllHooks` is in force, or None. The layers are CodeBuddy's own
     settings order — its settings page, "Settings Priority": the user's `settings.json`, the project's
     `.codebuddy/settings.json`, then `settings.local.json` beside it — and the last file that sets the key decides.
-    `@tencent-ai/codebuddy-code` 2.183.0 (`dist/codebuddy.js`) reads exactly those three files for the key in
+    `@tencent-ai/codebuddy-code` 2.183.0 and 2.187.0 (`dist/codebuddy.js`) read exactly those three files for the key in
     `settingsDisableAllHooks`, which is `codebuddy plugin test`'s refusal helper (module 902551, beside
     `pluginTestFormOf` and `pluginTestRefusal`, called only from `runPluginTestFastPath`) — not the code that decides
     whether a session runs its hooks, which the bundle doesn't expose. It keeps the last value
@@ -1342,8 +1342,13 @@ def _codebuddy_off(home=None):
     `true`: a later file's `false` lifts an earlier file's `true`, and a later `null` does not, which matches it rather
     than JavaScript truthiness.
     lean: `allowManagedHooksOnly` turns the hooks off too ("hooks modules are turned off here (disableAllHooks,
-    allowManagedHooksOnly or a policy)"), but CodeBuddy reads it only from its managed settings documents
-    (`parseManagedModSettings`), which doctor can't see"""
+    allowManagedHooksOnly or a policy)"), but no shipped bundle reads it from a file, so doctor can't see it by
+    construction. `parseManagedModSettings` is its only reader and it takes an already-parsed object -- it reads
+    `eA.allowManagedHooksOnly`, never a path -- and in 2.187.0 it occurs three times in each of `dist/codebuddy.js`,
+    `dist/codebuddy-headless.js`, `dist/codebuddy-lite-wb.mjs` and `dist-server/codebuddy.js`: the definition and two
+    export-map entries, with no call site in any of them. `managed-settings` occurs once per bundle and not as a
+    document CodeBuddy loads: one branch of a pattern that scans text for settings paths. So the key arrives from a
+    policy, as the bundle's own wording says, and a policy is outside the files doctor reads"""
     from . import agent_hooks
     user = agent_hooks.config_path("codebuddy", home=home) if home else agent_hooks.config_path("codebuddy")
     project = agent_hooks.config_path("codebuddy", os.getcwd())

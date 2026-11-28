@@ -24,6 +24,8 @@ before it is linked to the decision and reconciliation pairs the two; Gemini CLI
 call id in what they send here, so theirs is not linked, and their messages are sent `said_only`: the signer reads no
 call from them, so it never takes the calls their hooks decide for calls no model asked for. Recording never changes a
 hook's answer: a failure prints a line and the hook goes on.
+Open Interpreter writes Codex's rollout, read the same way, but its messages are sent `said_only`: in Code
+Mode its hooks decide calls under exec-<uuid> ids that no message in its rollout names.
 """
 import contextlib
 import json
@@ -114,8 +116,7 @@ def said_since(harness, p, stderr, end=None):
     """Record what the model said since the session's last hook (see the module docstring), by the hook's deadline
     `end` (claude_code.deadline). Never raises."""
     if harness in ("droid", "antigravity", "devin", "cline", "gptme", "openhands", "copilot",
-                   "codebuddy", "jcode", "kiro", "interpreter"):   # lean: their transcript formats are not read; model
-        # text goes unrecorded (Open Interpreter writes Codex's rollout, untried here with Code Mode's exec and claude-code)
+                   "codebuddy", "jcode", "kiro"):   # lean: their transcript formats are not read; model text unrecorded
         return
     sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
            p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))
@@ -143,6 +144,9 @@ def said_since(harness, p, stderr, end=None):
                     st = {"path": path, "offset": claude_code._end(path) if resumed else 0, "seen": []}
                 lines = _read(path, st)
                 said_items = ([(items, model) for items in _responses(lines)] if harness == "codex" else
+                              # Open Interpreter's, Codex's format (0.0.61: native, Code Mode, claude-code)
+                              [(items, model, "unknown", "interpreter rollout") for items in _responses(lines)]
+                              if harness == "interpreter" else
                               [(items, m.get("model"), "unknown", "qwen chat") for m, items in _qwen(lines, st["seen"])]
                               if harness == "qwen" else
                               [(items, m.get("model"), "google", "gemini chat") for m, items in _gemini(lines, st["seen"])])
@@ -156,7 +160,9 @@ def said_since(harness, p, stderr, end=None):
                     for args in said_items:
                         if harness == "codex":
                             _send(s, *args, stderr)
-                        else:   # their messages name no call the hooks decide: none to reconcile against
+                        else:   # their messages name no call the hooks decide: none to reconcile against. Open
+                            # Interpreter's do, but in Code Mode its hooks decide each call exec's JavaScript makes
+                            # under an exec-<uuid> id no message names (0.0.61, recorded): it would read as fabricated
                             s(*args, said_only=True)
                     st["vault"] = s.vault.limit
                 finally:

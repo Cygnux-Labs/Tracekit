@@ -2893,6 +2893,88 @@ class WhatTheModelSaid(HarnessCase):
         _, _, events = self.events("cx-f")
         self.assertEqual([e["data"]["decision"] for e in events if e["type"] == "policy.decision"], ["allow", "allow"])
 
+    # #954: Open Interpreter, a Codex fork, writes Codex's rollout; tests/data/harness/interpreter_rollouts.json holds
+    # three sessions recorded from 0.0.61 with a scripted model: the native surface, Code Mode, harness = "claude-code"
+
+    def interpreter(self, i):
+        """Recorded Open Interpreter session `i`'s hook payloads, naming a copy of its rollout, and the rollout."""
+        case = cases("interpreter_rollouts")[i]
+        path = os.path.join(self.d, f"interpreter-{i}.jsonl")
+        with open(path, "wb") as f:
+            f.write(b"".join(map(line, case["rollout"])))
+        return [dict(p, transcript_path=path) for p in case["hooks"]], case["rollout"]
+
+    def test_interpreter_text_and_reasoning_are_recorded_from_its_rollout(self):
+        self.serve()
+        summary = ("reasoning", "summary", "**Checking** run one command first")
+        text = ("text", "full", "I'll run one command.")
+        done = [("text", "full", "Done: the command printed its output.")]
+        said = [[[summary, text], done], [[summary, text], done],
+                [[("reasoning", "full", "run one command first"), text], done]]   # claude-code: its thinking, in full
+        for i, want in enumerate(said):
+            del self.frames[:]
+            hooks, rollout = self.interpreter(i)
+            pre = next(p for p in hooks if p["hook_event_name"] == "PreToolUse")
+            self.assertEqual(self.hook("interpreter", pre, "PreToolUse")[0], 0)
+            _, _, events = self.events(pre["session_id"])
+            kinds = [e["type"] for e in events]
+            self.assertLess(kinds.index("model.exchange"), kinds.index("policy.decision"))
+            for p in hooks:   # the session's other hooks find nothing new
+                self.assertEqual(self.hook("interpreter", p, p["hook_event_name"])[0], 0)
+            self.assertEqual([[(x["kind"], x["form"], x["text"]) for x in parsers.said("openai:responses", f["body"])]
+                              for f in self.frames], want, i)
+            items = [e["payload"] for e in rollout if e["type"] == "response_item"]
+            self.assertEqual([x for f in self.frames for x in f["body"]["output"]], [   # as they are, as Codex's
+                x for x in items if x["type"] in ("reasoning", "function_call", "custom_tool_call")
+                or x.get("role") == "assistant"], i)
+            self.assertEqual({f["body"]["source"] for f in self.frames}, {"interpreter rollout"})
+            self.assertEqual({(f["provider"], f["model"]) for f in self.frames}, {("unknown", pre["model"])})
+        # the claude-code harness's reasoning keeps its signature, sealed, as Codex's encrypted_content
+        self.assertEqual(self.frames[0]["body"]["output"][0]["encrypted_content"], "sig")
+
+    def test_interpreter_messages_name_no_call_so_reconciliation_finds_no_gap(self):
+        """Open Interpreter's messages are sent said_only: in Code Mode its hook decides the call exec's JavaScript
+        makes under an exec-<uuid> id the rollout never names (it names only exec), so a linked message would leave
+        that decide as reconcile.fabricated."""
+        self.serve()
+        runs = {}
+        for i in range(3):
+            hooks, rollout = self.interpreter(i)
+            for p in hooks:
+                if p["hook_event_name"] == "SessionEnd":
+                    runs[i] = self.events(p["session_id"])[0]["run_id"]
+                self.assertEqual(self.hook("interpreter", p, p["hook_event_name"])[0], 0)
+            pre = next(p for p in hooks if p["hook_event_name"] == "PreToolUse")
+            named = [e["payload"].get("call_id") for e in rollout if e["type"] == "response_item"]
+            self.assertEqual(pre["tool_use_id"] in named, i != 1, i)   # Code Mode's exec-<uuid>: in no message
+        self.assertEqual(len(self.frames), 6)
+        self.assertTrue(all(f.get("said_only") and "tool_uses" not in f for f in self.frames))
+        self.service.sweep()   # grace 0: each session's run.final
+        for i, run_id in runs.items():
+            recs = [r["event"]["type"] for r in self.service.log.storage.iter_run("default", run_id)]
+            self.assertIn("run.final", recs)
+            self.assertEqual((recs.count("model.exchange"), recs.count("policy.decision")), (2, 1), i)
+            self.assertEqual([t for t in recs if t.startswith("reconcile.")], [], i)
+
+    def test_interpreter_rollout_lines_of_another_kind_are_skipped(self):
+        self.serve()
+        hooks, rollout = self.interpreter(0)
+        pre = next(p for p in hooks if p["hook_event_name"] == "PreToolUse")
+        at = next(n for n, e in enumerate(rollout) if (e.get("payload") or {}).get("type") == "reasoning") + 1
+        odd = [{"timestamp": "t", "type": "future_kind", "payload": {"type": "message", "role": "assistant"}},
+               {"timestamp": "t", "type": "response_item", "payload": "not an object"},
+               {"timestamp": "t", "type": "response_item"}, ["not", "an", "object"]]
+        path = pre["transcript_path"]
+        with open(path, "wb") as f:   # between the reasoning and the text it led to, and a line that isn't JSON
+            f.write(b"".join(map(line, rollout[:at] + odd)) + b"not JSON\n" + b"".join(map(line, rollout[at:])))
+        code, out, _ = self.hook("interpreter", pre, "PreToolUse")
+        self.assertEqual([[(x["kind"], x["text"]) for x in parsers.said("openai:responses", f["body"])]
+                          for f in self.frames],
+                         [[("reasoning", "**Checking** run one command first"), ("text", "I'll run one command.")],
+                          [("text", "Done: the command printed its output.")]])
+        unread = dict(pre, session_id="oi-unread", transcript_path="")
+        self.assertEqual((code, out), self.hook("interpreter", unread, "PreToolUse")[:2])
+
 
 class SlowSignerStart(HarnessCase):
     """A dev signer slow to start (it rebuilds its open runs' provenance indexes first): a hook waits for it only as long

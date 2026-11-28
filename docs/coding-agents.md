@@ -374,7 +374,9 @@ installs an `interpreter` command but runs no hooks: Tracekit sees none of the c
 Interpreter 0.0.x, the Rust CLI. `interpreter exec` ends its session, and so the run, when it finishes: a call held
 there can be approved only while the session waits, so set `TRACEKIT_APPROVAL_WAIT` for `exec`. Only exit 2 or a JSON
 `permissionDecision: "deny"` blocks a call; any other exit, or a hook that
-times out, lets it run, so on macOS and Linux `install._blocking` wraps each command. Model text isn't recorded. The
+times out, lets it run, so on macOS and Linux `install._blocking` wraps each command. Model text and reasoning are read
+from its rollout, as Codex's, and sent `said_only`, not linked to a call (Code Mode's calls have ids the rollout doesn't
+name). The
 payloads in `tests/data/harness/interpreter.json` were recorded from Open Interpreter 0.0.61 on Linux, on the native
 surface over Responses and Chat Completions, in Code Mode and with `harness = "claude-code"`, `"deepseek-tui"` and
 `"kimi-code"`, each driven by a scripted model; Windows is untested ([limits](limits.md#signer-and-capture)).

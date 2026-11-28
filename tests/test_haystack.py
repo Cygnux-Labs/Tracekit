@@ -435,10 +435,11 @@ class RealSigner(unittest.TestCase):
 
 @unittest.skipUnless(HAVE, "haystack-ai not installed")
 class VersionCheck(VersionCheckCases, unittest.TestCase):
-    module, inside = "haystack", "3.4.1"
-    message = "Haystack 0.0.1 is wired but untested; Tracekit is tested with haystack-ai>=3.4,<3.6"
+    module, inside = "haystack", "3.5.0"
+    message = "Haystack 0.0.1 is wired but untested; Tracekit is tested with haystack-ai>=3.5,<3.6"
 
-    def test_the_tested_range_ends_after_3_5(self):
+    def test_the_tested_range_is_3_5(self):
+        self.assertEqual(len(self.warnings_for("3.4.1")), 1)
         self.assertEqual(self.warnings_for("3.5.2"), [])
         self.assertEqual(len(self.warnings_for("3.6.0")), 1)
 
