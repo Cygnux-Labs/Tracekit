@@ -19,12 +19,14 @@ held. The signer protocol (29) and the bundle format (no new `VERSIONS` row) are
 
 ### Changed
 - **A delete chosen by an MCP tool's `method`, `action` or `operation` argument is held where a delete in the tool's
-  name is** (`TK-C012`). The value is read in any case, and its first 64 characters, so a long argument keeps the
-  fallback regex engine inside its time budget.
+  name is** (`TK-C012`, on the dev, server and strict packs; `coding` flags the call as it did). The value is read in
+  any case (`delete`, `delete_project_item`, `bulkDelete`, `DELETE_ITEM`), and only up to 64 characters of it, so a
+  word further in isn't read and a long argument keeps the fallback regex engine inside its time budget.
 - **A command run through a package runner or manager is decided as the command itself, for every rule.** This covers
-  `npx`, `bunx`, `pnpm dlx` and `pnpm exec`, `yarn dlx` and `yarn exec`, `bun exec`, `uvx` and `pipx run`. The spec is
-  read as the bin it runs (a version, a scope, uv's forms, an npm alias spec), a bare `pnpm <cmd>` as the command,
-  `bun run` and a `.sh` file run by bun as the script they run, and a manager run by a manager as the inner one.
+  `npx`, `bunx`, `pnpx`, `npm exec`, `pnpm dlx` and `pnpm exec`, `yarn dlx` and `yarn exec`, `bun x` and `bun exec`,
+  `uvx` and `pipx run`. The spec is read as the bin it runs (a version, a scope, uv's forms, an npm alias spec), a bare
+  `pnpm <cmd>`, `yarn <cmd>` or `bun <cmd>` as the command, `bun run` and `bun exec 'text'` as the commands in
+  them, a `.sh` file bun runs as a shell script, and a manager run by a manager as the inner one.
   Tracekit's own CLI is read the same way, so the rule that stops an agent answering its own approvals holds through
   them too.
 - **`TK-A042` holds more hosting-CLI deletes and Cloudflare API deletes.** It reads a hosting CLI run through `npx`
@@ -39,6 +41,14 @@ held. The signer protocol (29) and the bundle format (no new `VERSIONS` row) are
   (Claude Code, Codex, Cursor and Copilot CLI); a test keeps the two the same.
 - `tracekit doctor` warns when a replaced approver still keeps `break_glass` or `agents` rights
   (`D-BREAK-GLASS-STALE`); `tracekit init` records the replaced approvers in `client.json`.
+- **`TK-A021` holds `aws configure export-credentials`** (it prints the resolved access key, secret and session token
+  in every format), with global options before `configure` read; `gcloud auth print-access-token --help` (and
+  `print-identity-token`, and `-h`) prints help and is let through (#1140, carries #1108, by @dcmotocorp).
+- Open Interpreter's model text and reasoning are recorded from its rollout, read as Codex's are. They are recorded
+  as said only and are not linked to calls, because in Code Mode its hooks decide each call under an id no message
+  names (#1182, by @costajohnt).
+- Haystack 3.5 is the tested floor: `haystack-ai>=3.5,<4` is the install line, and a 3.4 install gets the untested
+  notice (#1180, by @costajohnt).
 - Browser Use 1.0.9: `rotate_proxy` is read as the harness's own name.
 - The plugin's setup skill matches the published skills repository's copy, with its note on Open Interpreter hook
   trust and on the Python package (tracekit-skills#4, by @khushi-git-7).
@@ -48,6 +58,9 @@ held. The signer protocol (29) and the bundle format (no new `VERSIONS` row) are
   first hook after it used to start the tailer at the transcript's end, so the prompt and tool use written in between
   were never recorded and the call showed as fabricated in reconciliation. `SessionEnd` now saves the read offsets in
   the ENDED marker, and a continuation with the same transcript path reuses them (#1175, by @ningsiyuan1024).
+- `tracekit doctor`'s CodeBuddy explanation, and its limits row, say why `allowManagedHooksOnly` can't be seen from a
+  file: CodeBuddy takes it only from a managed object no shipped bundle builds from a path, so there is nothing for
+  doctor to read (measured in 2.187.0's bundles, #1172, by @pm25coder).
 - `tracekit down` waits for a signer that is still starting as long as `ensure()` does, and a start that names a pid no
   signal may go to gets the timeout.
 - The AI approver's circuit breaker pins a hosted model by its name and the `system_fingerprint` the provider returns;
@@ -57,7 +70,7 @@ held. The signer protocol (29) and the bundle format (no new `VERSIONS` row) are
   answering its own approvals (`TK-D012`, #1170, by @Seyamalam); E17 and E21 are re-recorded (by @Seyamalam).
 
 ### Contributors
-@ningsiyuan1024, @Seyamalam and @khushi-git-7. Thank you.
+@ningsiyuan1024, @Seyamalam, @khushi-git-7, @costajohnt, @pm25coder and @dcmotocorp. Thank you.
 
 ## 1.8.0 (2026-11-27) — an AI approver for routine holds, run conditions, argument-aware rules for ten CLIs, the plugin for Codex, Copilot CLI and Cursor, a network-panel timeline, and a faster hook
 
