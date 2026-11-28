@@ -13,6 +13,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from eval.e20_alignment import SENSOR, Signer, effects_replay  # noqa: E402
+from factories import machine_scale  # noqa: E402
 from tracekit import findings_effects, findings_v2  # noqa: E402
 from tracekit.why.signed import vault_content  # noqa: E402
 
@@ -335,6 +336,6 @@ class Bounded(unittest.TestCase):
         t0 = time.perf_counter()
         out = findings_v2.analyze(recs, lambda want: ((r["event"]["run_seq"], content[r["event"]["run_seq"]], True)
                                                       for r in want if r["event"]["run_seq"] in content))
-        self.assertLess(time.perf_counter() - t0, 3)   # was ~10 s: each effect scanned every call before it
+        self.assertLess(time.perf_counter() - t0, 3 * machine_scale())   # was ~10 s: each effect scanned every call
         self.assertEqual(out["coverage"]["verdict"]["checks"]["TK-X206"]["not_checkable"],
                          [{"reason": "agent_process", "n": 12000}])

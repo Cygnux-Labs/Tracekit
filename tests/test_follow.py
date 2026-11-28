@@ -13,6 +13,7 @@ from unittest import mock
 import pytest
 
 from adapter_contract import _serve
+from factories import machine_scale
 from test_signer_lifecycle import Lifecycle
 from test_signer_service import ME, records
 from tracekit import follow
@@ -291,7 +292,7 @@ class TestAgentsh(Followed):
         log.line, log.heartbeat = lambda raw, at: seen.append(at), lambda: beats.append(1)
         t = time.monotonic()
         log.lines()
-        self.assertLess(time.monotonic() - t, 5)   # quadratic, it took about 13 s
+        self.assertLess(time.monotonic() - t, 5 * machine_scale())   # quadratic, it took about 13 s
         self.assertEqual((len(seen), len(beats), log.buf), (80_000, 80_000, b""))
         self.assertEqual(seen[-1], log.off - 301)
 

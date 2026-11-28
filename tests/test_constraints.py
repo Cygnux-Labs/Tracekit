@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 import test_bundle_v2 as b
-from factories import serial, unverified_bundles
+from factories import machine_scale, serial, unverified_bundles
 from test_reviews import ME, Signed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -417,7 +417,7 @@ class Grammar(unittest.TestCase):
             t0 = time.perf_counter()
             constraints.extract(text)
             constraints.mentions(text)
-            self.assertLess(time.perf_counter() - t0, 2, unit)
+            self.assertLess(time.perf_counter() - t0, 2 * machine_scale(), unit)
 
     def test_a_later_request_lifts_what_it_names(self):
         keep = "billing.py".__eq__
@@ -493,7 +493,7 @@ class Grammar(unittest.TestCase):
             constraints.extract(text)
             constraints.mentions(text)
             constraints.facts("Bash", {"command": text})
-            self.assertLess(time.perf_counter() - t0, 5, text[:20])
+            self.assertLess(time.perf_counter() - t0, 5 * machine_scale(), text[:20])
 
         def read(text):
             r = constraints._read(text)
