@@ -420,7 +420,7 @@
 {"tool": "Bash", "args": {"command": "tracekit tips --for-agent"}, "expect": "allow", "note": "the agent's own lesson block answers nothing (TK-D012 twin)"}
 {"tool": "Bash", "args": {"command": "tracekit approvals list"}, "expect": "allow", "note": "listing approvals answers none of them (TK-D012 twin)"}
 {"tool": "Bash", "args": {"command": "tracekit tips --help"}, "expect": "allow", "note": "help answers nothing (TK-D012 twin)"}
-{"tool": "Bash", "args": {"command": "npx wrangler@3 deploy"}, "expect": "allow", "note": "wrangler deploy through npx at a version"}
+{"tool": "Bash", "args": {"command": "npx wrangler@3 whoami"}, "expect": "allow", "note": "wrangler whoami through npx at a version"}
 {"tool": "Bash", "args": {"command": "yarn wrangler dev"}, "expect": "allow", "note": "wrangler dev run by yarn"}
 {"tool": "Bash", "args": {"command": "pnpm exec wrangler tail"}, "expect": "allow", "note": "wrangler tail run by pnpm"}
 {"tool": "Bash", "args": {"command": "npx wrangler@3 pages project list"}, "expect": "allow", "note": "wrangler pages project list through npx at a version"}
