@@ -20,7 +20,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from eval.e20_alignment import Signer, Transcript, replay  # noqa: E402
-from factories import SLOWER  # noqa: E402
+from factories import SLOWER, machine_scale  # noqa: E402
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub  # noqa: E402
 from tracekit import __version__, constraints, findings, findings_v2, review_model, view  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
@@ -938,7 +938,7 @@ class Bounded(unittest.TestCase):
             t0 = time.perf_counter()
             out = findings_v2.analyze(*run)
             # was 13 s and more: each call read all before it
-            self.assertLess(time.perf_counter() - t0, 5 * SLOWER, label)
+            self.assertLess(time.perf_counter() - t0, 5 * SLOWER * machine_scale(), label)
             self.assertLessEqual(max(len(c["seqs"]) for c in out["shown"]["calls"].values()), findings_v2.MAX_GROUP)
 
     @pytest.mark.serial
@@ -948,7 +948,7 @@ class Bounded(unittest.TestCase):
             recs, content = self.synthetic(2, text)
             t0 = time.perf_counter()
             findings_v2.analyze(recs, content)
-            self.assertLess(time.perf_counter() - t0, 5, text[:20])
+            self.assertLess(time.perf_counter() - t0, 5 * machine_scale(), text[:20])
         for cmd in ("echo 'unbalanced", "a > > > b", "cat <<EOF\nx > /etc/y\nEOF", "${HOME}/x > $OUT", ">" * 10000):
             findings_v2._targets(cmd)   # never raises
 

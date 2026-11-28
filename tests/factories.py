@@ -4,6 +4,7 @@ Import with `from factories import ...` (tests/ is on sys.path under pytest; see
 """
 import contextlib
 import datetime
+import functools
 import hashlib
 import json
 import multiprocessing
@@ -28,6 +29,31 @@ from tracekit.core import now_ts  # noqa: E402
 from tracekit.daemon import Signer, load_config  # noqa: E402
 from tracekit.ledger import read_records  # noqa: E402
 from tracekit.storage import file as storage_file  # noqa: E402
+from tracekit.policy2.engine import MAX_SUBJECT  # noqa: E402
+
+# every CPU-time budget in the tests is for the M-series Mac it was set on, where machine_scale's reference search takes
+# REF_S; another machine's budgets are scaled by how much slower it runs that search (#517: TK-A040, ~75 ms there, reads
+# eight options after each redis-cli and took 152-261 ms on CI's Linux runners, over a fixed budget)
+REF_S = 0.055
+
+
+@functools.lru_cache(maxsize=None)
+def machine_scale():
+    """How many times slower than REF_S's Mac this machine runs a fixed linear search of 64 KiB on the fallback engine,
+    best of three: at least 1, and at most 4 (CI's runners are 2-3.5x slower), so a busy moment while it is timed can't
+    stretch the budgets past what a slow runner needs. A pattern slow everywhere still fails."""
+    import regex   # imported here: only the tests that time CPU work need the fallback engine installed
+
+    def took():
+        start = time.perf_counter()
+        try:
+            rx.search(s, timeout=10)
+        except TimeoutError:
+            pass
+        return time.perf_counter() - start
+    rx = regex.compile(r"(^|\s)(\S{0,256}/)?redis-cli(\s+-\S*(\s+[^-\s]\S*)?){0,8}\s*<<<", regex.ASCII | regex.V0)
+    s = "a/redis-cli -" * ((MAX_SUBJECT - 4) // 13)
+    return min(4.0, max(1.0, min(took() for _ in range(3)) / REF_S))
 
 
 def ev(typ, data, run="r1", agent="main", source="hook"):

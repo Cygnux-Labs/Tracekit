@@ -27,7 +27,7 @@ from unittest import mock
 
 import pytest
 
-from factories import ROOT, SLOWER, patch_env, rewrite_bundle
+from factories import ROOT, SLOWER, machine_scale, patch_env, rewrite_bundle
 from tracekit import cli, graph, install
 from tracekit.bundle_v2 import export
 from tracekit.demo_server import Witness, _serve, export_final
@@ -1556,7 +1556,7 @@ class Records(unittest.TestCase):
                                        {"id": "deep", "source_file": "b/" + "a/" * n + "x.py"}]}, 0o644)
         start = time.monotonic()
         self.assertEqual(graph._graphify(g, p)["linked"], 1)
-        self.assertLess(time.monotonic() - start, SLOWER)
+        self.assertLess(time.monotonic() - start, SLOWER * machine_scale())
         self.assertEqual([(e["dst"], e["record"]["source_file"]) for e in g.edges if e["kind"] == "contains"],
                          [("code:x", "a/x.py")])
 
