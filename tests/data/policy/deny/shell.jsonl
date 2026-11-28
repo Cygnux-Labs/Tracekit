@@ -622,3 +622,37 @@
 {"tool": "Bash", "args": {"command": "python3 -m tracekit tips approve L-1"}, "expect": "deny", "note": "the module form of the same answer (TK-D012)"}
 {"tool": "Bash", "args": {"command": "sh -c 'tracekit tips approve L-1'"}, "expect": "deny", "note": "the answer inside a nested shell (TK-D012)"}
 {"tool": "Bash", "args": {"command": "tracekit grant list"}, "expect": "deny", "note": "every tracekit grant the agent runs is denied, list included (TK-D012)"}
+{"tool": "Bash", "args": {"command": "npx wrangler@latest delete"}, "expect": "ask", "note": "wrangler delete through npx at a version"}
+{"tool": "Bash", "args": {"command": "npx wrangler@3 pages project delete myproj --yes"}, "expect": "ask", "note": "wrangler pages project delete through npx at a version"}
+{"tool": "Bash", "args": {"command": "yarn wrangler delete"}, "expect": "ask", "note": "wrangler delete run by yarn"}
+{"tool": "Bash", "args": {"command": "pnpm wrangler delete"}, "expect": "ask", "note": "wrangler delete run by pnpm"}
+{"tool": "Bash", "args": {"command": "pnpm dlx wrangler@3 delete"}, "expect": "ask", "note": "wrangler delete through pnpm dlx at a version"}
+{"tool": "Bash", "args": {"command": "npx vercel@33 remove myproj --yes"}, "expect": "ask", "note": "vercel remove through npx at a version"}
+{"tool": "Bash", "args": {"command": "wrangler -c a.toml -e b -n c --x d --y e --z f delete"}, "expect": "ask", "note": "wrangler delete after six options"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE -H 'Authorization: Bearer t' https://api.cloudflare.com/client/v4/accounts/0123abcd/workers/scripts/my-worker"}, "expect": "ask", "note": "deleting a Worker through Cloudflare's API"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE -H 'Authorization: Bearer t' https://api.cloudflare.com/client/v4/accounts/0123abcd/pages/projects/my-site"}, "expect": "ask", "note": "deleting a Pages project through Cloudflare's API"}
+{"tool": "Bash", "args": {"command": "npx pnpm@9 wrangler delete"}, "expect": "ask", "note": "wrangler delete run by a versioned package manager"}
+{"tool": "Bash", "args": {"command": "yarn workspace web run wrangler delete"}, "expect": "ask", "note": "wrangler delete run by yarn in a workspace"}
+{"tool": "Bash", "args": {"command": "vc rm myproj --yes"}, "expect": "ask", "note": "vercel's second name"}
+{"tool": "Bash", "args": {"command": "wrangler d1 delete mydb"}, "expect": "ask", "note": "wrangler deleting a D1 database"}
+{"tool": "Bash", "args": {"command": "npx wrangler@3 r2 bucket delete mybucket"}, "expect": "ask", "note": "wrangler deleting an R2 bucket through npx at a version"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE -H 'Authorization: Bearer t' https://api.cloudflare.com/client/v4/accounts/0123abcd/d1/database/0123-45"}, "expect": "ask", "note": "deleting a D1 database through Cloudflare's API"}
+{"tool": "Bash", "args": {"command": "curl -X DELETE -H \"Authorization: Bearer $T\" \"$CF_API/accounts/$ACCT/workers/scripts/w\""}, "expect": "ask", "note": "deleting a Worker through Cloudflare's API, the base a variable"}
+{"tool": "Bash", "args": {"command": "bun run sudo ls"}, "expect": "deny", "note": "bun run runs a system command"}
+{"tool": "Bash", "args": {"command": "bun run git push --force origin main"}, "expect": "deny", "note": "bun run runs a system command"}
+{"tool": "Bash", "args": {"command": "npx @cygnuxlabs/tracekit@1.8.0 approvals approve a1"}, "expect": "deny", "note": "answering an approval through npx at a version"}
+{"tool": "Bash", "args": {"command": "uvx tracekit==1.8.0 approvals approve a1"}, "expect": "deny", "note": "answering an approval through uvx at a version"}
+{"tool": "Bash", "args": {"command": "pnpm tracekit approvals reject a1"}, "expect": "deny", "note": "answering an approval through pnpm"}
+{"tool": "Bash", "args": {"command": "bun exec 'tracekit approvals approve a1'"}, "expect": "deny", "note": "answering an approval through bun exec"}
+{"tool": "Bash", "args": {"command": "pnpm sudo ls"}, "expect": "deny", "note": "pnpm runs a command it has no command for"}
+{"tool": "Bash", "args": {"command": "bun exec 'sudo ls'"}, "expect": "deny", "note": "bun exec runs its text in Bun Shell"}
+{"tool": "Bash", "args": {"command": "pnpm terraform destroy -auto-approve"}, "expect": "ask", "note": "terraform destroy run by pnpm"}
+{"tool": "Bash", "args": {"command": "npx @railway/cli@3 delete"}, "expect": "ask", "note": "railway delete through npx at a version"}
+{"tool": "Bash", "args": {"command": "npx aws-cdk@2 destroy --force"}, "expect": "ask", "note": "cdk destroy through npx at a version"}
+{"tool": "Bash", "args": {"command": "bun prisma migrate reset --force"}, "expect": "ask", "note": "prisma migrate reset run by bun"}
+{"tool": "Bash", "args": {"command": "pnpm pnpm sudo ls"}, "expect": "deny", "note": "a package manager run by a package manager"}
+{"tool": "Bash", "args": {"command": "bun bun run sudo ls"}, "expect": "deny", "note": "a package manager run by a package manager"}
+{"tool": "Bash", "args": {"command": "npx tk@npm:@cygnuxlabs/tracekit@1.8.0 approvals approve a1"}, "expect": "deny", "note": "answering an approval through an npm alias spec"}
+{"tool": "Bash", "args": {"command": "npx x@npm:wrangler@3 delete"}, "expect": "ask", "note": "wrangler delete through an npm alias spec"}
+{"tool": "Bash", "args": {"command": "yarn node -e \"require('child_process').execSync('sudo ls')\""}, "expect": "deny", "note": "node code run through yarn"}
+{"tool": "Bash", "args": {"command": "bun exec rm -rf /"}, "expect": "deny", "note": "bun exec runs all its words"}

@@ -284,7 +284,7 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "npm": (("exec", "x"), _NPM_OPTS, 0),
            "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
            "yarn": (("exec", "dlx"), ("-p", "--package", "-j", "--jobs", "--from", "--include", "--exclude"), 0),
-           "bun": (("x",), ("-p", "--package", *_BUN_VALUED), 0),
+           "bun": (("x", "run"), ("-p", "--package", *_BUN_VALUED), 0),
            "bundle": (("exec",), ("--gemfile",), 0), "rye": (("run",), ("--pyproject",), 0),
            "pixi": (("run", "exec"), ("-e", "--environment", "--manifest-path", "-s", "--spec", "-c", "--channel"), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
@@ -2977,6 +2977,88 @@ def uv_commands(args):
                     yield c, s
 
 
+# the bin a package's name runs where it isn't the name's last part (`npx aws-cdk` runs cdk, `npx @railway/cli` railway),
+# and a bin's second name: Vercel's vc, pnpm's pn
+PACKAGE_BINS = {"netlify-cli": "netlify", "aws-cdk": "cdk", "firebase-tools": "firebase", "sequelize-cli": "sequelize",
+                "@railway/cli": "railway", "@cygnuxlabs/tracekit": "tracekit", "vc": "vercel", "pn": "pnpm"}
+# the options of yarn, pnpm and bun that take a value before the command (RUNNERS' own, without -p: yarn's --parallel)
+_MANAGER_VALUED = {"pnpm": ("-C", "--dir", "-F", "--filter", "--package"),
+                   "yarn": ("--cwd", "--package", "-j", "--jobs", "--from", "--include", "--exclude"),
+                   "bun": tuple(_BUN_VALUED)}
+# the commands each manager has (pnpm's from its CLI reference, with the npm commands it forwards; yarn's, classic and
+# berry; bun's): any other first word is a script, or a command the manager runs by its name
+_NPM_COMMANDS = ("access", "bugs", "deprecate", "dist-tag", "docs", "edit", "home", "info", "issues", "login", "logout",
+                 "owner", "ping", "prefix", "profile", "repo", "s", "se", "search", "set-script", "show", "star", "stars",
+                 "team", "token", "unpublish", "unstar", "v", "version", "view", "whoami")
+_MANAGER_COMMANDS = {
+    "pnpm": frozenset(_NPM_COMMANDS + (
+        "add", "install", "i", "install-test", "it", "update", "up", "upgrade", "remove", "rm", "uninstall", "un", "link",
+        "ln", "unlink", "dislink", "import", "rebuild", "rb", "prune", "fetch", "patch", "patch-commit", "patch-remove",
+        "audit", "list", "ls", "ll", "la", "outdated", "why", "licenses", "exec", "run", "run-script", "start", "test",
+        "t", "tst", "stop", "restart", "dlx", "create", "init", "publish", "pack", "deploy", "store", "config", "c", "set",
+        "get", "root", "bin", "setup", "doctor", "env", "self-update", "server", "cache", "cat-file", "cat-index",
+        "find-hash", "approve-builds", "ignored-builds", "sbom", "catalog", "recursive", "multi", "m", "completion",
+        "help")),
+    "yarn": frozenset(_NPM_COMMANDS + (
+        "add", "install", "i", "remove", "upgrade", "up", "upgrade-interactive", "link", "unlink", "list", "ls", "outdated",
+        "why", "licenses", "exec", "run", "dlx", "init", "publish", "pack", "global", "cache", "config", "bin", "check",
+        "autoclean", "generate-lock-entry", "import", "lockfile", "workspace", "workspaces", "dedupe", "explain",
+        "npm", "patch", "patch-commit", "plugin", "rebuild", "set", "stage", "unplug", "constraints", "fund", "tag",
+        "help", "versions", "policies", "start", "test")),
+    "bun": frozenset((
+        "run", "test", "x", "repl", "exec", "install", "i", "add", "a", "remove", "rm", "update", "outdated", "link",
+        "unlink", "pm", "build", "init", "create", "c", "upgrade", "publish", "patch", "audit", "info", "why", "completions",
+        "feedback", "help", "getcompletes", "pack"))}
+
+
+def package_bins(name, args, word):
+    """The commands a run of a package manager's words may be, as (command, its arguments), so the rules read what runs
+    from its name: the package a runner names (`word`, as written: `npx wrangler@3 delete`, `uvx tracekit==1.8 approvals
+    approve a1`, `npx @railway/cli@3 delete`) as the bin it runs, without its version or scope, and what yarn, pnpm or
+    bun runs by a word that isn't one of their own commands: a package's bin, a script, and for pnpm any command (`pnpm
+    sudo ls`), also after their options and a `run`, `workspace NAME` or `workspaces foreach`; a `.sh` file bun runs is
+    run by its own shell, as `sh` runs it (`bun x.sh`). An option they take a value for (`pnpm --filter vercel remove
+    x`) has the value as its next word; any other may or may not, so it is read both ways. The words are read within
+    the first 32."""
+    spec = re.split(r"(?<!^)@|==|>=|<=|~=|!=", re.sub(r"^(?:@[^/@]+/)?[^/@]+@npm:", "", word.casefold()), 1)[0]
+    last = spec.rsplit("/", 1)[-1]
+    bin_name = PACKAGE_BINS.get(spec) or PACKAGE_BINS.get(last) or last
+    if bin_name and bin_name != name:
+        yield bin_name, args
+    elif name in _MANAGER_COMMANDS:
+        valued, own, todo, seen = _MANAGER_VALUED[name], _MANAGER_COMMANDS[name], [0], set()
+        while todo:   # each word a command may be at, once
+            i = todo.pop()
+            if i in seen or i >= min(len(args), 32):
+                continue
+            seen.add(i)
+            a = args[i]
+            if a.startswith("-"):
+                todo += [i + 2] if a in valued else [i + 1] if "=" in a else [i + 1, i + 2]
+            elif a == "workspace" and name == "yarn":
+                todo.append(i + 2)
+            elif a in ("run", "workspaces", "foreach", "recursive", "multi", "m"):
+                todo.append(i + 1)
+            elif name == "bun" and a.endswith(".sh"):
+                yield "sh", args[i:]
+            elif a.casefold() not in own:
+                yield PACKAGE_BINS.get(a.casefold(), a.casefold()), args[i + 1:]
+
+
+def bun_exec(args):
+    """The scripts `bun exec` may run in Bun Shell, after bun's options and a `--`: its first word, and all its words
+    joined as `sh -c` joins them (Bun's help doesn't say which it takes), or []."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in _BUN_VALUED else 1
+    if args[i:i + 1] != ["exec"]:
+        return []
+    words = args[i + 1:]
+    while words[:1] == ["--"] or words[:1] and words[0].startswith("-") and words[0] != "-":
+        words = words[1:]
+    return list(dict.fromkeys([words[0], " ".join(words)])) if words else []
+
+
 def runner_at(name, args):
     """Each place in `args` the subcommand of runner `name` that runs a command may be (RUNNERS: `uv run`, `pnpm
     exec`), after the runner's own options, each with a value or not (`pnpm -r --filter x exec`, `npm -w a exec`),
@@ -3027,7 +3109,9 @@ def _unwrap(name, args):
             yield args[args.index("--") + 1:] if "--" in args else []
             return
     # GNU env takes any word with a = for an assignment (`=`, `=x`), also after --; bash's time keyword its assignments
-    assigns = (lambda a: "=" in a) if name == "env" else _ASSIGN.match
+    # (`NAME==1.8` after uvx, pipx or uv is a package at a version, not an assignment)
+    assigns = (lambda a: "=" in a) if name == "env" else (lambda a: _ASSIGN.match(a) and not (
+        name in ("uvx", "pipx", "uv") and a[_ASSIGN.match(a).end():].startswith("=")))
     starts, todo, seen = [], [0], set()
     while todo:   # each word a command may start at (the flag reading first), each position read once
         i = todo.pop()
@@ -3259,7 +3343,8 @@ def _as_node(name, args):
     package script, a subcommand)."""
     if name == "bun":
         code = next((text for _, text in _code_words("node", args)), None)
-        return ["-e", code] if code is not None else ["-"] if args[:1] == ["run"] and "-" in args[1:] else None
+        return ["-e", code] if code is not None else ["-"] if any(
+            args[k] == "run" and "-" in args[k + 1:] for k in runner_at("bun", args)) else None
     sub = next((i for i, a in enumerate(args) if not a.startswith("-")), None)
     if sub is None or args[sub] not in ("eval", "run"):
         return None
@@ -5416,6 +5501,12 @@ class _Parser:
                 if (key := (pid, name, tuple(other))) not in self.unwrapped:
                     self.unwrapped.add(key)
                     cmds += self.emit(other, pid, via, glob, [unreadable[0], unreadable[c + 1], *unreadable[k + 1:]])
+            for bin_name, rest in package_bins(name, args, argv[0]):   # and as the CLI's own command (package_bins)
+                self.charge(len(rest) + 1)
+                other = [bin_name, *rest]
+                if (key := (pid, name, tuple(other))) not in self.unwrapped:
+                    self.unwrapped.add(key)
+                    cmds += self.emit(other, pid, via, glob, [unreadable[0], *unreadable[len(argv) - len(rest):]])
             if not unreadable[0] and "/" in argv[0]:   # a file run by its path
                 self.run_file(argv[0], via, cmd, True, args)
             if not unreadable[0] and argv[0] in self.ctx["functions"]:   # and as the program of that name, if it isn't
@@ -5478,6 +5569,9 @@ class _Parser:
                 continue
             elif name in ("npx", "npm") and (script := _npm_call(name, args)) is not None:
                 self.nested(self.code(cmd, [script]), via + [name + " -c"])
+            elif name == "bun" and (scripts := bun_exec(args)):   # Bun Shell runs its text as sh does
+                for script in scripts:
+                    self.nested(self.code(cmd, [script]), via + ["bun exec"])
             elif name in ("hub", "ntl"):   # git's wrapper, and the Netlify CLI's own short name: their words are git's, netlify's
                 argv, via, unreadable = ["git" if name == "hub" else "netlify", *args], via + [name], unreadable
                 continue

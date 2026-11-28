@@ -31,9 +31,11 @@ import contextlib
 import json
 import os
 import re
+import shlex
 import stat
 import sys
 import time
+import urllib.parse
 import warnings
 
 from tracekit import agent_hooks, parsers
@@ -251,6 +253,85 @@ def _codex_tool(item):
     else:
         return None
     return agent_hooks.tool("codex", hook, ti)
+
+
+# A Codex rollout's `event_msg` line of type `item_completed` holds a TurnItem (codex-rs/protocol/src/protocol.rs
+# ItemCompletedEvent, items.rs TurnItem: `type` is the variant's name). Code Mode's nested tool calls are recorded only
+# so, never as a response_item. Read from rust-v0.171.0's source, not from a recorded session. The kinds that are no
+# tool call; every other (Extension, a dynamic or collaborating agent's call, a kind a later Codex adds) can't be read
+_CODEX_NOT_CALLS = frozenset((
+    "UserMessage", "FunctionCallOutput", "HookPrompt", "AgentMessage", "Plan", "Reasoning", "WebSearch", "ImageGeneration",
+    "EnteredReviewMode", "ExitedReviewMode", "SubAgentActivity", "ContextCompaction"))
+_CODEX_SHELLS = frozenset(("bash", "sh", "zsh", "dash", "ksh", "fish"))
+
+
+def _uri_path(uri):
+    """The path of a PathUri (Codex serialises one as a `file:` URI string), or None."""
+    parts = urllib.parse.urlsplit(uri) if isinstance(uri, str) else None
+    if parts is None or parts.scheme != "file" or not parts.path:
+        return None
+    path = urllib.parse.unquote(parts.path)
+    return path[1:] if re.match(r"/[A-Za-z]:/", path) else path
+
+
+def _patch_text(changes):
+    """The apply_patch text a FileChangeItem's `changes` ({path: {type: add|delete|update, ...}}) amounts to, or None."""
+    out = ["*** Begin Patch"]
+    for path, change in changes.items():
+        kind = change.get("type") if isinstance(change, dict) else None
+        if kind == "add" and isinstance(change.get("content"), str):
+            out += [f"*** Add File: {path}", *("+" + ln for ln in change["content"].split("\n"))]
+        elif kind == "delete":
+            out.append(f"*** Delete File: {path}")
+        elif kind == "update" and isinstance(change.get("unified_diff"), str):
+            out.append(f"*** Update File: {path}")
+            if isinstance(change.get("move_path"), str) and change["move_path"]:
+                out.append(f"*** Move to: {change['move_path']}")
+            out += change["unified_diff"].split("\n")
+        else:
+            return None
+    return "\n".join([*out, "*** End Patch"])
+
+
+def _codex_nested(item):
+    """Map one TurnItem of a rollout's `item_completed` event to the tool and arguments Codex's PreToolUse hook decided
+    for it, as `_codex_tool` maps a response_item call: a CommandExecution as exec_command (Bash), a FileChange as
+    apply_patch (Edit, every path), a McpToolCall as mcp__<server>__<tool>, an ImageView as view_image (Read). None for
+    an item that is no call the hook sees (a user's own shell command, input typed into a running one, a message);
+    False for one that may be and can't be read (Extension, a kind this reader doesn't know, a shape that isn't
+    Codex's). A call that failed or was declined is still decided: the hook decided it before it ran."""
+    kind = item.get("type")
+    if kind in _CODEX_NOT_CALLS:
+        return None
+    if kind == "CommandExecution":
+        if item.get("source") in ("user_shell", "unified_exec_interaction"):
+            return None
+        argv = item.get("command")
+        if not isinstance(argv, list) or not argv or not all(isinstance(w, str) for w in argv):
+            return False
+        text = argv[2] if len(argv) == 3 and os.path.basename(argv[0]) in _CODEX_SHELLS and re.fullmatch(
+            r"-\w*c\w*", argv[1]) else shlex.join(argv)
+        call = {"type": "function_call", "name": "exec_command", "arguments": json.dumps({"cmd": text})}
+    elif kind == "FileChange":
+        changes = item.get("changes")
+        patch = _patch_text(changes) if isinstance(changes, dict) and changes else None
+        if patch is None:
+            return False
+        call = {"type": "custom_tool_call", "name": "apply_patch", "input": patch}
+    elif kind == "McpToolCall":
+        server, name = item.get("server"), item.get("tool")
+        if not isinstance(server, str) or not isinstance(name, str) or not server or not name:
+            return False
+        call = {"type": "function_call", "name": name, "namespace": "mcp__" + re.sub(r"[^A-Za-z0-9_-]", "_", server) + "__",
+                "arguments": json.dumps(item.get("arguments"), default=str)}
+    elif kind == "ImageView":
+        path = _uri_path(item.get("path"))
+        if path is None:
+            return False
+        call = {"type": "function_call", "name": "view_image", "arguments": json.dumps({"path": path})}
+    else:
+        return False
+    return _codex_tool(call) or False
 
 
 def _use(item):

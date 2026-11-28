@@ -46,7 +46,7 @@ Then tell your agent: **"Set up Tracekit."** The plugin's hooks wait until the `
 the setup skill installs it once you say yes. To do it yourself:
 
 ```bash
-uv tool install tracekit-ai==1.8.0  # or: pipx install tracekit-ai==1.8.0 (a venv works: see When a hook can't run)
+uv tool install tracekit-ai==1.8.1  # or: pipx install tracekit-ai==1.8.1 (a venv works: see When a hook can't run)
 tracekit init --dev --v2            # Codex, Copilot CLI, Cursor: add --agent codex|copilot|cursor --no-hooks
                                     # (on native Windows, without --no-hooks: see Platforms)
 tracekit doctor

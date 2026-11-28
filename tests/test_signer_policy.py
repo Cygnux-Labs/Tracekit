@@ -895,7 +895,8 @@ class CodingPack(unittest.TestCase):
                    "curl -X DELETE \"$CI_API_V4_URL/projects/$CI_PROJECT_ID\"", "curl -L -X DELETE api.github.com/repos/o/r",
                    "curl -X DELETE HTTPS://api.github.com/repos/o/r", "gh api -X DELETE repos/{owner}/{repo}",
                    "glab api -X DELETE projects/:id",
-                   "glab repo -R '' delete g/p --yes", "vercel --token '' remove web --yes"]
+                   "glab repo -R '' delete g/p --yes", "vercel --token '' remove web --yes",
+                   "wrangler kv namespace delete x"]
         routine = ["curl -s https://api.github.com/repos/acme/prod-service",
                    "curl -s https://gitlab.com/api/v4/projects/42",
                    "curl -s https://api.vercel.com/v9/projects/prod-app",
@@ -903,7 +904,7 @@ class CodingPack(unittest.TestCase):
                    "curl -X DELETE https://api.netlify.com/api/v1/sites/abc-123/deploys/x",
                    "netlify unlink", "netlify sites:list", "netlify sites:create --name x",
                    "wrangler deploy", "wrangler dev", "wrangler publish",
-                   "wrangler kv key delete mykey", "wrangler kv namespace delete x",
+                   "wrangler kv key delete mykey",
                    "wrangler pages project list", "wrangler pages deploy dist",
                    "wrangler d1 execute mydb --command \"select 1\"", "wrangler rollback",
                    "netlify deploy --prod", "netlify api listSites",
@@ -5077,6 +5078,249 @@ class CodingPack(unittest.TestCase):
             with self.subTest(command=command):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-A025", "TK-A027"} & set(d["rule_ids"]), d)
+
+    def test_an_mcp_tool_whose_method_action_or_operation_argument_says_delete_is_held_by_the_cloud_packs(self):
+        """TK-C012: a tool that takes a `method` argument (GitHub's label_write, projects_write) deletes through it, so
+        its name never says delete. TK-C011's words, as the value's first word or after a `_` or `-`, in every tool
+        name form, anywhere in the call's JSON; the coding pack, which has no TK-C011, doesn't hold it."""
+        r = {"owner": "acme", "repo": "api"}
+        held = (("mcp:github/label_write", {**r, "name": "bug", "method": "delete"}),
+                ("mcp:github/discussion_comment_write", {**r, "method": "delete", "comment_id": "DC_1"}),
+                ("mcp:github/projects_write", {"owner": "acme", "method": "delete_project_item", "item_id": 7}),
+                ("mcp:github/pull_request_review_write", {**r, "pullNumber": 3, "method": "delete_pending"}),
+                ("mcp:github/manage_notification_subscription", {"notificationID": "1", "action": "delete"}),
+                ("mcp__github__label_write", {"method": "delete"}), ("mcp__github_label_write", {"method": "delete"}),
+                ("mcp:db/run", {"a": 1, "z": 2, "operation": "bulkDelete"}), ("mcp:db/run", {"method": "BulkDelete"}),
+                ("mcp:db/run", {"method": "destroy-all"}), ("mcp:db/run", {"method": "terminate"}),
+                ("mcp:db/run", {"method": "drop_table"}), ("mcp:db/run", {"action": "DropTable"}),
+                ("mcp:db/run", {"method": "purge"}), ("mcp:db/run", {"method": "remove_member"}),
+                ("mcp:db/run", {"method": "wipe"}), ("mcp:db/run", {"method": "truncate"}),
+                ("mcp:db/run", {"method": "truncate_table"}), ("mcp:db/run", {"action": "reset_database"}),
+                ("mcp:db/run", {"action": "resetBranch"}), ("mcp:db/run", {"action": "migrate-reset"}),
+                ("mcp:db/run", {"method": "DELETE"}), ("mcp:db/run", {"method": "DELETE_ITEM"}),
+                ("mcp:db/run", {"filter": {"method": "delete"}}))
+        not_held = (("mcp:github/label_write", {**r, "name": "bug", "method": "create"}),
+                    ("mcp:github/issue_write", {**r, "method": "update", "issue_number": 1, "title": "delete the docs"}),
+                    ("mcp:github/issue_read", {**r, "method": "get"}), ("mcp:github/label_write", {"method": "list"}),
+                    ("mcp:github/label_write", {"method": "undelete"}), ("mcp:db/run", {"method": "deleted"}),
+                    ("mcp:db/run", {"method": "reset_password"}), ("mcp:db/run", {"method": "truncate_text"}),
+                    ("mcp:db/run", {"method": "dropdown"}), ("mcp:db/run", {"name": "delete", "note": "method delete"}),
+                    ("mcp:db/run", {"query": "{\"method\":\"delete\"}"}),
+                    ("mcp:db/run", {"method": ["delete"]}), ("mcp:db/run", {"method": {"a": "delete"}}),
+                    ("mcp:db/run", {"method": None}), ("mcp:db/run", {"method": 3}),
+                    ("web_fetch", {"method": "delete", "url": "https://x.example"}))
+        for pack, engine, e in self.every_pack():
+            for tool, args in held + not_held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    want = pack != "coding.yaml" and (tool, args) in held
+                    self.assertEqual("TK-C012" in d["rule_ids"], want, d)
+                    if want:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+
+    def test_a_hosting_cli_run_through_npx_at_a_version_yarn_or_pnpm_asks_to_delete(self):
+        """TK-A042: `npx wrangler@3 delete`, `yarn wrangler delete` and the like were allowed, as were more than four
+        options before `delete`; the Cloudflare API's delete of a Worker or a Pages project had only the generic
+        network flags. Each CLI TK-A042 names, run through a package manager, is read as its own command."""
+        every = (("npx wrangler@latest delete", "npx wrangler@3 pages project delete p", "npx -y wrangler@3.1.0 delete",
+                  "npx --yes wrangler@3 -c a.toml --env prod delete", "bunx wrangler@3 delete",
+                  "pnpm dlx wrangler@3 delete", "yarn dlx wrangler@3 delete", "yarn dlx wrangler delete",
+                  "yarn wrangler delete", "pnpm wrangler delete", "yarn --silent wrangler delete",
+                  "pnpm -C app wrangler delete", "yarn run wrangler delete", "pnpm exec wrangler delete",
+                  "pnpm exec wrangler@3 delete", "npm exec wrangler delete", "npm exec -- wrangler@3 delete",
+                  "yarn exec wrangler delete", "yarn wrangler pages project delete p",
+                  "wrangler -c a.toml -e b -n c --x d --y e --z f delete",
+                  "npx vercel@latest remove p", "npx vercel@33 project rm p", "yarn vercel remove p", "pnpm vercel rm p",
+                  "npx netlify-cli@17 sites:delete abc", "npx netlify-cli sites:delete abc",
+                  "npx netlify@1 sites:delete abc", "yarn netlify sites:delete abc",
+                  "pnpm netlify api deleteSite --data x", "npx ntl@1 sites:delete abc", "bunx vercel@1 remove p",
+                  "npx gh@2 repo delete x", "pnpm exec glab repo delete x", "yarn hub delete x",
+                  "curl -X DELETE https://api.cloudflare.com/client/v4/accounts/abc123/workers/scripts/my-worker",
+                  "curl -X DELETE https://api.cloudflare.com/client/v4/accounts/abc123/pages/projects/my-proj",
+                  "curl -s -H 'Authorization: Bearer $T' -X DELETE https://api.cloudflare.com/client/v4/accounts/a/workers/scripts/w?force=true",
+                  "http DELETE https://api.cloudflare.com/client/v4/accounts/abc123/workers/scripts/my-worker",
+                  "wget --method=DELETE https://api.cloudflare.com/client/v4/accounts/abc123/pages/projects/p"))
+        self.every_pack_verdicts([(c, "TK-A042") for c in every])
+        for pack, engine, e in self.every_pack():
+            for command in ("npx wrangler@3 deploy", "yarn wrangler dev", "pnpm exec wrangler tail", "pnpm wrangler deploy",
+                            "npx wrangler@3 pages project list", "npx vercel@33 deploy", "yarn vercel --prod",
+                            "pnpm add -D wrangler", "yarn remove wrangler", "pnpm rm wrangler", "yarn run build",
+                            "npx wrangler@3 tail --format delete", "pnpm install wrangler", "yarn add vercel",
+                            "curl https://api.cloudflare.com/client/v4/accounts/abc123/workers/scripts/my-worker",
+                            "curl -X PUT https://api.cloudflare.com/client/v4/accounts/abc123/workers/scripts/my-worker",
+                            "curl -X DELETE https://api.cloudflare.com/client/v4/accounts/a/workers/scripts/w/secrets/s",
+                            "curl -X DELETE https://api.cloudflare.com/client/v4/accounts/a/pages/projects/p/deployments/d"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-A042", e.decide("Bash", {"command": command})["rule_ids"])
+
+    def test_the_method_value_is_read_in_any_case(self):
+        """TK-C012: a server may lower-case the value before it switches on it (GitHub's does), so `dElete` is
+        `delete`; undelete and deleted still aren't one."""
+        r = {"owner": "acme", "repo": "api"}
+        held = tuple(("mcp:github/label_write", {**r, "method": v}) for v in (
+            "dElete", "DElete", "deLete", "DeLeTe", "Delete_Project_Item", "DELETE_PENDING", "bulkDELETE", "TRUNCATE",
+            "TRUNCATE_TABLE", "RESET_DATABASE", "MIGRATE_RESET", "DropDatabase", "dROP_table", "Remove_Member"))
+        not_held = tuple(("mcp:github/label_write", {**r, "method": v}) for v in (
+            "undelete", "UNDELETE", "Undelete", "deleted", "Deleted", "reset_password", "RESET_PASSWORD", "TRUNCATE_TEXT",
+            "create", "CREATE", "get"))
+        for pack, engine, e in self.every_pack():
+            for tool, args in held + not_held:
+                with self.subTest(pack=pack, engine=engine, args=args):
+                    want = pack != "coding.yaml" and (tool, args) in held
+                    self.assertEqual("TK-C012" in e.decide(tool, args)["rule_ids"], want)
+
+    def test_a_package_manager_at_a_version_workspaces_and_option_values_are_read_for_the_cli_it_runs(self):
+        """TK-A042 round 2: yarn, pnpm and bun at a version (`npx pnpm@9`, `corepack yarn@4.1.0`), in a workspace, in
+        any case, Vercel's `vc`, wrangler's data stores and bun run; an option's value that is a CLI's name
+        (`pnpm --filter vercel remove lodash`) is no CLI."""
+        held = ("npx pnpm@9 wrangler delete", "corepack pnpm@9 wrangler delete", "corepack yarn@4.1.0 wrangler delete",
+                "npx yarn@1 wrangler delete", "pnpm@9 wrangler delete", "npx pnpm@9 vercel rm p",
+                "yarn workspace web wrangler delete", "yarn workspace web run wrangler delete",
+                "yarn workspaces foreach -A run wrangler delete", "yarn workspaces foreach -j 4 run wrangler delete",
+                "pnpm --filter web wrangler delete", "pnpm -F web vercel rm x", "yarn --cwd app wrangler delete",
+                "yarn Wrangler delete", "pnpm VERCEL rm p", "bun run wrangler delete", "bun wrangler delete",
+                "bun run --cwd app wrangler delete", "bunx wrangler@3 delete",
+                "vc rm p --yes", "vc project rm p", "yarn vc remove p", "npx vc@33 rm p", "pnpm dlx vercel@33 remove p",
+                "wrangler d1 delete db", "wrangler r2 bucket delete b", "wrangler kv namespace delete --namespace-id x",
+                "wrangler queues delete q", "wrangler vectorize delete v", "wrangler hyperdrive delete h",
+                "npx wrangler@3 d1 delete db", "yarn wrangler r2 bucket delete b", "pnpm exec wrangler kv namespace delete",
+                "wrangler -c a.toml -e b d1 delete db",
+                "vercel --a 1 --b 2 --c 3 --d 4 --e 5 --f 6 rm p", "vercel --a 1 --b 2 --c 3 --d 4 --e 5 project rm p",
+                "netlify --a 1 --b 2 --c 3 --d 4 --e 5 sites:delete x", "netlify --a 1 --b 2 --c 3 --d 4 --e 5 api deleteSite")
+        cf = "https://api.cloudflare.com/client/v4/accounts/abc123/"
+        api = tuple("curl -X DELETE " + u for u in (
+            cf + "workers/dispatch/namespaces/ns/scripts/w", cf + "workers/dispatch/namespaces/ns",
+            cf + "d1/database/0123-45", cf + "r2/buckets/b", cf + "storage/kv/namespaces/n", cf + "workers/workers/w1",
+            "https://api.cloudflare.com/client/v4/zones/z1", '"$CF_API/accounts/$ACCT/workers/scripts/w"',
+            "${CF_API}/accounts/$ACCT/pages/projects/p", "$CF_API/zones/$Z")) + (
+            "http DELETE https://api.cloudflare.com/client/v4/accounts/abc123/d1/database/x",)
+        self.every_pack_verdicts([(c, "TK-A042") for c in held + api])
+        not_held = ("pnpm --filter vercel remove lodash", "pnpm -F vercel rm x", "pnpm -C vercel rm x",
+                    "yarn --cwd vercel remove x", "pnpm --filter=vercel remove x", "pnpm --filter gh dev",
+                    "pnpm -C hub push", "pnpm --filter wrangler deploy ./out", "yarn --cwd wrangler dev",
+                    "wrangler d1 list", "wrangler r2 bucket list", "wrangler kv namespace list", "wrangler queues list",
+                    "wrangler d1 info db", "npx pnpm@9 wrangler dev", "yarn workspace web wrangler dev", "vc deploy",
+                    "bun run build", "bun run test", "bun run dev --port 3000",
+                    "curl " + cf + "d1/database/0123-45", "curl -X PUT " + cf + "r2/buckets/b",
+                    "curl -X DELETE " + cf + "r2/buckets/b/objects/o", "curl -X DELETE " + cf + "d1/database/x/query")
+        for pack, engine, e in self.every_pack():
+            for command in not_held:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertFalse({"TK-A042", "TK-A056", "TK-A084"} & set(
+                        e.decide("Bash", {"command": command})["rule_ids"]))
+
+    def test_vercels_second_name_is_read_for_a_production_deploy(self):
+        for pack, engine, e in self.every_pack():
+            if pack == "dev.yaml":
+                for command in ("vc --prod", "vc promote x", "yarn vc --prod"):
+                    with self.subTest(engine=engine, command=command):
+                        self.assertIn("TK-A056", e.decide("Bash", {"command": command})["rule_ids"])
+
+    def test_bun_run_is_read_as_the_command_it_may_run(self):
+        """bun run resolves a package.json script, a file, a package's bin and then a system command: it is decided as
+        the command it names too, as `npx` and `pnpm exec` are."""
+        held = (("bun run sudo ls", "TK-D001"), ("bun run --cwd app sudo ls", "TK-D001"),
+                ("bun run git push --force origin main", "TK-D003"),
+                ("bun run terraform destroy -auto-approve", "TK-A001"),
+                ("bun run gh repo delete o/r --yes", "TK-A042"), ("bun run wrangler delete", "TK-A042"))
+        self.every_pack_verdicts(held)
+        for pack, engine, e in self.every_pack():
+            for command in ("bun run build", "bun run dev --port 3000", "bun run test", "bun run lint"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertEqual(e.decide("Bash", {"command": command})["verdict"], "allow")
+
+    def test_a_longer_word_in_capitals_is_no_delete_word_in_a_method_value(self):
+        r = {"owner": "acme", "repo": "api"}
+        held = ("dElete", "DELETE", "DELETE_ITEM", "TRUNCATE_TABLE", "RESET_DATABASE", "MIGRATE_RESET", "bulkDELETE",
+                "bulk_DELETE", "Delete_Item", "dropTable")
+        not_held = ("DROPDOWN", "DROPBOX_UPLOAD", "PURGEABLE", "DELETED_AT", "RESET_SCHEMA_CACHE", "DROPPED", "TERMINATED",
+                    "DELETED", "REMOVED", "TRUNCATE_TEXT")
+        for pack, engine, e in self.every_pack():
+            if pack == "coding.yaml":
+                continue
+            for v in held + not_held:
+                with self.subTest(pack=pack, engine=engine, value=v):
+                    d = e.decide("mcp:github/label_write", {**r, "method": v})
+                    self.assertEqual("TK-C012" in d["rule_ids"], v in held, d)
+
+    def test_tracekits_own_cli_is_read_through_every_runner_version_and_package_manager(self):
+        """TK-D012: an agent answering its own hold through npx, bunx, dlx, uvx, pipx or a package manager's bin, at a
+        version, by its package name, in a workspace: the package a runner names is the bin it runs."""
+        pkg, act = "@cygnuxlabs/tracekit", "approvals approve a1"
+        held = [f"tracekit {act}", f"npx {pkg} {act}", f"npx {pkg}@1.8.0 {act}", f"npx {pkg}@latest {act}",
+                f"npx -y {pkg}@1.8.0 {act}", f"bunx {pkg}@1.8.0 {act}", f"pnpm dlx {pkg}@1.8.0 {act}",
+                f"yarn dlx {pkg}@1.8.0 {act}", f"npm x {pkg}@1.8.0 {act}", f"npm exec {pkg}@1.8.0 -- {act}",
+                f"npx -p {pkg}@1.8.0 tracekit {act}", f"npx tracekit@1 {act}", f"yarn tracekit {act}",
+                f"pnpm tracekit {act}", f"bun tracekit {act}", f"bun run tracekit {act}", f"pnpm exec tracekit {act}",
+                f"yarn run tracekit {act}", f"bun exec 'tracekit {act}'", f"pnpm --filter web tracekit {act}",
+                f"yarn workspace web tracekit {act}", f"uvx tracekit {act}", f"uvx tracekit@1.8.0 {act}",
+                f"uvx tracekit==1.8.0 {act}", f"uvx --from tracekit==1.8.0 tracekit {act}",
+                f"uv tool run --from tracekit==1.8.0 tracekit {act}", f"pipx run tracekit {act}",
+                f"pipx run tracekit==1.8.0 {act}", f"uv run tracekit {act}", f"python3 -m tracekit {act}",
+                f"bun run python3 -m tracekit {act}", "tracekit tips approve L-1", "npx tracekit@1 tips approve L-1",
+                "uvx tracekit@1.8.0 tips approve L-1", "tracekit approvals reject a1", "npx tracekit@1 approvals reject a1",
+                "pnpm dlx tracekit@1 approvals reject a1"]
+        self.every_pack_verdicts([(c, "TK-D012") for c in held])
+
+    def test_a_manager_that_runs_a_command_by_its_name_is_read_for_that_command(self):
+        """`pnpm sudo ls` runs sudo; `bun exec 'script'` runs its text in Bun Shell, and a .sh file bun runs is run by it;
+        a CLI through a package manager or at a version is the CLI: TK-A001's and TK-A055's too. The managers' own
+        commands and scripts are as they were."""
+        held = (("pnpm sudo ls", "TK-D001"), ("pnpm --filter web sudo ls", "TK-D001"), ("bun exec 'sudo ls'", "TK-D001"),
+                ("pnpm terraform destroy -auto-approve", "TK-A001"), ("pnpm dropdb prod", "TK-A001"),
+                ("bun exec 'git push --force origin main'", "TK-D003"), ("bun exec 'wrangler delete'", "TK-A042"),
+                ("bun exec 'tracekit approvals approve a1'", "TK-D012"),
+                ("pnpm cdk destroy --force", "TK-A001"), ("yarn cdk destroy --force", "TK-A001"),
+                ("npx aws-cdk@2 destroy --force", "TK-A001"), ("npx cdk@2 destroy --force", "TK-A001"),
+                ("npx heroku@8 apps:destroy myapp --confirm myapp", "TK-A001"),
+                ("yarn heroku apps:destroy myapp --confirm myapp", "TK-A001"),
+                ("npx @railway/cli delete", "TK-A001"), ("npx @railway/cli@3 delete", "TK-A001"),
+                ("pnpm railway delete", "TK-A001"), ("npx pulumi@3 destroy --yes", "TK-A001"), ("uvx pulumi@3 destroy --yes", "TK-A001"),
+                ("bun prisma migrate reset --force", "TK-A055"), ("npx prisma@5 migrate reset --force", "TK-A055"),
+                ("pnpm prisma migrate reset --force", "TK-A055"), ("yarn prisma migrate reset --force", "TK-A055"),
+                ("npx supabase@1 db reset", "TK-A055"), ("pnpm supabase db reset", "TK-A055"))
+        self.every_pack_verdicts(held)
+        for pack, engine, e in self.every_pack():
+            # a .sh file is read as `sh` reads it, the same line's write of it included
+            for runner in ("bun x.sh", "bun ./x.sh", "bun run x.sh", "bun --cwd /tmp run x.sh"):
+                with self.subTest(pack=pack, engine=engine, runner=runner):
+                    line = "echo 'sudo ls' > x.sh; " + runner
+                    same = e.decide("Bash", {"command": "echo 'sudo ls' > x.sh; sh x.sh"})
+                    got = e.decide("Bash", {"command": line})
+                    self.assertEqual((got["verdict"], "TK-D001" in got["rule_ids"]),
+                                     (same["verdict"], "TK-D001" in same["rule_ids"]))
+        coding = next(e for pack, engine, e in self.every_pack() if pack == "coding.yaml" and engine == "regex")
+        ordinary = {"pnpm --filter web dev": "allow", "pnpm build": "allow", "pnpm test": "allow", "pnpm run build": "allow",
+                    "pnpm install": "flag", "pnpm add x": "flag", "pnpm rm x": "allow", "pnpm ls": "allow",
+                    "bun run build": "allow", "bun install": "flag", "bun add x": "flag", "yarn workspace web add x": "allow",
+                    "yarn add x": "flag", "yarn install": "flag", "yarn build": "allow", "yarn remove x": "allow",
+                    "npm install": "flag", "npx prettier@3 --write .": "allow", "yarn --cwd vercel remove x": "allow",
+                    "pnpm --filter vercel remove lodash": "allow"}
+        for command, verdict in ordinary.items():
+            with self.subTest(command=command):
+                self.assertEqual(coding.decide("Bash", {"command": command})["verdict"], verdict)
+
+    def test_a_manager_run_by_a_manager_an_npm_alias_yarn_node_and_bun_exec_words_are_read(self):
+        a = "approvals approve a1"
+        held = ((f"pnpm pnpm tracekit {a}", "TK-D012"), (f"pnpm pn tracekit {a}", "TK-D012"),
+                (f"pn tracekit {a}", "TK-D012"), ("pnpm pnpm sudo ls", "TK-D001"), ("pnpm pnpm@9 sudo ls", "TK-D001"),
+                ("bun bun run sudo ls", "TK-D001"), (f"yarn yarn tracekit {a}", "TK-D012"),
+                (f"npx tk@npm:@cygnuxlabs/tracekit@1.8.0 {a}", "TK-D012"),
+                (f"npx -p tk@npm:@cygnuxlabs/tracekit tracekit {a}", "TK-D012"),
+                ("npx x@npm:wrangler@3 delete", "TK-A042"),
+                ("yarn node -e \"require('child_process').execSync('sudo ls')\"", "TK-D001"),
+                ("pnpm node -e \"require('child_process').execSync('sudo ls')\"", "TK-D001"),
+                ("bun exec rm -rf /", "TK-D004"), ("bun exec -- 'sudo ls'", "TK-D001"),
+                ("bun exec git push --force origin main", "TK-D003"), ("bun exec 'sudo ls'", "TK-D001"),
+                (f"bun exec tracekit {a}", "TK-D012"), ("bun exec wrangler delete", "TK-A042"))
+        self.every_pack_verdicts(held)
+        for pack, engine, e in self.every_pack():
+            for command in ("yarn node app.js", "pnpm x sudo ls", "bun exec echo hi", "bun exec -- echo hi", "pn run build",
+                            "npx x@npm:wrangler@3 deploy", "npx tk@npm:@cygnuxlabs/tracekit@1.8.0 verify b.tkb",
+                            "node -e \"console.log(1)\"", "yarn node -e \"console.log(1)\""):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertFalse({"TK-D001", "TK-D003", "TK-D004", "TK-D012", "TK-A042"} & set(
+                        e.decide("Bash", {"command": command})["rule_ids"]))
 
     def test_a_remote_ref_organization_or_group_deleted_through_the_api_asks(self):
         """TK-A002 and TK-A042 (1.5.3 sweep): a branch or tag deleted through GitHub's or GitLab's API, and a whole

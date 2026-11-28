@@ -11,7 +11,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:ec0e81d59e69577bd77d6ca5c25f2eb980aeb78167b2257a35e2ef1682d4fe24",
+      "policy_hash": "sha256:83eb1d85406aeb1a7eba4007f1f0308bd52cc27026e0a0af4c7b2994e344ee55",
       "heldout": {
         "recall": 0.6952380952380952,
         "deny_recall": 0.29523809523809524,
@@ -2443,27 +2443,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0009569377990430622,
+        "fp_rate": 0.0009532888465204957,
         "totals": {
-          "benign": 1045,
+          "benign": 1049,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 1045,
+              "benign": 1049,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 1045,
+              "benign": 1049,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 1045,
+              "benign": 1049,
               "fp": 1
             }
           }
@@ -2484,7 +2484,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:6e2448c91649470b99990448883cc3da4dab0b5923e72004f9f20437abf9fbbe",
+      "policy_hash": "sha256:1d4bb5eaf91ba8f765676caa512a9f2b5ec5be807864c574d3f3afe662482790",
       "heldout": {
         "recall": 0.7571428571428571,
         "deny_recall": 0.3880952380952381,
@@ -5139,27 +5139,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.049760765550239235,
+        "fp_rate": 0.04957102001906578,
         "totals": {
-          "benign": 1045,
+          "benign": 1049,
           "fp": 52
         },
         "by": {
           "category": {
             "none": {
-              "benign": 1045,
+              "benign": 1049,
               "fp": 52
             }
           },
           "severity": {
             "none": {
-              "benign": 1045,
+              "benign": 1049,
               "fp": 52
             }
           },
           "evasion": {
             "none": {
-              "benign": 1045,
+              "benign": 1049,
               "fp": 52
             }
           }
@@ -5621,46 +5621,46 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 178,
-      "p99_us": 545,
-      "max_us": 1367,
-      "calls": 3139,
-      "p99_ref": 10.54
+      "p50_us": 173,
+      "p99_us": 538,
+      "max_us": 1388,
+      "calls": 3195,
+      "p99_ref": 10.83
     },
     "default/regex": {
-      "p50_us": 206,
-      "p99_us": 641,
-      "max_us": 1695,
-      "calls": 3139,
-      "p99_ref": 11.86
+      "p50_us": 195,
+      "p99_us": 618,
+      "max_us": 1707,
+      "calls": 3195,
+      "p99_ref": 12.39
     },
     "strict/re2": {
-      "p50_us": 180,
-      "p99_us": 510,
-      "max_us": 1296,
-      "calls": 3139,
-      "p99_ref": 9.5
+      "p50_us": 174,
+      "p99_us": 504,
+      "max_us": 1247,
+      "calls": 3195,
+      "p99_ref": 9.75
     },
     "strict/regex": {
-      "p50_us": 202,
-      "p99_us": 605,
-      "max_us": 1647,
-      "calls": 3139,
-      "p99_ref": 11.51
+      "p50_us": 198,
+      "p99_us": 594,
+      "max_us": 1704,
+      "calls": 3195,
+      "p99_ref": 11.96
     },
     "dev/re2": {
-      "p50_us": 187,
-      "p99_us": 573,
-      "max_us": 1499,
-      "calls": 3139,
-      "p99_ref": 11.06
+      "p50_us": 185,
+      "p99_us": 568,
+      "max_us": 1508,
+      "calls": 3195,
+      "p99_ref": 11.32
     },
     "dev/regex": {
-      "p50_us": 216,
-      "p99_us": 684,
-      "max_us": 1807,
-      "calls": 3139,
-      "p99_ref": 12.95
+      "p50_us": 212,
+      "p99_us": 681,
+      "max_us": 1874,
+      "calls": 3195,
+      "p99_ref": 13.17
     }
   },
   "engine_mismatches": [],

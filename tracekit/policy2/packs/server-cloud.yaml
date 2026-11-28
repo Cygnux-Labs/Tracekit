@@ -8,7 +8,7 @@
 # tabs, newlines or returns separates words (before the program too), and a scan for a later word ends with the value,
 # so many values each rescan only their own text; aws reads a long option's unique prefix (--rec is --recursive).
 
-version: '2026.11-server-cloud-18'
+version: '2026.11-server-cloud-19'
 description: server-hosted agents, cloud CLIs and cloud MCP tools
 unknown_tools: ask
 
@@ -73,3 +73,18 @@ ask:
     pattern: '^'
     reason: deleting through an MCP tool
     rationale: The MCP twin of TK-C010, for any tool whose name says it deletes.
+  - id: TK-C012
+    # a delete chosen by a tool's argument, not its name: an MCP tool (any of TK-C011's name forms) whose `method`,
+    # `action` or `operation` argument, anywhere in the call's JSON, is one of TK-C011's words, as its first word or
+    # after a `_` or `-`, in snake_case, kebab-case, camelCase or PascalCase (delete, delete_pending,
+    # delete_project_item, bulkDelete, reset_database, migrate-reset), a word in lower case or capitalised before a
+    # capital, a `_`, a `-` or the end (deleteFile), and a word in any case (dElete, DELETE, DELETE_ITEM, TRUNCATE_TABLE:
+    # a server may lower-case the value before it reads it) before a `_`, a `-` or the end, so a longer word in
+    # capitals (DROPDOWN, DELETED_AT) isn't one; not undelete, deleted, create, update or get. A value that is not a
+    # plain string (a list, an object) isn't read.
+    # lean: the word is read within the value's first 64 characters, and nothing after it, so each start costs a
+    # constant and the fallback engine stays linear on a long value; widen it if a real method name is longer
+    tool: 'mcp(:[^/]+/.*|__.*)'
+    pattern: '"(?:method|action|operation)":"(?:[^"\\]{0,64}[_-])?(?:(?:[Dd]elete|[Dd]estroy|[Tt]erminate|[Dd]rop|[Pp]urge|[Rr]emove|[Ww]ipe)(?:[_A-Z-]|")|[Tt]runcate(?:"|[_-]?(?:[Tt][Aa][Bb][Ll][Ee]s?|[Cc][Oo][Ll][Ll][Ee][Cc][Tt][Ii][Oo][Nn]s?)(?:[_A-Z-]|"))|[Rr]eset[_-]?(?:[Bb][Rr][Aa][Nn][Cc][Hh]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Dd][Bb]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Dd][Aa][Tt][Aa]|[Pp][Rr][Oo][Jj][Ee][Cc][Tt]|[Tt][Aa][Bb][Ll][Ee]s?)(?:[_A-Z-]|")|[Mm]igrate[_-]?[Rr][Ee][Ss][Ee][Tt](?:[_A-Z-]|")|(?:[Dd][Ee][Ll][Ee][Tt][Ee]|[Dd][Ee][Ss][Tt][Rr][Oo][Yy]|[Tt][Ee][Rr][Mm][Ii][Nn][Aa][Tt][Ee]|[Dd][Rr][Oo][Pp]|[Pp][Uu][Rr][Gg][Ee]|[Rr][Ee][Mm][Oo][Vv][Ee]|[Ww][Ii][Pp][Ee])(?:[_-]|")|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:"|[_-]?(?:[Tt][Aa][Bb][Ll][Ee]s?|[Cc][Oo][Ll][Ll][Ee][Cc][Tt][Ii][Oo][Nn]s?)")|[Rr][Ee][Ss][Ee][Tt][_-]?(?:[Bb][Rr][Aa][Nn][Cc][Hh]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Dd][Bb]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Dd][Aa][Tt][Aa]|[Pp][Rr][Oo][Jj][Ee][Cc][Tt]|[Tt][Aa][Bb][Ll][Ee]s?)"|[Mm][Ii][Gg][Rr][Aa][Tt][Ee][_-]?[Rr][Ee][Ss][Ee][Tt]")|"(?:method|action|operation)":"[^"\\]{0,64}[a-z0-9](?:(?:Delete|Destroy|Terminate|Drop|Purge|Remove|Wipe)(?:[_A-Z-]|")|Truncate(?:"|[_-]?(?:[Tt][Aa][Bb][Ll][Ee]s?|[Cc][Oo][Ll][Ll][Ee][Cc][Tt][Ii][Oo][Nn]s?)(?:[_A-Z-]|"))|Reset[_-]?(?:[Bb][Rr][Aa][Nn][Cc][Hh]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Dd][Bb]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Dd][Aa][Tt][Aa]|[Pp][Rr][Oo][Jj][Ee][Cc][Tt]|[Tt][Aa][Bb][Ll][Ee]s?)(?:[_A-Z-]|")|Migrate[_-]?[Rr][Ee][Ss][Ee][Tt](?:[_A-Z-]|")|(?:D[Ee][Ll][Ee][Tt][Ee]|D[Ee][Ss][Tt][Rr][Oo][Yy]|T[Ee][Rr][Mm][Ii][Nn][Aa][Tt][Ee]|D[Rr][Oo][Pp]|P[Uu][Rr][Gg][Ee]|R[Ee][Mm][Oo][Vv][Ee]|W[Ii][Pp][Ee])(?:[_-]|")|T[Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:"|[_-]?(?:[Tt][Aa][Bb][Ll][Ee]s?|[Cc][Oo][Ll][Ll][Ee][Cc][Tt][Ii][Oo][Nn]s?)")|R[Ee][Ss][Ee][Tt][_-]?(?:[Bb][Rr][Aa][Nn][Cc][Hh]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Dd][Bb]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Dd][Aa][Tt][Aa]|[Pp][Rr][Oo][Jj][Ee][Cc][Tt]|[Tt][Aa][Bb][Ll][Ee]s?)"|M[Ii][Gg][Rr][Aa][Tt][Ee][_-]?[Rr][Ee][Ss][Ee][Tt]")'
+    reason: deleting through an MCP tool's method argument
+    rationale: Tools that take a method or action argument (GitHub's label_write, projects_write) delete through it, so the tool's name never says delete; the MCP twin of TK-C011 reads the argument.
