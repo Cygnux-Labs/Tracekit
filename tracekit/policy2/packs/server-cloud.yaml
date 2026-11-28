@@ -73,3 +73,14 @@ ask:
     pattern: '^'
     reason: deleting through an MCP tool
     rationale: The MCP twin of TK-C010, for any tool whose name says it deletes.
+  - id: TK-C012
+    # a delete chosen by a tool's argument, not its name: an MCP tool (any of TK-C011's name forms) whose `method`,
+    # `action` or `operation` argument, anywhere in the call's JSON, is one of TK-C011's words, as its first word or
+    # after a `_` or `-`, in snake_case, kebab-case, camelCase or PascalCase (delete, delete_pending,
+    # delete_project_item, bulkDelete, reset_database, migrate-reset), also all in capitals (DELETE, DELETE_ITEM); not
+    # undelete, deleted, create, update or get. A value that is not a plain string (a list, an object) isn't read.
+    # Each alternative starts at its own key and reads only its own value, so the fallback engine stays linear
+    tool: 'mcp(:[^/]+/.*|__.*)'
+    pattern: '"(?:method|action|operation)":"(?:[^"\\]*[_-])?(?:(?:[Dd]elete|[Dd]estroy|[Tt]erminate|[Dd]rop|[Pp]urge|[Rr]emove|[Ww]ipe)(?:[_A-Z-][^"\\]*)?|[Tt]runcate(?:[_-]?(?:[Tt]ables?|[Cc]ollections?)(?:[_A-Z-][^"\\]*)?)?|[Rr]eset[_-]?(?:[Bb]ranch|[Dd]atabase|[Dd]b|[Ss]chema|[Dd]ata|[Pp]roject|[Tt]ables?)(?:[_A-Z-][^"\\]*)?|[Mm]igrate[_-]?[Rr]eset(?:[_A-Z-][^"\\]*)?)"|"(?:method|action|operation)":"[^"\\]*[a-z0-9](?:(?:Delete|Destroy|Terminate|Drop|Purge|Remove|Wipe)(?:[_A-Z-][^"\\]*)?|Truncate(?:[_-]?(?:[Tt]ables?|[Cc]ollections?)(?:[_A-Z-][^"\\]*)?)?|Reset[_-]?(?:[Bb]ranch|[Dd]atabase|[Dd]b|[Ss]chema|[Dd]ata|[Pp]roject|[Tt]ables?)(?:[_A-Z-][^"\\]*)?|Migrate[_-]?[Rr]eset(?:[_A-Z-][^"\\]*)?)"|"(?:method|action|operation)":"(?:[^"\\]*[_-])?(?:DELETE|DESTROY|TERMINATE|DROP|PURGE|REMOVE|WIPE)(?:[_-][^"\\]*)?"'
+    reason: deleting through an MCP tool's method argument
+    rationale: Tools that take a method or action argument (GitHub's label_write, projects_write) delete through it, so the tool's name never says delete; the MCP twin of TK-C011 reads the argument.
