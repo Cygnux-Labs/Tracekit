@@ -66,8 +66,12 @@ ask:
     # fallback engine never backs off over a long list without one, and the list a whole string at a time, so the
     # address is read from a string's opening quote (from each escaped one, 64 KiB of `\"` took the fallback
     # seconds), the address after any other character but one a local part may hold (RFC 5322's: o'staff@ is one
-    # address), or after any escape pair (`\"all@…\"`, `\n`)
-    pattern: '"(to|cc|bcc|recipients)":(\[("([^"\\]|\\.)*",){9}|"(([^"@\\]|\\.)*@){10})|"(to|cc|bcc|recipients)":(\[([^\]\["\\]|"([^"\\]|\\.)*")*?)?"(([^"\\]|\\.)*?([^\\A-Za-z0-9._%+''!#$&*/=?^`{|}~-]|\\.))?([Aa][Ll][Ll]|[Ee][Vv][Ee][Rr][Yy][Oo][Nn][Ee]|[Ee][Vv][Ee][Rr][Yy][Bb][Oo][Dd][Yy]|[Aa][Ll][Ll][-._]?[Ss][Tt][Aa][Ff][Ff]|[Ss][Tt][Aa][Ff][Ff]|[Aa][Ll][Ll][-._]?[Hh][Aa][Nn][Dd][Ss]|[Aa][Ll][Ll][-._]?[Ee][Mm][Pp][Ll][Oo][Yy][Ee][Ee][Ss]|[Cc][Uu][Ss][Tt][Oo][Mm][Ee][Rr][Ss]|[Uu][Ss][Ee][Rr][Ss])@'
+    # address), or after any escape pair (`\"all@…\"`, `\n`). The call is sorted-key JSON, so a string in the list is
+    # followed by `,`, `:` or `}` and the list is read no further past one that isn't: 64 KiB repeating `"to":["","`
+    # was read again from each key, ~100 ms on CI's macOS runner (#1127). A string is read in runs of the characters
+    # it can't end at (`[^"\\]*`), not one character at a time, and its closing quote isn't read as the character
+    # before an address (in JSON a `,`, `:`, `}` or `]` follows it)
+    pattern: '"(to|cc|bcc|recipients)":((\[("[^"\\]*(\\.[^"\\]*)*",){9}|"([^"@\\]*(\\.[^"@\\]*)*@){10})|(\[([^\]\["\\]|"[^"\\]*(\\.[^"\\]*)*"[,:}])*?)?"([^"\\]*?(\\.[^"\\]*?)*?([^"\\A-Za-z0-9._%+''!#$&*/=?^`{|}~-]|\\.))?([Aa][Ll][Ll]([-._]?([Ss][Tt][Aa][Ff][Ff]|[Hh][Aa][Nn][Dd][Ss]|[Ee][Mm][Pp][Ll][Oo][Yy][Ee][Ee][Ss]))?|[Ee][Vv][Ee][Rr][Yy]([Oo][Nn][Ee]|[Bb][Oo][Dd][Yy])|[Ss][Tt][Aa][Ff][Ff]|[Cc][Uu][Ss][Tt][Oo][Mm][Ee][Rr][Ss]|[Uu][Ss][Ee][Rr][Ss])@)'
     reason: mass email
     rationale: One message to many people (or to a list address) cannot be recalled; a person checks the audience and the text.
   - id: TK-M004
