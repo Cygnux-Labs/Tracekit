@@ -22,12 +22,15 @@ LABEL org.opencontainers.image.source="https://github.com/Cygnux-Labs/Tracekit" 
       org.opencontainers.image.title="tracekit-signer" \
       org.opencontainers.image.licenses="MIT"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-# lean: the pinned base ships PAM 1.5.2-6+deb12u2 (CVE-2025-6020); drop this step once BASE is re-pinned to a
-# python:3.12-slim-bookworm digest with libpam0g 1.5.2-6+deb12u3
+# the pinned base lags Debian's security updates, and a fix one package at a time failed every PR's scan with each new
+# one: every package with an update in bookworm (its security suite included) is upgraded at build. The floors are the
+# HIGH ones the scan found, so a mirror without the fix fails the build instead of shipping it; drop one once BASE has it
 RUN apt-get update \
- && apt-get install -y --no-install-recommends --only-upgrade libpam0g libpam-modules libpam-modules-bin libpam-runtime \
+ && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
  && { dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpam0g)" ge 1.5.2-6+deb12u3 \
       || { echo "libpam0g is older than 1.5.2-6+deb12u3 (CVE-2025-6020): re-pin BASE or wait for the mirror" >&2; exit 1; }; } \
+ && { dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libzstd1)" ge 1.5.4+dfsg2-5+deb12u1 \
+      || { echo "libzstd1 is older than 1.5.4+dfsg2-5+deb12u1 (CVE-2026-124851): re-pin BASE or wait for the mirror" >&2; exit 1; }; } \
  && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=bind,from=build,source=/wheels,target=/wheels \
     pip install --no-cache-dir --no-index /wheels/*.whl \
