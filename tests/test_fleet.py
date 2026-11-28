@@ -274,13 +274,17 @@ class Build(unittest.TestCase):
 
     @pytest.mark.serial
     def test_turn_matching_is_linear_in_turns_that_share_their_counts(self):
-        """16,000 turns with the same usage (an agent can sign them) took 2.8 s, at every checkpoint."""
+        """16,000 turns with the same usage (an agent can sign them) took 2.8 s, at every checkpoint. The transcript's
+        8,000 come first, one a second; the gateway's 8,000 follow, and each joins a transcript turn of the 300 s
+        before it, so only the last 300 of the first are joined."""
         r = Run("r1", "a", NOW - 40000)
-        for i in range(16000):
+        for i in range(8000):
             r.turn(f"x{i}", "m", (10, 5, 0, 0), after=1)
+        for i in range(8000):
+            r.turn(f"g{i}", "m", (10, 5, 0, 0), after=1, source="gateway")
         t0 = time.perf_counter()
         turns = fleet._turns(r.recs)
-        self.assertEqual(len(turns), 16000)
+        self.assertEqual(len(turns), 16000 - 300)
         self.assertLess(time.perf_counter() - t0, 1.0)
 
     def test_a_turn_joined_by_its_exchange_id_is_not_joined_again_by_its_old_counts(self):
