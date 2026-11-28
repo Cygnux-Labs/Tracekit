@@ -5229,6 +5229,77 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, command=command):
                     self.assertEqual(e.decide("Bash", {"command": command})["verdict"], "allow")
 
+    def test_a_longer_word_in_capitals_is_no_delete_word_in_a_method_value(self):
+        r = {"owner": "acme", "repo": "api"}
+        held = ("dElete", "DELETE", "DELETE_ITEM", "TRUNCATE_TABLE", "RESET_DATABASE", "MIGRATE_RESET", "bulkDELETE",
+                "bulk_DELETE", "Delete_Item", "dropTable")
+        not_held = ("DROPDOWN", "DROPBOX_UPLOAD", "PURGEABLE", "DELETED_AT", "RESET_SCHEMA_CACHE", "DROPPED", "TERMINATED",
+                    "DELETED", "REMOVED", "TRUNCATE_TEXT")
+        for pack, engine, e in self.every_pack():
+            if pack == "coding.yaml":
+                continue
+            for v in held + not_held:
+                with self.subTest(pack=pack, engine=engine, value=v):
+                    d = e.decide("mcp:github/label_write", {**r, "method": v})
+                    self.assertEqual("TK-C012" in d["rule_ids"], v in held, d)
+
+    def test_tracekits_own_cli_is_read_through_every_runner_version_and_package_manager(self):
+        """TK-D012: an agent answering its own hold through npx, bunx, dlx, uvx, pipx or a package manager's bin, at a
+        version, by its package name, in a workspace: the package a runner names is the bin it runs."""
+        pkg, act = "@cygnuxlabs/tracekit", "approvals approve a1"
+        held = [f"tracekit {act}", f"npx {pkg} {act}", f"npx {pkg}@1.8.0 {act}", f"npx {pkg}@latest {act}",
+                f"npx -y {pkg}@1.8.0 {act}", f"bunx {pkg}@1.8.0 {act}", f"pnpm dlx {pkg}@1.8.0 {act}",
+                f"yarn dlx {pkg}@1.8.0 {act}", f"npm x {pkg}@1.8.0 {act}", f"npm exec {pkg}@1.8.0 -- {act}",
+                f"npx -p {pkg}@1.8.0 tracekit {act}", f"npx tracekit@1 {act}", f"yarn tracekit {act}",
+                f"pnpm tracekit {act}", f"bun tracekit {act}", f"bun run tracekit {act}", f"pnpm exec tracekit {act}",
+                f"yarn run tracekit {act}", f"bun exec 'tracekit {act}'", f"pnpm --filter web tracekit {act}",
+                f"yarn workspace web tracekit {act}", f"uvx tracekit {act}", f"uvx tracekit@1.8.0 {act}",
+                f"uvx tracekit==1.8.0 {act}", f"uvx --from tracekit==1.8.0 tracekit {act}",
+                f"uv tool run --from tracekit==1.8.0 tracekit {act}", f"pipx run tracekit {act}",
+                f"pipx run tracekit==1.8.0 {act}", f"uv run tracekit {act}", f"python3 -m tracekit {act}",
+                f"bun run python3 -m tracekit {act}", "tracekit tips approve L-1", "npx tracekit@1 tips approve L-1",
+                "uvx tracekit@1.8.0 tips approve L-1", "tracekit approvals reject a1", "npx tracekit@1 approvals reject a1",
+                "pnpm dlx tracekit@1 approvals reject a1"]
+        self.every_pack_verdicts([(c, "TK-D012") for c in held])
+
+    def test_a_manager_that_runs_a_command_by_its_name_is_read_for_that_command(self):
+        """`pnpm sudo ls` runs sudo; `bun exec 'script'` runs its text in Bun Shell, and a .sh file bun runs is run by it;
+        a CLI through a package manager or at a version is the CLI: TK-A001's and TK-A055's too. The managers' own
+        commands and scripts are as they were."""
+        held = (("pnpm sudo ls", "TK-D001"), ("pnpm --filter web sudo ls", "TK-D001"), ("bun exec 'sudo ls'", "TK-D001"),
+                ("pnpm terraform destroy -auto-approve", "TK-A001"), ("pnpm dropdb prod", "TK-A001"),
+                ("bun exec 'git push --force origin main'", "TK-D003"), ("bun exec 'wrangler delete'", "TK-A042"),
+                ("bun exec 'tracekit approvals approve a1'", "TK-D012"),
+                ("pnpm cdk destroy --force", "TK-A001"), ("yarn cdk destroy --force", "TK-A001"),
+                ("npx aws-cdk@2 destroy --force", "TK-A001"), ("npx cdk@2 destroy --force", "TK-A001"),
+                ("npx heroku@8 apps:destroy myapp --confirm myapp", "TK-A001"),
+                ("yarn heroku apps:destroy myapp --confirm myapp", "TK-A001"),
+                ("npx @railway/cli delete", "TK-A001"), ("npx @railway/cli@3 delete", "TK-A001"),
+                ("pnpm railway delete", "TK-A001"), ("npx pulumi@3 destroy --yes", "TK-A001"), ("uvx pulumi@3 destroy --yes", "TK-A001"),
+                ("bun prisma migrate reset --force", "TK-A055"), ("npx prisma@5 migrate reset --force", "TK-A055"),
+                ("pnpm prisma migrate reset --force", "TK-A055"), ("yarn prisma migrate reset --force", "TK-A055"),
+                ("npx supabase@1 db reset", "TK-A055"), ("pnpm supabase db reset", "TK-A055"))
+        self.every_pack_verdicts(held)
+        for pack, engine, e in self.every_pack():
+            # a .sh file is read as `sh` reads it, the same line's write of it included
+            for runner in ("bun x.sh", "bun ./x.sh", "bun run x.sh", "bun --cwd /tmp run x.sh"):
+                with self.subTest(pack=pack, engine=engine, runner=runner):
+                    line = "echo 'sudo ls' > x.sh; " + runner
+                    same = e.decide("Bash", {"command": "echo 'sudo ls' > x.sh; sh x.sh"})
+                    got = e.decide("Bash", {"command": line})
+                    self.assertEqual((got["verdict"], "TK-D001" in got["rule_ids"]),
+                                     (same["verdict"], "TK-D001" in same["rule_ids"]))
+        coding = next(e for pack, engine, e in self.every_pack() if pack == "coding.yaml" and engine == "regex")
+        ordinary = {"pnpm --filter web dev": "allow", "pnpm build": "allow", "pnpm test": "allow", "pnpm run build": "allow",
+                    "pnpm install": "flag", "pnpm add x": "flag", "pnpm rm x": "allow", "pnpm ls": "allow",
+                    "bun run build": "allow", "bun install": "flag", "bun add x": "flag", "yarn workspace web add x": "allow",
+                    "yarn add x": "flag", "yarn install": "flag", "yarn build": "allow", "yarn remove x": "allow",
+                    "npm install": "flag", "npx prettier@3 --write .": "allow", "yarn --cwd vercel remove x": "allow",
+                    "pnpm --filter vercel remove lodash": "allow"}
+        for command, verdict in ordinary.items():
+            with self.subTest(command=command):
+                self.assertEqual(coding.decide("Bash", {"command": command})["verdict"], verdict)
+
     def test_a_remote_ref_organization_or_group_deleted_through_the_api_asks(self):
         """TK-A002 and TK-A042 (1.5.3 sweep): a branch or tag deleted through GitHub's or GitLab's API, and a whole
         organization or group, were allowed; a GET, another method or a sub-resource (a member) still isn't held."""
